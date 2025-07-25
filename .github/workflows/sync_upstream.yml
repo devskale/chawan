@@ -34,16 +34,20 @@ jobs:
       #     git remote add upstream https://codeberg.org/bptato/chawan
       #     git fetch upstream --tags
 
+
       # Step 3: Merge or Reset to Upstream
-      # This example uses merge. Reset is another option (see below).
-      # Ensure you are on the correct branch (e.g., main/master)
+      # Corrected: Use 'master' for the upstream branch
       - name: Merge Upstream Changes
         run: |
-          # Replace 'main' with your default branch name if different
+          # Make sure you are on the correct branch in YOUR repo.
+          # If YOUR default branch is 'main', stay on 'main'.
+          # If YOUR default branch is also 'master', use 'master'.
+          # This example assumes YOUR branch is named 'main'.
           git checkout main
-          # Merge upstream's main branch into your local main branch
-          # Use --no-edit to avoid opening an editor for the merge commit message
-          git merge upstream/main --no-edit
+          # Merge upstream's MASTER branch into your local branch
+          # Corrected: upstream/master
+          git merge upstream/master --no-edit
+         
 
       # Step 4: Push changes back to your GitHub repository
       - name: Push Changes to GitHub
