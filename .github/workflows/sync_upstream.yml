@@ -35,25 +35,20 @@ jobs:
       #     git fetch upstream --tags
 
 
-      # Step 3: Merge or Reset to Upstream
-      # Corrected: Use 'master' for the upstream branch
+      # Step 3: Merge Upstream Changes (Allowing Unrelated Histories)
       - name: Merge Upstream Changes
         run: |
-          # Make sure you are on the correct branch in YOUR repo.
-          # If YOUR default branch is 'main', stay on 'main'.
-          # If YOUR default branch is also 'master', use 'master'.
-          # This example assumes YOUR branch is named 'main'.
           git checkout main
-          # Merge upstream's MASTER branch into your local branch
-          # Corrected: upstream/master
-          git merge upstream/master --no-edit
-         
+          # Merge upstream's master branch, allowing unrelated histories
+          git merge upstream/master --no-edit --allow-unrelated-histories
+          # Note: You might encounter merge conflicts here that need manual resolution
+          # if files have the same name but different content in the initial commits.
 
       # Step 4: Push changes back to your GitHub repository
       - name: Push Changes to GitHub
         run: |
-          # Push the merged changes to your 'main' branch on GitHub
           git push origin main --tags
+
 
       # Optional Step 5: Handle Conflicts or Reset (Alternative to Merge)
       # If you prefer a strict mirror and don't want to deal with merge conflicts,
