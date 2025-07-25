@@ -34,17 +34,21 @@ jobs:
       #     git remote add upstream https://codeberg.org/bptato/chawan
       #     git fetch upstream --tags
 
+      # Step: Set Git Identity
+      # Required for merge or commit operations
+      - name: Set Git Identity
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-      # Step 3: Merge Upstream Changes (Allowing Unrelated Histories)
+      # Step: Merge Upstream Changes (Allowing Unrelated Histories)
+      # OR Reset to Upstream (choose one)
       - name: Merge Upstream Changes
         run: |
           git checkout main
-          # Merge upstream's master branch, allowing unrelated histories
           git merge upstream/master --no-edit --allow-unrelated-histories
-          # Note: You might encounter merge conflicts here that need manual resolution
-          # if files have the same name but different content in the initial commits.
 
-      # Step 4: Push changes back to your GitHub repository
+      # Step: Push Changes to GitHub
       - name: Push Changes to GitHub
         run: |
           git push origin main --tags
