@@ -1,0 +1,66 @@
+name: Sync Upstream Repository
+
+on:
+  schedule:
+    # Runs daily at midnight UTC. Adjust the cron expression as needed.
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Checkout your repository
+      - name: Checkout Target Repository
+        uses: actions/checkout@v4
+        with:
+          # Use a Personal Access Token (PAT) with 'workflow' scope
+          # to allow pushing changes, especially if workflows are involved.
+          token: ${{ secrets.GH_PAT }}
+          # Fetch all history for all branches and tags
+          fetch-depth: 0
+
+      # Step 2: Add the upstream repository as a remote
+      # Choose ONE of the upstream URLs (SourceHut or Codeberg)
+      # Example using SourceHut:
+      - name: Add Upstream Remote (SourceHut)
+        run: |
+          git remote add upstream https://git.sr.ht/~bptato/chawan
+          git fetch upstream --tags
+
+      # Example using Codeberg (Comment out the SourceHut step if using this):
+      # - name: Add Upstream Remote (Codeberg)
+      #   run: |
+      #     git remote add upstream https://codeberg.org/bptato/chawan
+      #     git fetch upstream --tags
+
+      # Step 3: Merge or Reset to Upstream
+      # This example uses merge. Reset is another option (see below).
+      # Ensure you are on the correct branch (e.g., main/master)
+      - name: Merge Upstream Changes
+        run: |
+          # Replace 'main' with your default branch name if different
+          git checkout main
+          # Merge upstream's main branch into your local main branch
+          # Use --no-edit to avoid opening an editor for the merge commit message
+          git merge upstream/main --no-edit
+
+      # Step 4: Push changes back to your GitHub repository
+      - name: Push Changes to GitHub
+        run: |
+          # Push the merged changes to your 'main' branch on GitHub
+          git push origin main --tags
+
+      # Optional Step 5: Handle Conflicts or Reset (Alternative to Merge)
+      # If you prefer a strict mirror and don't want to deal with merge conflicts,
+      # you can reset your branch to match the upstream exactly.
+      # WARNING: This overwrites your local history/changes.
+      # Uncomment the block below and comment out the 'Merge Upstream Changes' step if preferred.
+      # - name: Reset to Upstream (Strict Mirror)
+      #   run: |
+      #     git checkout main
+      #     # Hard reset your local branch to match upstream/main
+      #     git reset --hard upstream/main
+      #     # Force push to update your GitHub branch
+      #     # Use with extreme caution!
+      #     # git push origin main --force
