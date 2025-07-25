@@ -1,0 +1,9 @@
+<!doctype html>
+<div id=x>Fail</div>
+<script src=asserts.js></script>
+<script>
+assert(!![].at);
+assertEquals([1, 2, 3].at(-2), 2);
+assertEquals([1, 2, 3].at(-4), undefined);
+document.getElementById("x").textContent = "Success";
+</script>

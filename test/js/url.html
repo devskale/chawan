@@ -1,0 +1,116 @@
+<!doctype html>
+<title>URL test</title>
+<div id=x>Fail</div>
+<script src=asserts.js></script>
+<script>
+assertEquals(new URL("https:example.org") + "", "https://example.org/");
+assertEquals(new URL("https://////example.com///") + "", "https://example.com///");
+assertEquals(new URL("https://example.com/././foo") + "", "https://example.com/foo");
+assertEquals(new URL("hello:world", "https://example.com/") + "", "hello:world");
+assertEquals(new URL("https:example.org", "https://example.com/") + "", "https://example.com/example.org");
+assertEquals(new URL(String.raw`\example\..\demo/.\ `, "https://example.com/") + "", "https://example.com/demo/");
+assertEquals(new URL("example", "https://example.com/demo") + "", "https://example.com/example");
+assertEquals(new URL('file:///C|/demo') + "", "file:///C:/demo");
+assertEquals(new URL('..', 'file:///C:/demo') + "", "file:///C:/");
+assertEquals(new URL('file://loc%61lhost/') + "", "file:///");
+assertEquals(new URL("https://user:password@example.org/") + "", "https://user:password@example.org/");
+assertEquals(new URL("https://example.org/foo bar") + "", "https://example.org/foo%20bar");
+assertEquals(new URL("https://EXAMPLE.com/../x") + "", "https://example.com/x");
+assertThrows('new URL("https://ex ample.org/")', TypeError);
+assertThrows('new URL("example")', TypeError);
+assertThrows('new URL("https://example.com:demo")', TypeError);
+assertThrows('new URL("https://[www.example.com]")', TypeError);
+assertEquals(new URL("https://example.org//") + "", "https://example.org//");
+assertEquals(new URL("https://example.com/[]?[]#[]") + "", "https://example.com/[]?[]#[]");
+assertEquals(new URL("https://example/%?%#%") + "", "https://example/%?%#%");
+assertEquals(new URL("https://example/%25?%25#%25") + "", "https://example/%25?%25#%25");
+assertThrows('new URL("https:example\\r.org")', TypeError);
+assertEquals(new URL("  https:exa\tmple\n.org\n/  ") + "", "https://example.org/");
+assertEquals(new URL("  https:exa\tmple.org\n:\n2\n4\n5\n2\n\n/  ") + "", "https://example.org:2452/");
+assertEquals(new URL("  h\nt\tt\np\ts\n:\t/\n/\te\nx\ta\nm\tp\nl\te\n/\tp\na\tt\n\nh\t?\nq\tu\ne\tr\ny\t#\nf\tr\na\tg\nm\te\nnt") + "", "https://example/path?query#fragment");
+assertEquals(new URL("  h\nt\tt\np\ts\n:\t/\n/\tu\ns\ne\nr\nn\na\n\nm\ne\n:\np\na\ns\ns\nw\no\nr\nd\n@\ne\nx\ta\nm\tp\nl\te\n/\tp\na\tt\n\nh\t?\nq\tu\ne\tr\ny\t#\nf\tr\na\tg\nm\te\nnt") + "", "https://username:password@example/path?query#fragment");
+assertEquals(new URL("abcd?efgh", "https://example.com/") + "", "https://example.com/abcd?efgh");
+assertEquals(new URL("abcd#ijkl", "https://example.com/") + "", "https://example.com/abcd#ijkl");
+assertEquals(new URL("abcd?efgh#ijkl", "https://example.com/") + "", "https://example.com/abcd?efgh#ijkl");
+assertEquals(new URL("https://テスト") + "", "https://xn--zckzah/");
+assertEquals(new URL("https://xn--zckzah") + "", "https://xn--zckzah/");
+assertEquals(new URL("https://他们为什么不说中文") + "", "https://xn--ihqwcrb4cv8a8dqg056pqjye/");
+assertEquals(new URL("https://xn--ihqwcrb4cv8a8dqg056pqjye") + "", "https://xn--ihqwcrb4cv8a8dqg056pqjye/");
+assertEquals(new URL("https://3年b組金八先生") + "", "https://xn--3b-ww4c5e180e575a65lsy2b/");
+assertEquals(new URL("https://xn--3B-ww4c5e180e575a65lsy2b") + "", "https://xn--3b-ww4c5e180e575a65lsy2b/");
+assertEquals(new URL("https://あああ") + "", "https://xn--l8jaa/");
+assertThrows('new URL("https://xn--")', TypeError);
+assertEquals(new URL("https://いろは-にほへと") + "", "https://xn----07t3els0dua4l/");
+assertEquals(new URL("https://xn----07t3els0dua4l/") + "", "https://xn----07t3els0dua4l/");
+assertEquals(new URL("file:/test") + "", "file:///test");
+assertEquals(new URL("https://[ffff::127.0.0.1]") + "", "https://[ffff::7f00:1]/");
+assertThrows('new URL("https://[]")', TypeError);
+/* from the spec */
+assertThrows('new URL("https://exa%23mple.org")', TypeError);
+assertThrows('new URL("foo://exa[mple.org")', TypeError);
+assertThrows('new URL("https://1.2.3.4.5/")', TypeError);
+assertThrows('new URL("https://test.42")', TypeError);
+assertThrows('new URL("https://255.255.4000.1")', TypeError);
+assertThrows('new URL("https://[::1")', TypeError);
+assertThrows('new URL("https://[:1]")', TypeError);
+assertThrows('new URL("https://[1:2:3:4:5:6:7:8:9]")', TypeError);
+assertThrows('new URL("https://[1::1::1]")', TypeError);
+assertThrows('new URL("https://[1:2:3!:4]")', TypeError);
+assertThrows('new URL("https://[1:2:3:]")', TypeError);
+assertThrows('new URL("https://[1:2:3]")', TypeError);
+assertThrows('new URL("https://[1:1:1:1:1:1:1:127.0.0.1]")', TypeError);
+assertThrows('new URL("https://[ffff::.0.0.1]")', TypeError);
+assertThrows('new URL("https://[ffff::127.0.xyz.1]")', TypeError);
+assertThrows('new URL("https://[ffff::127.0xyz]")', TypeError);
+assertThrows('new URL("https://[ffff::127.00.0.1]")', TypeError);
+assertThrows('new URL("https://[ffff::127.0.0.1.2]")', TypeError);
+assertThrows('new URL("https://[ffff::127.0.0.4000]")', TypeError);
+assertThrows('new URL("https://[ffff::127.0.0]")', TypeError);
+assertThrows('new URL("https://#fragment")', TypeError);
+assertThrows('new URL("https://:443")', TypeError);
+assertThrows('new URL("https://user:pass@")', TypeError);
+assertThrows('new URL("https://example.org:70000")', TypeError);
+assertThrows('new URL("https://example.org:7z")', TypeError);
+{
+	const x = new URL("file:/test");
+	x.protocol = "abcd";
+	assertEquals(x.protocol, "file:");
+}
+{
+	const x = new URL("efgh:/test");
+	x.protocol = "abcd";
+	assertEquals(x.protocol, "abcd:");
+	x.protocol = " efgh";
+	assertEquals(x.protocol, "abcd:");
+}
+{
+	const x = new URL("http:/test");
+	x.protocol = "abcd";
+	assertEquals(x.protocol, "http:");
+	x.port = 444;
+	x.protocol = "https";
+	assertEquals(x.protocol, "https:");
+	assertEquals(x.port, "444");
+	x.port = 80;
+	x.protocol = "http";
+	assertEquals(x + "", "http://test/");
+}
+{
+	const x = new URL("https://user:password@example.org:1234/path?search#hash");
+	assertEquals(x.protocol, "https:");
+	assertEquals(x.username, "user");
+	assertEquals(x.password, "password");
+	assertEquals(x.hostname, "example.org");
+	assertEquals(x.port, "1234");
+	assertEquals(x.host, "example.org:1234");
+	assertEquals(x.pathname, "/path");
+	assertEquals(x.search, "?search");
+	assertEquals(x.hash, "#hash");
+	x.searchParams.delete("search");
+	assertEquals(x.search, "");
+	x.searchParams.append("hi", "world");
+	assert(x.searchParams.has("hi"));
+	assert(x.searchParams.has("hi", "world"));
+}
+document.getElementById("x").textContent = "Success";
+</script>

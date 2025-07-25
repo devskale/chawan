@@ -1,0 +1,586 @@
+[start]
+visual-home = "about:chawan"
+startup-script = ""
+headless = false
+console-buffer = true
+
+[protocol.ftp]
+form-request = "ftp"
+
+[protocol.mailto]
+form-request = "mailto"
+
+[protocol.data]
+form-request = "data"
+
+[buffer]
+styling = true
+images = false
+scripting = false
+referer-from = false
+cookie = false
+meta-refresh = "ask"
+history = true
+mark-links = false
+user-style = ""
+
+[search]
+wrap = true
+ignore-case = "auto"
+
+[encoding]
+document-charset = ["utf-8", "sjis", "euc-jp", "latin2"]
+display-charset = "auto"
+
+[external]
+mailcap = [
+	"~/.mailcap",
+	"/etc/mailcap",
+	"/usr/etc/mailcap",
+	"/usr/local/etc/mailcap"
+]
+auto-mailcap = "auto.mailcap"
+mime-types = [
+	"~/.mime.types",
+	"/etc/mime.types",
+	"/usr/etc/mime.types",
+	"/usr/local/etc/mime.types"
+]
+urimethodmap = [
+	"~/.urimethodmap",
+	"~/.w3m/urimethodmap",
+	"/etc/urimethodmap",
+	"/usr/local/etc/w3m/urimethodmap"
+]
+bookmark = "bookmark.md"
+history-file = "history.uri"
+history-size = 100
+cookie-file = "cookies.txt"
+tmpdir = "${TMPDIR:-/tmp}/cha-tmp-$LOGNAME"
+editor = "${EDITOR:-vi}"
+cgi-dir = ["cgi-bin", "$CHA_LIBEXEC_DIR/cgi-bin"]
+download-dir = "${TMPDIR:-/tmp}/"
+show-download-panel = true
+w3m-cgi-compat = false
+copy-cmd = 'xsel -bi'
+paste-cmd = 'xsel -bo'
+
+[network]
+max-redirect = 10
+max-net-connections = 12
+prepend-scheme = "https://"
+default-headers = {
+	User-Agent = "chawan",
+	Accept = "text/html, text/*;q=0.5, */*;q=0.4",
+	Accept-Encoding = "gzip, deflate, br",
+	Accept-Language = "en;q=1.0",
+	Pragma = "no-cache",
+	Cache-Control = "no-cache"
+}
+allow-http-from-file = false
+
+[input]
+vi-numeric-prefix = true
+use-mouse = true
+wheel-scroll = 5
+side-wheel-scroll = 5
+
+[display]
+color-mode = "auto"
+format-mode = "auto"
+no-format-mode = "overline"
+image-mode = "auto"
+sixel-colors = "auto"
+alt-screen = "auto"
+highlight-color = "cyan"
+highlight-marks = true
+double-width-ambiguous = false
+minimum-contrast = 100
+force-clear = false
+set-title = "auto"
+default-background-color = "auto"
+default-foreground-color = "auto"
+query-da1 = true
+columns = 80
+lines = 24
+pixels-per-column = 9
+pixels-per-line = 18
+force-columns = false
+force-lines = false
+force-pixels-per-column = false
+force-pixels-per-line = false
+
+[omnirule.ddg]
+match = '^ddg:'
+substitute-url = 'x => "https://lite.duckduckgo.com/lite/?kp=-1&kd=-1&q=" + encodeURIComponent(x.split(":").slice(1).join(":"))'
+
+[omnirule.go]
+match = '^go:'
+substitute-url = 'x => `https://www.google.com/search?gbv=1&ucbcb=1&oe=UTF-8&q=${x.split(":").slice(1).join(":")}`'
+
+[omnirule.wk]
+match = '^wk:'
+substitute-url = '''
+x => "https://en.wikipedia.org/wiki/Special:Search?search=" +
+	encodeURIComponent(x.split(":").slice(1).join(":"))
+'''
+
+[omnirule.wd]
+match = '^wd:'
+substitute-url = '''
+x => "https://en.wiktionary.org/w/index.php?title=Special:Search&search=" +
+	encodeURIComponent(x.split(":").slice(1).join(":"))
+'''
+
+[omnirule.ms]
+match = '^ms:'
+substitute-url = '''
+x => "https://marginalia-search.com/search?query=" +
+	encodeURIComponent(x.split(":").slice(1).join(":"));
+'''
+
+# strip tracking
+[siteconf.google-com]
+url = '^https?://(www\.)?google\.com'
+rewrite-url = '''
+x => {
+	if (x.pathname == "/url") {
+		let q = x.searchParams.get("q");
+		if (q[0] == '/')
+			q = x.protocol + x.host + q;
+		return new URL(q);
+	}
+	for (const name of ["sca_esv", "sca_upv", "oq", "aqs", "ved", "sa", "source", "ei"])
+		x.searchParams.delete(name);
+}
+'''
+# it seems they no longer allow searches without JS.
+# at least the old page still works
+default-headers = {
+	User-Agent = "w3m/0.5.3+git20230718",
+	Accept = "text/html, text/*;q=0.5, */*;q=0.4",
+	Accept-Encoding = "gzip, deflate",
+	Accept-Language = "en;q=1.0",
+	Pragma = "no-cache",
+	Cache-Control = "no-cache"
+}
+# the old style lacks a background, but sets foreground to black...
+user-style = "html { background: white }"
+
+[siteconf.downloads]
+url = 'about:downloads'
+meta-refresh = "always"
+
+[page]
+# pager commands, but define them before y so that they actually work.
+yu = 'cmd.pager.copyCursorLink'
+yI = 'cmd.pager.copyCursorImage'
+
+# buffer commands
+h = 'cmd.buffer.cursorLeft'
+j = 'cmd.buffer.cursorDown'
+k = 'cmd.buffer.cursorUp'
+l = 'cmd.buffer.cursorRight'
+'M-[D' = 'cmd.buffer.cursorLeft'
+'M-[B' = 'cmd.buffer.cursorDown'
+'M-[A' = 'cmd.buffer.cursorUp'
+'M-[C' = 'cmd.buffer.cursorRight'
+'0' = 'cmd.buffer.cursorLineBegin'
+'M-[H' = 'cmd.buffer.cursorLineBegin'
+'^' = 'cmd.buffer.cursorLineTextStart'
+'$' = 'cmd.buffer.cursorLineEnd'
+'M-[F' = 'cmd.buffer.cursorLineEnd'
+b = 'cmd.buffer.cursorViWordBegin'
+e = 'cmd.buffer.cursorViWordEnd'
+w = 'cmd.buffer.cursorNextViWord'
+B = 'cmd.buffer.cursorBigWordBegin'
+E = 'cmd.buffer.cursorBigWordEnd'
+W = 'cmd.buffer.cursorNextBigWord'
+'[' = 'cmd.buffer.cursorPrevLink'
+']' = 'cmd.buffer.cursorNextLink'
+'{' = 'cmd.buffer.cursorPrevParagraph'
+'}' = 'cmd.buffer.cursorNextParagraph'
+H = 'cmd.buffer.cursorTop'
+M = 'cmd.buffer.cursorMiddle'
+L = 'cmd.buffer.cursorBottom'
+g0 = 'cmd.buffer.cursorLeftEdge'
+gc = 'cmd.buffer.cursorMiddleColumn'
+'g$' = 'cmd.buffer.cursorRightEdge'
+C-d = 'cmd.buffer.halfPageDown'
+C-u = 'cmd.buffer.halfPageUp'
+C-f = 'cmd.buffer.pageDown'
+C-b = 'cmd.buffer.pageUp'
+'M-[6~' = 'cmd.buffer.pageDown'
+'M-[5~' = 'cmd.buffer.pageUp'
+'zH'= 'cmd.buffer.pageLeft'
+'zL' = 'cmd.buffer.pageRight'
+'<' = 'cmd.buffer.pageLeft'
+'>' = 'cmd.buffer.pageRight'
+C-e = 'cmd.buffer.scrollDown'
+C-y = 'cmd.buffer.scrollUp'
+J = 'cmd.buffer.scrollDown'
+K = 'cmd.buffer.scrollUp'
+sE = 'cmd.buffer.sourceEdit'
+sC-m = 'cmd.buffer.saveLink'
+sC-j = 'cmd.buffer.saveLink'
+sS = 'cmd.buffer.saveSource'
+m = 'cmd.buffer.mark'
+'`' = 'cmd.buffer.gotoMark'
+"'" = 'cmd.buffer.gotoMarkY'
+'zh'= 'cmd.buffer.scrollLeft'
+'zl' = 'cmd.buffer.scrollRight'
+'-'= 'cmd.buffer.scrollLeft'
+'+' = 'cmd.buffer.scrollRight'
+C-m = 'cmd.buffer.click'
+C-j = 'cmd.buffer.click'
+I = 'cmd.buffer.viewImage'
+sI = 'cmd.buffer.saveImage'
+M-i = 'cmd.buffer.toggleImages'
+M-j = 'cmd.buffer.toggleScripting'
+M-k = 'cmd.buffer.toggleCookie'
+':' = 'cmd.buffer.markURL'
+r = 'cmd.buffer.redraw'
+R = 'cmd.buffer.reshape'
+C-c = 'cmd.buffer.cancel'
+gg = 'cmd.buffer.gotoLineOrStart'
+G = 'cmd.buffer.gotoLineOrEnd'
+'|' = 'cmd.buffer.gotoColumnOrBegin'
+'z.' = 'cmd.buffer.centerLineBegin'
+'zC-m' = 'cmd.buffer.raisePageBegin'
+'zC-j' = 'cmd.buffer.raisePageBegin'
+'z-' = 'cmd.buffer.lowerPageBegin'
+zz = 'cmd.buffer.centerLine'
+'zt' = 'cmd.buffer.raisePage'
+'zb' = 'cmd.buffer.lowerPage'
+'z+' = 'cmd.buffer.nextPageBegin'
+'z^' = 'cmd.buffer.previousPageBegin'
+y = 'cmd.buffer.copySelection'
+v = 'cmd.buffer.cursorToggleSelection'
+V = 'cmd.buffer.cursorToggleSelectionLine'
+C-v = 'cmd.buffer.cursorToggleSelectionBlock'
+
+# pager commands
+q = 'cmd.pager.quit'
+C-z = 'cmd.pager.suspend'
+C-l = 'cmd.pager.load'
+C-k = 'cmd.pager.webSearch'
+M-a = 'cmd.pager.addBookmark'
+M-b = 'cmd.pager.openBookmarks'
+C-h = 'cmd.pager.openHistory'
+M-u = 'cmd.pager.dupeBuffer'
+U = 'cmd.pager.reloadBuffer'
+C-g = 'cmd.pager.lineInfo'
+'\' = 'cmd.pager.toggleSource'
+D = 'cmd.pager.discardBuffer'
+'d,' = 'cmd.pager.discardBufferPrev'
+'d.' = 'cmd.pager.discardBufferNext'
+M-d = 'cmd.pager.discardTree'
+',' = 'cmd.pager.prevBuffer'
+'M-,' = 'cmd.pager.prevSiblingBuffer'
+'.' = 'cmd.pager.nextBuffer'
+'M-.' = 'cmd.pager.nextSiblingBuffer'
+'M-/' = 'cmd.pager.parentBuffer'
+M-c = 'cmd.pager.enterCommand'
+'/' = 'cmd.pager.isearchForward'
+'?' = 'cmd.pager.isearchBackward'
+n = 'cmd.pager.searchNext'
+N = 'cmd.pager.searchPrev'
+c = 'cmd.pager.peek'
+u = 'cmd.pager.peekCursor'
+su = 'cmd.pager.showFullAlert'
+C-w = 'cmd.pager.toggleWrap'
+M-y = 'cmd.pager.copyURL'
+M-p = 'cmd.pager.gotoClipboardURL'
+
+[line]
+C-m = 'cmd.line.submit'
+C-j = 'cmd.line.submit'
+C-h = 'cmd.line.backspace'
+'C-?' = 'cmd.line.backspace'
+C-d = 'cmd.line.delete'
+C-c = 'cmd.line.cancel'
+C-g = 'cmd.line.cancel'
+M-b = 'cmd.line.prevWord'
+M-f = 'cmd.line.nextWord'
+C-b = 'cmd.line.backward'
+C-f = 'cmd.line.forward'
+C-u = 'cmd.line.clear'
+C-_ = 'cmd.line.clear'
+M-k = 'cmd.line.clear'
+C-k = 'cmd.line.kill'
+C-w = 'cmd.line.clearWord'
+M-C-h = 'cmd.line.clearWord'
+'M-C-?' = 'cmd.line.clearWord'
+M-d = 'cmd.line.killWord'
+C-a = 'cmd.line.begin'
+'M-[H' = 'cmd.line.begin'
+C-e = 'cmd.line.end'
+'M-[F' = 'cmd.line.end'
+C-v = 'cmd.line.escape'
+C-p = 'cmd.line.prevHist'
+C-n = 'cmd.line.nextHist'
+M-c = 'cmd.pager.toggleCommandMode'
+'M-[D' = 'cmd.line.backward'
+'M-[B' = 'cmd.line.nextHist'
+'M-[A' = 'cmd.line.prevHist'
+'M-[C' = 'cmd.line.forward'
+
+[cmd.pager]
+quit = '() => quit()'
+suspend = '() => suspend()'
+copyURL = '''
+() => {
+	if (pager.externInto(config.external.copyCmd, pager.url))
+		pager.alert("Copied URL to clipboard.");
+	else
+		pager.alert("Error; please install xsel or adjust external.copy-cmd");
+}
+'''
+copyCursorLink = '''
+() => {
+	const link = pager.hoverLink;
+	if (!link)
+		pager.alert("Please move the cursor above a link and try again.");
+	else if (pager.externInto(config.external.copyCmd, link))
+		pager.alert("Copied URL to clipboard.");
+	else
+		pager.alert("Error; please install xsel or adjust external.copy-cmd");
+}
+'''
+copyCursorImage = '''
+() => {
+	const link = pager.hoverImage;
+	if (!link)
+		pager.alert("Please move the cursor above an image and try again.");
+	else if (pager.externInto(config.external.copyCmd, link))
+		pager.alert("Copied URL to clipboard.");
+	else
+		pager.alert("Error; please install xsel or adjust external.copy-cmd");
+}
+'''
+gotoClipboardURL = '''
+() => {
+	const s = pager.externCapture(config.external.pasteCmd);
+	if (s === null)
+		pager.alert("Error; please install xsel or adjust external.paste-cmd");
+	else
+		pager.loadSubmit(s);
+}
+'''
+peek = '() => pager.alert(pager.url)'
+peekCursor = 'n => pager.peekCursor(n)'
+toggleWrap = '''
+() => {
+	config.search.wrap = !config.search.wrap;
+	pager.alert("Wrap search " + (config.search.wrap ? "on" : "off"));
+}
+'''
+dupeBuffer = '() => pager.dupeBuffer()'
+load = '() => pager.load()'
+webSearch = '() => pager.load("go:")'
+addBookmark = '() => pager.gotoURL(`cgi-bin:chabookmark?url=${encodeURIComponent(pager.url)}&title=${encodeURIComponent(pager.title)}`)'
+openBookmarks = '() => pager.gotoURL(`cgi-bin:chabookmark?action=view`, {history: false})'
+openHistory = '() => pager.gotoURL(pager.getHistoryURL(), {contentType: `text/uri-list;title="History page"`, history: false})'
+reloadBuffer = '() => pager.reload()'
+lineInfo = '() => pager.lineInfo()'
+toggleSource = '() => pager.toggleSource()'
+discardBuffer = '() => pager.discardBuffer()'
+discardBufferPrev = '() => pager.discardBuffer(pager.buffer, "prev")'
+discardBufferNext = '() => pager.discardBuffer(pager.buffer, "next")'
+discardTree = '() => pager.discardTree()'
+prevBuffer = '() => pager.prevBuffer()'
+prevSiblingBuffer = '() => pager.prevSiblingBuffer()'
+nextBuffer = '() => pager.nextBuffer()'
+nextSiblingBuffer = '() => pager.nextSiblingBuffer()'
+parentBuffer = '() => pager.parentBuffer()'
+enterCommand = '() => pager.command()'
+searchForward = '() => pager.searchForward()'
+searchBackward = '() => pager.searchBackward()'
+isearchForward = '() => pager.isearchForward()'
+isearchBackward = '() => pager.isearchBackward()'
+searchNext = 'n => pager.searchNext(n)'
+searchPrev = 'n => pager.searchPrev(n)'
+toggleCommandMode = '''
+() => {
+	if ((pager.commandMode = consoleBuffer != pager.buffer))
+		console.show();
+	else
+		console.hide();
+}
+'''
+showFullAlert = '() => pager.showFullAlert()'
+
+[cmd.buffer]
+cursorLeft = 'n => pager.cursorLeft(n)'
+cursorDown = 'n => pager.cursorDown(n)'
+cursorUp = 'n => pager.cursorUp(n)'
+cursorRight = 'n => pager.cursorRight(n)'
+cursorLineBegin = '() => pager.cursorLineBegin()'
+cursorLineTextStart = '() => pager.cursorLineTextStart()'
+cursorLineEnd = '() => pager.cursorLineEnd()'
+cursorNextWord = '() => pager.cursorNextWord()'
+cursorNextViWord = '() => pager.cursorNextViWord()'
+cursorNextBigWord = '() => pager.cursorNextBigWord()'
+cursorWordBegin = '() => pager.cursorWordBegin()'
+cursorViWordBegin = '() => pager.cursorViWordBegin()'
+cursorBigWordBegin = '() => pager.cursorBigWordBegin()'
+cursorWordEnd = '() => pager.cursorWordEnd()'
+cursorViWordEnd = '() => pager.cursorViWordEnd()'
+cursorBigWordEnd = '() => pager.cursorBigWordEnd()'
+cursorPrevLink = 'n => pager.cursorPrevLink(n)'
+cursorNextLink = 'n => pager.cursorNextLink(n)'
+cursorPrevParagraph = 'n => pager.cursorPrevParagraph(n)'
+cursorNextParagraph = 'n => pager.cursorNextParagraph(n)'
+cursorTop = 'n => pager.cursorTop(n)'
+cursorMiddle = '() => pager.cursorMiddle()'
+cursorBottom = 'n => pager.cursorBottom(n)'
+cursorLeftEdge = '() => pager.cursorLeftEdge()'
+cursorMiddleColumn = '() => pager.cursorMiddleColumn()'
+cursorRightEdge = '() => pager.cursorRightEdge()'
+halfPageDown = 'n => pager.halfPageDown(n)'
+halfPageUp = 'n => pager.halfPageUp(n)'
+halfPageLeft = 'n => pager.halfPageLeft(n)'
+halfPageRight = 'n => pager.halfPageRight(n)'
+pageDown = 'n => pager.pageDown(n)'
+pageUp = 'n => pager.pageUp(n)'
+pageLeft = 'n => pager.pageLeft(n)'
+pageRight = 'n => pager.pageRight(n)'
+scrollDown = 'n => pager.scrollDown(n)'
+scrollUp = 'n => pager.scrollUp(n)'
+scrollLeft = 'n => pager.scrollLeft(n)'
+scrollRight = 'n => pager.scrollRight(n)'
+click = '() => pager.click()'
+viewImage = '''
+(_, save) => {
+	let contentType = null;
+	let url = null;
+	if (pager.hoverCachedImage) {
+		[url, contentType] = pager.hoverCachedImage.split(' ');
+		url = 'file:' + pager.getCacheFile(url, pager.buffer.process);
+	} else if (pager.hoverImage)
+		url = new Request(pager.hoverImage, {headers: {Accept: "*/*"}});
+	if (url)
+		pager.gotoURL(url, {contentType: contentType, save: save});
+}
+'''
+toggleImages = '() => pager.toggleImages()'
+toggleScripting = '''
+() => {
+	const buffer = pager.buffer;
+	const buffer2 = pager.gotoURL(buffer.url, {
+		contentType: buffer.contentType,
+		history: buffer.history,
+		replace: buffer,
+		scripting: !buffer.scripting,
+		cookie: buffer.cookie
+	});
+	if (buffer2)
+		buffer2.copyCursorPos(buffer)
+}
+'''
+toggleCookie = '''
+() => {
+	const buffer = pager.buffer;
+	pager.gotoURL(buffer.url, {
+		contentType: buffer.contentType,
+		history: buffer.history,
+		replace: buffer,
+		scripting: buffer.scripting,
+		cookie: !buffer.cookie
+	});
+	if (buffer2)
+		buffer2.copyCursorPos(buffer)
+}
+'''
+markURL = '() => pager.markURL()'
+redraw = '() => pager.redraw()'
+reshape = '() => pager.reshape()'
+cancel = '() => pager.cancel()'
+# vi G
+gotoLineOrEnd = 'n => n ? pager.gotoLine(n) : pager.cursorLastLine()'
+# vim gg
+gotoLineOrStart = 'n => n ? pager.gotoLine(n) : pager.cursorFirstLine()'
+# vi |
+gotoColumnOrBegin = 'n => n ? pager.setCursorXCenter(n - 1) : pager.cursorLineBegin()'
+gotoColumnOrEnd = 'n => n ? pager.setCursorXCenter(n - 1) : pager.cursorLineEnd()'
+# vi z. z^M z-
+centerLineBegin = 'n => pager.centerLineBegin(n)'
+raisePageBegin = 'n => pager.raisePageBegin(n)'
+lowerPageBegin = 'n => pager.lowerPageBegin(n)'
+# vi z+ z^
+nextPageBegin = 'n => pager.nextPageBegin(n)'
+previousPageBegin = 'n => pager.previousPageBegin(n)'
+# vim zz zb zt
+centerLine = 'n => pager.centerLine(n)'
+raisePage = 'n => pager.raisePage(n)'
+lowerPage = 'n => pager.lowerPage(n)'
+cursorToggleSelection = 'n => pager.cursorToggleSelection(n)'
+cursorToggleSelectionLine = 'n => pager.cursorToggleSelection(n, {selectionType: "line"})'
+cursorToggleSelectionBlock = 'n => pager.cursorToggleSelection(n, {selectionType: "block"})'
+sourceEdit = '''
+() => {
+	const url = pager.url;
+	pager.extern(pager.getEditorCommand(url.protocol == "file:" ?
+		decodeURIComponent(url.pathname) :
+		pager.cacheFile));
+}
+'''
+saveLink = '() => pager.saveLink()'
+saveSource = '() => pager.saveSource()'
+saveImage = '() => cmd.buffer.viewImage(1, true);'
+mark = '''
+async () => {
+	const c = await pager.askChar("m");
+	if (c.charCodeAt() != 3) /* ctrl-c */
+		pager.setMark(c);
+}
+'''
+gotoMark = '''
+async () => {
+	const c = await pager.askChar('`');
+	if (c.charCodeAt() != 3) /* C-c */
+		pager.gotoMark(c);
+}
+'''
+gotoMarkY = '''
+async () => {
+	const c = await pager.askChar('`');
+	if (c.charCodeAt() != 3) /* C-c */
+		pager.gotoMarkY(c);
+}
+'''
+copySelection = '''
+async () => {
+	if (!pager.currentSelection) {
+		feedNext();
+		return;
+	}
+	const text = await pager.getSelectionText(pager.currentSelection);
+	if (pager.externInto(config.external.copyCmd, text))
+		pager.alert("Copied selection to clipboard.");
+	else
+		pager.alert("Error; please install xsel or adjust external.copy-cmd");
+	pager.cursorToggleSelection();
+}
+'''
+cursorNthLink = 'n => pager.cursorNthLink(n)'
+cursorRevNthLink = 'n => pager.cursorRevNthLink(n)'
+
+[cmd.line]
+submit = '() => line.submit()'
+backspace = '() => line.backspace()'
+delete = '() => line.delete()'
+cancel = '() => line.cancel()'
+prevWord = '() => line.prevWord()'
+nextWord = '() => line.nextWord()'
+backward = '() => line.backward()'
+forward = '() => line.forward()'
+clear = '() => line.clear()'
+kill = '() => line.kill()'
+clearWord = '() => line.clearWord()'
+killWord = '() => line.killWord()'
+begin = '() => line.begin()'
+end = '() => line.end()'
+escape = '() => line.escape()'
+prevHist = '() => line.prevHist()'
+nextHist = '() => line.nextHist()'

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<head>
+<title>Chawan Browser 0.3</title>
+<style>
+h1 { margin-top: 0 }
+.logo { float: right; margin: 0em 2ch }
+@media (max-width: 80ch) {
+.logo { display: none }
+}
+kbd { font-weight: bold; word-break: keep-all }
+a { word-break: keep-all }
+</style>
+</head>
+<body>
+<center><h1>Welcome to Chawan!</h1></center>
+<pre class=logo>
+ _..................._
+fr.,~.~,,~~.~~~,~,~~~l\
+I!www~www~www~www~www!dp
+lCHCHCHCHCHCHCHCHCHCHCp
+ lsAAAAAAAAAAAAAAAAAAp
+  SWWWWWWWWWWWWWWWWWZ
+     \Z<u>NMNMNMNMN</u>Z/
+</pre>
+<p>
+This is the default visual home page. You can change it in your
+configuration file using the <code>start.visual-home</code> option.
+(e.g.
+<a href='cgi-bin:chabookmark?action=view'>cgi-bin:chabookmark?action=view</a>
+to automatically show bookmarks.)
+<p>
+Following is a list of default keybindings to get you started.
+(Note: <kbd>C-{key}</kbd> means <kbd>Control</kbd> + <kbd>key</kbd>,
+<kbd>M-{key}</kbd> means <kbd>Meta</kbd> + <kbd>key</kbd>.
+Depending on your environment, the <kbd>Meta</kbd> key may be called
+<kbd>Alt</kbd> or <kbd>Escape</kbd>.)
+<ul>
+<li><kbd>q</kbd>: quit the browser
+<li><kbd>hjkl</kbd>, <kbd>Arrow keys</kbd>: move the cursor
+<li><kbd>J</kbd>, <kbd>K</kbd> (or <kbd>C-e</kbd>, <kbd>C-y</kbd>): scroll
+up/down by one row
+<li><kbd>C-l</kbd>: location bar (to enter a URL, etc.)
+<li><kbd>C-k</kbd>: web search
+<li><kbd>Return/Enter key</kbd>: open URL under cursor
+<li><kbd>I</kbd>: view image in external viewer
+<li><kbd>M-i</kbd>: toggle image display
+<li><kbd>M-j</kbd>: toggle JavaScript and reload
+<li><kbd>M-k</kbd>: toggle cookies and reload
+<li><kbd>v</kbd>, <kbd>V</kbd>, <kbd>C-v</kbd>: select (normal), select
+(line), select (block)
+<li><kbd>y</kbd>: yank (copy) current selection to system clipboard (needs xsel)
+<li><kbd>U</kbd>: reload page
+<li><kbd>,</kbd> (comma), <kbd>.</kbd> (period): previous/next buffer
+<li><kbd>D</kbd>: discard (delete) current buffer, then move back to where you
+came from
+<li><kbd>d,</kbd>, <kbd>d.</kbd>: discard (delete) current
+buffer, then move to previous/next buffer
+<li><kbd>M-y</kbd>: copy current buffer's URL to clipboard (needs xsel)
+<li><kbd>u</kbd>: view link/title text currently under the cursor
+<li><kbd>su</kbd>: show last alert message
+<li><kbd>yu</kbd>: copy the link currently under the cursor to clipboard (needs
+xsel)
+<li><kbd>yI</kbd>: copy the image link currently under the cursor to clipboard
+(needs xsel)
+<li><kbd>M-p</kbd>: go to the URL currently on the clipboard (needs xsel)
+<li><kbd>M-b</kbd>: open bookmark file
+<li><kbd>M-a</kbd>: add current page to bookmarks
+<li><kbd>[</kbd>, <kbd>]</kbd>: move cursor to the previous/next hyperlink
+<li><kbd>C-d</kbd>, <kbd>C-u</kbd>: scroll up/down by half a page
+<li><kbd>C-f</kbd>, <kbd>C-b</kbd> (or <kbd>PgDn</kbd>, <kbd>PgUp</kbd>)</kbd>:
+scroll up/down by an entire page
+<li><kbd>{number}G</kbd> (or <kbd>{number}gg</kbd>): jump to {number}'th line
+<li><kbd>g0</kbd>: jump to first character of the current line's visible part
+<li><kbd>gc</kbd>: jump to center of the current line's visible part
+<li><kbd>g$</kbd>: jump to last character of the current line's visible part
+<li><kbd>{</kbd>, <kbd>}</kbd>: move cursor to the previous/next paragraph
+<li><kbd>-</kbd>, <kbd>+</kbd> (or <kbd>zh</kbd>, <kbd>zl</kbd>): shift
+screen to the left/right by one cell
+<li><kbd>
+<li><kbd>&lt;</kbd>, <kbd>&gt;</kbd>: shift screen to the left/right by one page
+<li><kbd>/</kbd>, <kbd>?</kbd>: on-page search (or search backwards)
+<li><kbd>n</kbd>, <kbd>N</kbd>: next/previous match
+<li><kbd>C-z</kbd>: suspend the browser
+<li><kbd>C-c</kbd>: cancel loading
+<li><kbd>H</kbd>, <kbd>M</kbd>, <kbd>L</kbd>: move cursor to the
+highest/middle/lowest rows
+<li><kbd>zz</kbd>, <kbd>z.</kbd>: center on current line (and move to
+beginning)
+<li><kbd>zt</kbd>, <kbd>z-</kbd>: lower page until current line (and move to
+beginning)
+<li><kbd>zb</kbd>, <kbd>zC-m</kbd>: raise page until current line (and move to
+beginning)
+<li><kbd>w</kbd>, <kbd>b</kbd>: move cursor to next/previous word
+<li><kbd>\</kbd>: toggle page source view
+<li><kbd>sE</kbd>: see source in editor
+<li><kbd>sS</kbd>: save current page's source
+<li><kbd>sI</kbd>: save image
+<li><kbd>s{enter key}</kbd>: save page that link points to
+<li><kbd>0</kbd>: cursor to first cell on line
+<li><kbd>^</kbd>: cursor to first non-whitespace on line
+<li><kbd>$</kbd>: cursor to last character on line
+<li><kbd>m{char}</kbd>: set mark {char}
+<li><kbd>`{char}</kbd>, <kbd>'{char}</kbd>: jump to mark {char}, or line
+of {char}
+<li><kbd>M-,</kbd>/<kbd>M-.</kbd>: previous/next sibling buffer
+<li><kbd>M-/</kbd>: parent buffer
+<li><kbd>{number}</kbd>, then movement: repeat movement n times (or move
+to nth line, depending on command)
+<li><kbd>: (colon)</kbd>: convert URL-like strings to anchor tags
+<li><kbd>M-c</kbd>: input command
+<li><kbd>M-cM-c</kbd>: command mode (browser console)
+</ul>
+<p>
+Happy browsing!
+</body>

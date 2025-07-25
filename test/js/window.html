@@ -1,0 +1,27 @@
+<!doctype html>
+<title>Window test</title>
+<div id=x>Fail</div>
+<script src=asserts.js></script>
+<script>
+assertEquals(window.toString(), "[object Window]");
+const desc = Object.getOwnPropertyDescriptor(window, "window");
+assert(desc.enumerable, "window must be enumerable");
+assert(!desc.configurable, "window must not be configurable");
+assertEquals(window.history.state, null);
+window.localStorage.setItem("a", "x");
+window.localStorage["b"] = "y";
+assertEquals(window.localStorage["b"], "y")
+delete window.localStorage.b;
+assertEquals(window.localStorage["b"], undefined);
+window.localStorage["b"] = "y";
+assert(window.sessionStorage instanceof Storage);
+Image = "test";
+HTMLDocument = "test";
+assertEquals(Image, "test");
+assertEquals(HTMLDocument, "test");
+window.onload = () => "first"
+let second = () => "second"
+window.onload = second;
+assertEquals(second, window.onload);
+document.getElementById("x").textContent = "Success";
+</script>

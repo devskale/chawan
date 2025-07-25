@@ -1,0 +1,17 @@
+<!doctype html>
+<title>Element class test</title>
+<div class="a b c">Fail</div>
+<script src=asserts.js></script>
+<script>
+const div = document.getElementsByClassName("a")[0]
+const classes = ["a", "b", "c"];
+let cl = div.classList;
+for (let i = 0; i < classes.length; ++i)
+	assertEquals(cl[i], classes[i]);
+const classes2 = ["x", "y", "z"];
+div.setAttribute("class", classes2.join(' '));
+let i = 0;
+for (let x of cl)
+	assertEquals(x, classes2[i++]);
+div.textContent = "Success";
+</script>

@@ -1,0 +1,22 @@
+<!doctype html>
+<title>Element test</title>
+<div id=x class="a b c d">Fail</div>
+<script src=asserts.js></script>
+<script>
+const x = document.getElementById("x");
+assertEquals(x.localName, "div");
+assertEquals(x.tagName, "DIV");
+assertEquals(x.name, undefined);
+assertEquals(x.classList.item(-1), null);
+assertEquals(x.classList[-1], undefined);
+assertEquals(x.classList[1], "b");
+assertEquals(document.createElementNS("test", "test:div").tagName, "test:div");
+x.setAttributeNS("ns", "pf:test", "a");
+x.setAttributeNS("ns", "pf:test", "b");
+assertEquals(x.attributes["pf:test"].namespaceURI, "ns");
+assertEquals(x.attributes["pf:test"].prefix, "pf");
+assertEquals(x.attributes["pf:test"].localName, "test");
+assertEquals(x.attributes["pf:test"].value, "b");
+assertEquals(x.getAttributeNS("ns", "test"), "b")
+x.textContent = "Success";
+</script>

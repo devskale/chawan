@@ -1,0 +1,17 @@
+<!doctype html>
+<div id=abc>Fail</div>
+<a class=claz target="abcd">test test</a>
+<script src=asserts.js></script>
+<script>
+const x = document.getElementById("abc")
+const a = document.getElementsByTagName("a")[0];
+assertEquals(a.target, "abcd");
+a.target = "defg";
+assertEquals(a.target, "defg");
+assertEquals(a.relList + "", "");
+a.relList = "...";
+assertEquals(a.relList + "", "...");
+assertEquals(a.className, "claz");
+x.textContent = "Success";
+a.remove(); /* ignore target... */
+</script>

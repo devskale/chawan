@@ -1,0 +1,32 @@
+include common.chasc
+
+# syscall nr is loaded in common.chasc
+
+# for curl
+ifeqdef SYS_send allow
+ifeqdef SYS_recv allow
+ifeqdef SYS_recvfrom allow
+ifeqdef SYS_sendto allow
+ifeqdef SYS_recvmsg allow
+ifeqdef SYS_sendmsg allow
+
+# curl also seems to call clock_gettime in some cases - but I have no
+# idea how to reproduce this.
+# anyway, it does no harm, so let it live.
+ifeqdef SYS_clock_gettime allow
+ifeqdef SYS_clock_gettime64 allow
+# apparently it needs gettimeofday too
+# (TODO: now I'm not even sure if this is curl...)
+ifeqdef SYS_gettimeofday allow
+
+# used indirectly by OpenSSL EVP_RAND_CTX_new (through drbg)
+ifeqdef SYS_getpid allow
+
+: deny
+ret trap
+: kill
+ret kill
+: eperm
+ret errno EPERM
+: allow
+ret allow

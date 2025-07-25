@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<!-- absolute, display: inline-block -->
+<div style="position: relative">
+<br>
+<div>
+line
+<div style="display: inline-block; position: absolute; top: 0; left: 0; background-color: red">
+absolute 1
+</div>
+<!-- this should overprint "two", not the other way around. -->
+<div style="display: inline-block; position: absolute; background-color: red">
+absolute 5
+</div>
+two
+<div style="display: inline-block; position: absolute; background-color: red">
+absolute 2
+</div>
+</div>
+</div>
+
+<!-- absolute, display: block -->
+<div style="position: relative">
+<br>
+<div>
+line
+<div style="position: absolute; top: 0; left: 0; background-color: blue">
+absolute 3
+</div>
+four
+<div style="display: block; position: absolute; background-color: yellow">
+absolute 4
+</div>
+</div>
+</div>
+
+<!-- absolute, display: inline -->
+<div style="position: relative; margin-top: 1em">
+<br>
+<div>
+line
+<div style="display: inline; position: absolute; top: 0; left: 0; background-color: blue">
+absolute 5
+</div>
+six
+<div style="display: inline; position: absolute; background-color: yellow">
+absolute 6
+</div>
+</div>
+</div>
