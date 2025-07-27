@@ -84,7 +84,7 @@ endif
 FLAGS += -d:disableSandbox=$(DANGER_DISABLE_SANDBOX)
 FLAGS += -d:forcePollMode=$(FORCE_POLL_MODE)
 
-export CC CFLAGS LDFLAGS
+export CC CFLAGS LDFLAGS PANDOC
 
 binaries = $(OUTDIR_BIN)/cha $(OUTDIR_BIN)/mancha
 binaries += $(foreach bin,$(protocols),$(OUTDIR_CGI_BIN)/$(bin))
@@ -104,6 +104,15 @@ lib/chaseccomp/chaseccomp.o: .FORCE
 .FORCE:
 endif
 
+twtstr = src/utils/twtstr.nim src/types/opt.nim
+dynstream = src/io/dynstream.nim
+chafile = src/io/chafile.nim $(dynstream)
+myposix = src/utils/myposix.nim
+lcgi = $(chafile) $(twtstr) $(sandbox) adapter/protocol/lcgi.nim
+lcgi_ssl = $(lcgi) adapter/protocol/lcgi_ssl.nim
+sandbox = src/utils/sandbox.nim $(chaseccomp)
+tinfl = adapter/protocol/tinfl.h
+
 # lib/*0 has a 0 so that it doesn't conflict with the old submodules.
 # git can't deal with this, it seems.
 $(OUTDIR_BIN)/cha: src/*.nim src/*/*.nim res/* lib/chame0/chame/* \
@@ -114,7 +123,7 @@ $(OUTDIR_BIN)/cha: src/*.nim src/*/*.nim res/* lib/chame0/chame/* \
 	$(NIMC) --nimcache:"$(OBJDIR)/$(TARGET)/cha" -d:libexecPath=$(LIBEXECDIR) \
                 $(FLAGS) -o:"$(OUTDIR_BIN)/cha" src/main.nim
 
-$(OUTDIR_BIN)/mancha: adapter/tools/mancha.nim
+$(OUTDIR_BIN)/mancha: adapter/tools/mancha.nim $(dynstream) $(twtstr) $(myposix)
 	@mkdir -p "$(OUTDIR_BIN)"
 	$(NIMC) --nimcache:"$(OBJDIR)/$(TARGET)/mancha" $(FLAGS) \
 		-o:"$(OUTDIR_BIN)/mancha" $(FLAGS) adapter/tools/mancha.nim
@@ -133,14 +142,6 @@ unicode_gen:
 	$(OBJDIR)/genidna > res/map/idna_gen.nim
 	$(OBJDIR)/gencharwidth > res/map/charwidth_gen.nim
 
-twtstr = src/utils/twtstr.nim src/types/opt.nim
-dynstream = src/io/dynstream.nim
-lcgi = src/io/chafile.nim src/io/dynstream.nim src/types/opt.nim \
-	src/utils/twtstr.nim $(sandbox) adapter/protocol/lcgi.nim
-lcgi_ssl = $(lcgi) adapter/protocol/lcgi_ssl.nim
-sandbox = src/utils/sandbox.nim $(chaseccomp)
-tinfl = adapter/protocol/tinfl.h
-
 $(OUTDIR_CGI_BIN)/man: $(lcgi)
 $(OUTDIR_CGI_BIN)/http: $(sandbox) $(lcgi_ssl) $(tinfl)
 $(OUTDIR_CGI_BIN)/file: $(lcgi)
@@ -158,13 +159,14 @@ $(OUTDIR_CGI_BIN)/canvas: src/types/canvastypes.nim src/types/path.nim \
 	$(sandbox) $(dynstream) $(twtstr)
 $(OUTDIR_CGI_BIN)/resize: adapter/img/stb_image_resize.h $(sandbox) $(dynstream) $(twtstr)
 $(OUTDIR_CGI_BIN)/nanosvg: $(sandbox) adapter/img/nanosvg.nim adapter/img/nanosvg.h
-$(OUTDIR_LIBEXEC)/urlenc: $(twtstr) $(dynstream)
+$(OUTDIR_LIBEXEC)/urlenc: $(twtstr) $(chafile)
 $(OUTDIR_LIBEXEC)/nc: $(lcgi)
-$(OUTDIR_LIBEXEC)/gopher2html: $(twtstr)
+$(OUTDIR_LIBEXEC)/gopher2html: $(twtstr) $(chafile)
 $(OUTDIR_LIBEXEC)/ansi2html: src/types/color.nim src/io/poll.nim $(twtstr) $(dynstream)
-$(OUTDIR_LIBEXEC)/md2html: $(twtstr)
-$(OUTDIR_LIBEXEC)/dirlist2html: $(twtstr)
-$(OUTDIR_LIBEXEC)/img2html: $(twtstr)
+$(OUTDIR_LIBEXEC)/md2html: $(twtstr) $(chafile)
+$(OUTDIR_LIBEXEC)/dirlist2html: $(twtstr) $(chafile)
+$(OUTDIR_LIBEXEC)/img2html: $(twtstr) $(chafile)
+$(OUTDIR_LIBEXEC)/gmi2html: $(twtstr) $(chafile)
 
 $(OUTDIR_CGI_BIN)/%: adapter/protocol/%.nim adapter/nim.cfg
 	@mkdir -p "$(OUTDIR_CGI_BIN)"
@@ -204,20 +206,12 @@ $(OUTDIR_LIBEXEC)/%: adapter/tools/%.nim adapter/nim.cfg
 $(OUTDIR_LIBEXEC)/urldec: $(OUTDIR_LIBEXEC)/urlenc
 	(cd "$(OUTDIR_LIBEXEC)" && ln -sf urlenc urldec)
 
-$(OBJDIR)/man/cha-%.md: doc/%.md md2manpreproc
-	@mkdir -p "$(OBJDIR)/man"
-	./md2manpreproc $< > $@~
+doc/cha-%.5: doc/%.md md2man
+	./md2man $< > $@~
 	mv $@~ $@
 
-$(OBJDIR)/man/cha-%.md.roff: $(OBJDIR)/man/cha-%.md
-	$(PANDOC) --standalone --to man $< -o $@
-
-doc/cha-%.5: $(OBJDIR)/man/cha-%.md.roff
-	awk 'last=="T}" && $$1=="T{" {print "_"} {last=$$1} 1' $< > $@~
-	mv $@~ $@
-
-doc/cha-%.7: $(OBJDIR)/man/cha-%.md.roff
-	awk 'last=="T}" && $$1=="T{" {print "_"} {last=$$1} 1' $< > $@~
+doc/cha-%.7: doc/%.md md2man
+	./md2man $< > $@~
 	mv $@~ $@
 
 .PHONY: clean
