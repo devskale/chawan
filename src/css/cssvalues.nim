@@ -18,98 +18,6 @@ import types/winattrs
 import utils/twtstr
 
 type
-  CSSPropertyType* = enum
-    # primitive/enum properties: stored as byte
-    # (when adding a new property, sort the individual lists, and update
-    # LastBitPropType/LastWordPropType if needed.)
-    cptBgcolorIsCanvas = "-cha-bgcolor-is-canvas"
-    cptBorderCollapse = "border-collapse"
-    cptBoxSizing = "box-sizing"
-    cptCaptionSide = "caption-side"
-    cptClear = "clear"
-    cptDisplay = "display"
-    cptFlexDirection = "flex-direction"
-    cptFlexWrap = "flex-wrap"
-    cptFloat = "float"
-    cptFontStyle = "font-style"
-    cptListStylePosition = "list-style-position"
-    cptListStyleType = "list-style-type"
-    cptOverflowX = "overflow-x"
-    cptOverflowY = "overflow-y"
-    cptPosition = "position"
-    cptTextAlign = "text-align"
-    cptTextDecoration = "text-decoration"
-    cptTextTransform = "text-transform"
-    cptVerticalAlign = "vertical-align"
-    cptVisibility = "visibility"
-    cptWhiteSpace = "white-space"
-    cptWordBreak = "word-break"
-
-    # half-word properties: stored as (32-bit) word
-    cptChaColspan = "-cha-colspan"
-    cptChaRowspan = "-cha-rowspan"
-    cptFlexGrow = "flex-grow"
-    cptFlexShrink = "flex-shrink"
-    cptFontWeight = "font-weight"
-    cptOpacity = "opacity"
-
-    # word properties: stored as (64-bit) word
-    cptBackgroundColor = "background-color"
-    cptBorderSpacingBlock = "-cha-border-spacing-block"
-    cptBorderSpacingInline = "-cha-border-spacing-inline"
-    cptBottom = "bottom"
-    cptColor = "color"
-    cptFlexBasis = "flex-basis"
-    cptFontSize = "font-size"
-    cptHeight = "height"
-    cptLeft = "left"
-    cptMarginBottom = "margin-bottom"
-    cptMarginLeft = "margin-left"
-    cptMarginRight = "margin-right"
-    cptMarginTop = "margin-top"
-    cptMaxHeight = "max-height"
-    cptMaxWidth = "max-width"
-    cptMinHeight = "min-height"
-    cptMinWidth = "min-width"
-    cptPaddingBottom = "padding-bottom"
-    cptPaddingLeft = "padding-left"
-    cptPaddingRight = "padding-right"
-    cptPaddingTop = "padding-top"
-    cptRight = "right"
-    cptTop = "top"
-    cptVerticalAlignLength = "-cha-vertical-align-length"
-    cptWidth = "width"
-    cptZIndex = "z-index"
-
-    # object properties: stored as a tagged ref object
-    cptBackgroundImage = "background-image"
-    cptContent = "content"
-    cptCounterReset = "counter-reset"
-    cptCounterIncrement = "counter-increment"
-    cptCounterSet = "counter-set"
-    cptQuotes = "quotes"
-
-const LastBitPropType = cptWordBreak
-const FirstHWordPropType = LastBitPropType.succ
-const LastHWordPropType = cptOpacity
-const FirstWordPropType = LastHWordPropType.succ
-const LastWordPropType = cptZIndex
-const FirstObjPropType = LastWordPropType.succ
-
-type
-  CSSShorthandType = enum
-    cstNone = ""
-    cstAll = "all"
-    cstMargin = "margin"
-    cstPadding = "padding"
-    cstBackground = "background"
-    cstListStyle = "list-style"
-    cstFlex = "flex"
-    cstFlexFlow = "flex-flow"
-    cstOverflow = "overflow"
-    cstVerticalAlign = "vertical-align"
-    cstBorderSpacing = "border-spacing"
-
   CSSUnit* = enum
     cuAuto = ""
     cuCap = "cap"
@@ -454,9 +362,13 @@ type
   CSSEntryType* = enum
     ceBit, ceWord, ceHWord, ceObject, ceVar, ceGlobal
 
+  CSSVarEntry* = ref object
+    name*: CAtom
+    toks*: seq[CSSToken]
+    next*: CSSVarEntry
+
   CSSComputedEntry* = object
-    cvar*: CAtom # put it here, so ComputedEntry remains 2 words wide
-    t*: CSSPropertyType
+    p*: CSSAnyPropertyType
     case et*: CSSEntryType
     of ceBit:
       bit*: uint8
@@ -467,14 +379,14 @@ type
     of ceObject:
       obj*: CSSValue
     of ceVar:
-      fallback*: ref CSSComputedEntry
+      cvar*: CSSVarEntry
     of ceGlobal:
       global*: CSSGlobalType
 
   CSSVariable* = ref object
     name*: CAtom
+    hasVar*: bool
     toks*: seq[CSSToken]
-    resolved*: seq[tuple[v: CSSValueType; entry: CSSComputedEntry]]
 
 static:
   doAssert sizeof(CSSValueBit) == 1
@@ -592,6 +504,8 @@ const WhiteSpacePreserve* = {
 # Forward declarations
 proc parseValue(toks: openArray[CSSToken]; t: CSSPropertyType;
   entry: var CSSComputedEntry; attrs: WindowAttributes): Opt[void]
+proc parseLength*(ctx: var CSSParser; attrs: WindowAttributes;
+  hasAuto, allowNegative: bool): Opt[CSSLength]
 
 proc newCSSVariableMap*(parent: CSSVariableMap): CSSVariableMap =
   return CSSVariableMap(parent: parent)
@@ -610,12 +524,6 @@ func reprType*(t: CSSPropertyType): CSSPropertyReprType =
   if t <= LastWordPropType:
     return cprtWord
   return cprtObject
-
-func shorthandType(s: string): CSSShorthandType =
-  return parseEnumNoCase[CSSShorthandType](s).get(cstNone)
-
-func propertyType(s: string): Opt[CSSPropertyType] =
-  return parseEnumNoCase[CSSPropertyType](s)
 
 func valueType*(prop: CSSPropertyType): CSSValueType =
   return ValueTypes[prop]
@@ -1107,7 +1015,7 @@ proc parseLegacyColorFun(value: openArray[CSSToken]):
     if v1.t == cttIdent:
       return err() # legacy doesn't accept "none"
     inc i
-  i = value.skipBlanks(i)
+  i = ?value.skipBlanksCheckHas(i)
   let v2 = ?value.getColorToken(i, legacy)
   if legacy:
     i = ?value.skipBlanksCheckHas(i + 1)
@@ -1116,7 +1024,7 @@ proc parseLegacyColorFun(value: openArray[CSSToken]):
   i = ?value.skipBlanksCheckHas(i + 1)
   let v3 = ?value.getColorToken(i, legacy)
   i = value.skipBlanks(i + 1)
-  if i == value.len:
+  if value.checkFunctionEnd(i).isOk:
     return ok((v1, v2, v3, 255u8, legacy))
   if legacy:
     if value[i].t != cttComma:
@@ -1126,18 +1034,18 @@ proc parseLegacyColorFun(value: openArray[CSSToken]):
       return err()
   i = ?value.skipBlanksCheckHas(i + 1)
   let v4 = value[i]
-  if v4.t notin {cttPercentage, cttNumber, cttINumber} or
-      value.skipBlanks(i + 1) < value.len:
+  if v4.t notin {cttPercentage, cttNumber, cttINumber}:
     return err()
+  ?value.checkFunctionEnd(i + 1)
   return ok((v1, v2, v3, uint8(clamp(v4.num, 0, 1) * 255), legacy))
 
 # syntax: -cha-ansi( number | ident )
 # where number is an ANSI color (0..255)
 # and ident is in NameTable and may start with "bright-"
-func parseANSI(value: openArray[CSSToken]): Opt[CSSColor] =
+proc parseANSI(value: openArray[CSSToken]): Opt[CSSColor] =
   var i = ?value.skipBlanksCheckHas(0)
   let tok = value[i]
-  ?value.skipBlanksCheckDone(i + 1) # only 1 param is valid
+  ?value.checkFunctionEnd(i + 1) # only 1 param is valid
   if tok.t == cttINumber:
     #TODO calc
     if int(tok.num) notin 0..255:
@@ -1205,7 +1113,9 @@ proc parseSatOrLight(tok: CSSToken): Opt[float32] =
     return ok(clamp(tok.num, 0f32, 100f32))
   return err()
 
-proc parseColor*(tok: CSSToken): Opt[CSSColor] =
+proc parseColor*(toks: openArray[CSSToken]): Opt[CSSColor] =
+  var i = ?toks.skipBlanksCheckHas(0)
+  let tok = toks[i]
   case tok.t
   of cttHash:
     let c = parseHexColor(tok.s)
@@ -1223,17 +1133,18 @@ proc parseColor*(tok: CSSToken): Opt[CSSColor] =
       # canvas you're doing it wrong anyway.
       return ok(defaultColor.cssColor())
   of cttFunction:
-    let f = tok.fun
-    case f.name
+    case tok.ft
     of cftRgb, cftRgba:
-      let (r, g, b, a, legacy) = ?parseLegacyColorFun(f.value)
+      let (r, g, b, a, legacy) =
+        ?parseLegacyColorFun(toks.toOpenArray(i + 1, toks.high))
       if r.t == g.t and g.t == b.t or not legacy:
         let r = parseRGBComponent(r)
         let g = parseRGBComponent(g)
         let b = parseRGBComponent(b)
         return ok(rgba(r, g, b, a).cssColor())
     of cftHsl, cftHsla:
-      let (h, s, l, a, legacy) = ?parseLegacyColorFun(f.value)
+      let (h, s, l, a, legacy) =
+        ?parseLegacyColorFun(toks.toOpenArray(i + 1, toks.high))
       if h.t != cttIdent and s.t == cttPercentage and l.t == cttPercentage or
           not legacy:
         let h = ?parseHue(h)
@@ -1242,14 +1153,71 @@ proc parseColor*(tok: CSSToken): Opt[CSSColor] =
         return ok(hsla(h, s, l, a).cssColor())
       return err()
     of cftChaAnsi:
-      return parseANSI(f.value)
+      return parseANSI(toks.toOpenArray(i + 1, toks.high))
     else: discard
   else: discard
   return err()
 
-func parseLength*(tok: CSSToken; attrs: WindowAttributes; hasAuto = true;
-    allowNegative = true): Opt[CSSLength] =
-  case tok.t
+proc parseCalc(ctx: var CSSParser; attrs: WindowAttributes;
+    hasAuto, allowNegative: bool): Opt[CSSLength] =
+  var ns = CSSLength()
+  var nmulx = none(float32)
+  var n = 0
+  var delim = '+'
+  ctx.skipBlanks()
+  if not ctx.has() or ctx.peekTokenType() == cttRparen:
+    return err()
+  while ctx.has() and ctx.peekTokenType() != cttRparen:
+    if n != 0:
+      ?ctx.skipBlanksCheckHas()
+      if ctx.peekTokenType() != cttDelim:
+        ctx.skipFunction()
+        return err()
+      delim = ctx.consume().c
+    ?ctx.skipBlanksCheckHas()
+    if n <= 1 and ctx.peekTokenType() in {cttNumber, cttINumber}:
+      let num = ctx.consume().num
+      if n == 1:
+        if delim != '*' or nmulx.isSome:
+          ctx.skipFunction()
+          return err()
+        ns.npx *= num
+        ns.perc *= num
+      else:
+        nmulx = some(num)
+      inc n
+      continue
+    if ctx.peekTokenType() == cttRparen:
+      ctx.skipFunction()
+      return err()
+    let length = ?ctx.parseLength(attrs, hasAuto, allowNegative = true)
+    if length.auto or delim notin {'+', '-', '*'}:
+      ctx.skipFunction()
+      return err()
+    let sign = if delim == '-': -1f32 else: 1f32
+    ns.npx += length.npx * sign
+    ns.perc += length.perc * sign
+    if nmulx.isSome:
+      let nmul = nmulx.get
+      if n > 1 or delim != '*':
+        return err() # invalid or needs recursive descent
+      ns.perc *= nmul
+      ns.npx *= nmul
+      nmulx = none(float32)
+    elif delim == '*':
+      ctx.skipFunction()
+      return err()
+    inc n
+  if ctx.has():
+    assert ctx.consume().t == cttRparen
+  if nmulx.isSome:
+    return err()
+  return ok(ns)
+
+proc parseLength*(ctx: var CSSParser; attrs: WindowAttributes;
+    hasAuto, allowNegative: bool): Opt[CSSLength] =
+  ?ctx.skipBlanksCheckHas()
+  case (let tok = ctx.consume(); tok.t)
   of cttNumber, cttINumber:
     if tok.num == 0:
       return ok(CSSLengthZero)
@@ -1265,58 +1233,16 @@ func parseLength*(tok: CSSToken; attrs: WindowAttributes; hasAuto = true;
     if hasAuto and tok.s.equalsIgnoreCase("auto"):
       return ok(CSSLengthAuto)
   of cttFunction:
-    #TODO obviously this is a horrible solution...
-    let fun = tok.fun
-    if fun.name == cftCalc:
-      var i = 0
-      var ns = CSSLength()
-      var nmulx = none(float32)
-      var n = 0
-      var delim = '+'
-      if i == fun.value.len:
-        return err()
-      while i < fun.value.len:
-        if n != 0:
-          i = ?fun.value.skipBlanksCheckHas(i)
-          if fun.value[i].t != cttDelim:
-            return err()
-          delim = fun.value[i].c
-          inc i
-        i = ?fun.value.skipBlanksCheckHas(i)
-        if n <= 1 and fun.value[i].t in {cttNumber, cttINumber}:
-          let num = fun.value[i].num
-          if n == 1:
-            if delim != '*' or nmulx.isSome:
-              return err()
-            ns.npx *= num
-            ns.perc *= num
-          else:
-            nmulx = some(num)
-          inc i
-          inc n
-          continue
-        let length = ?parseLength(fun.value[i], attrs, hasAuto)
-        if length.auto or delim notin {'+', '-', '*'}:
-          return err()
-        let sign = if delim == '-': -1f32 else: 1f32
-        ns.npx += length.npx * sign
-        ns.perc += length.perc * sign
-        if nmulx.isSome:
-          let nmul = nmulx.get
-          if n > 1 or delim != '*':
-            return err() # invalid or needs recursive descent
-          ns.perc *= nmul
-          ns.npx *= nmul
-          nmulx = none(float32)
-        elif delim == '*':
-          return err()
-        inc i
-        inc n
-      if nmulx.isSome:
-        return err()
-      return ok(ns)
+    if tok.ft != cftCalc:
+      return err()
+    return ctx.parseCalc(attrs, hasAuto, allowNegative)
   else: discard
   err()
+
+proc parseLength*(toks: openArray[CSSToken]; attrs: WindowAttributes;
+    hasAuto = true; allowNegative = true): Opt[CSSLength] =
+  var ctx = initCSSParser(toks)
+  return ctx.parseLength(attrs, hasAuto, allowNegative)
 
 func cssAbsoluteLength(tok: CSSToken; attrs: WindowAttributes):
     Opt[CSSLength] =
@@ -1369,8 +1295,10 @@ func parseQuotes(toks: openArray[CSSToken]): Opt[CSSQuotes] =
 
 proc parseContent(toks: openArray[CSSToken]): Opt[seq[CSSContent]] =
   var res: seq[CSSContent] = @[]
-  for tok in toks:
-    case tok.t
+  var ctx = initCSSParser(toks)
+  ctx.skipBlanks()
+  while ctx.has():
+    case (let tok = ctx.consume(); tok.t)
     of cttIdent:
       if tok.s == "/":
         break
@@ -1387,26 +1315,29 @@ proc parseContent(toks: openArray[CSSToken]): Opt[seq[CSSContent]] =
     of cttWhitespace:
       discard
     of cttFunction:
-      let fun = tok.fun
-      if fun.name == cftCounter:
-        var i = ?fun.value.skipBlanksCheckHas(0)
-        let tok = fun.value[i]
-        if tok.t != cttIdent:
+      if tok.ft == cftCounter:
+        ctx.skipBlanks()
+        if ctx.peekTokenType() != cttIdent:
+          ctx.skipFunction()
           return err()
+        let name = ctx.consume().s.toAtom()
         var style = ListStyleTypeDecimal
-        i = fun.value.skipBlanks(i + 1)
-        if i < fun.value.len:
-          if fun.value[i].t != cttComma:
+        ctx.skipBlanks()
+        if ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
+          if tok.t != cttComma:
+            ctx.skipFunction()
             return err()
-          i = fun.value.skipBlanks(i + 1)
-          if i < fun.value.len:
+          ctx.skipBlanks()
+          if ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
             # stick with decimal if not found
-            style = parseIdent[CSSListStyleType](fun.value[i]).get(style)
-            if fun.value.skipBlanks(i + 1) < fun.value.len:
+            style = parseIdent[CSSListStyleType](tok).get(style)
+            ctx.skipBlanks()
+            if ctx.consume().t != cttRparen:
+              ctx.skipFunction()
               return err()
         res.add(CSSContent(
           t: ContentCounter,
-          counter: tok.s.toAtom(),
+          counter: name,
           counterStyle: style
         ))
     else:
@@ -1467,40 +1398,49 @@ proc parseCounterSet(toks: openArray[CSSToken]; n: int32):
     res.add(r)
   return ok(res)
 
-func cssMaxSize(tok: CSSToken; attrs: WindowAttributes):
+proc parseMaxSize(toks: openArray[CSSToken]; attrs: WindowAttributes):
     Opt[CSSLength] =
-  if tok.t == cttIdent and tok.s.equalsIgnoreCase("none"):
+  var ctx = initCSSParser(toks)
+  ?ctx.skipBlanksCheckHas()
+  if ctx.peekTokenType() == cttIdent and
+      ctx.consume().s.equalsIgnoreCase("none"):
     return ok(CSSLengthAuto)
-  return parseLength(tok, attrs, allowNegative = false)
+  return ctx.parseLength(attrs, hasAuto = true, allowNegative = false)
 
 #TODO should be URL (parsed with baseurl of document...)
-func cssURL*(tok: CSSToken; src = false): Option[string] =
-  if tok.t == cttUrl:
-    return some(tok.s)
-  elif not src and tok.t == cttString:
-    return some(tok.s)
-  elif tok.t == cttFunction:
-    let fun = tok.fun
-    if fun.name == cftUrl or src and fun.name == cftSrc:
-      for x in fun.value:
-        if x.t == cttWhitespace:
-          discard
-        elif x.t == cttString:
-          return some(x.s)
-        else:
-          break
-  return none(string)
+proc parseURL*(ctx: var CSSParser; tok: CSSToken; src = false): Opt[string] =
+  case tok.t
+  of cttUrl: return ok(tok.s)
+  of cttString:
+    if src:
+      return err()
+    return ok(tok.s)
+  of cttFunction:
+    if tok.ft != cftUrl and (not src or tok.ft != cftSrc):
+      return err()
+    ?ctx.skipBlanksCheckHas()
+    let tok = ctx.consume()
+    if tok.t != cttString:
+      return err()
+    ctx.skipBlanks()
+    if ctx.has() and ctx.consume().t != cttRparen:
+      ctx.skipFunction()
+      return err()
+    return ok(tok.s)
+  else: return err()
 
 #TODO this should be bg-image, add gradient, etc etc
-func parseImage(tok: CSSToken): Opt[NetworkBitmap] =
+proc parseImage(toks: openArray[CSSToken]): Opt[NetworkBitmap] =
   #TODO bg-image only
+  var ctx = initCSSParser(toks)
+  ?ctx.skipBlanksCheckHas()
+  let tok = ctx.consume()
   if tok.t == cttIdent and tok.s.equalsIgnoreCase("none"):
     return ok(nil)
-  let url = cssURL(tok, src = true)
-  if url.isSome:
-    #TODO do something with the URL
-    return ok(NetworkBitmap(cacheId: -1, imageId: -1))
-  return err()
+  let url = ?ctx.parseURL(tok, src = true)
+  #TODO do something with the URL
+  discard url
+  return ok(NetworkBitmap(cacheId: -1, imageId: -1))
 
 func parseInteger(tok: CSSToken; range: Slice[int32]): Opt[int32] =
   if tok.t in {cttNumber, cttINumber}:
@@ -1521,19 +1461,19 @@ func parseNumber(tok: CSSToken; range: Slice[float32]): Opt[float32] =
   return err()
 
 proc makeEntry*(t: CSSPropertyType; obj: CSSValue): CSSComputedEntry =
-  return CSSComputedEntry(et: ceObject, t: t, obj: obj)
+  return CSSComputedEntry(et: ceObject, p: t, obj: obj)
 
 proc makeEntry(t: CSSPropertyType; hword: CSSValueHWord): CSSComputedEntry =
-  return CSSComputedEntry(et: ceHWord, t: t, hword: hword)
+  return CSSComputedEntry(et: ceHWord, p: t, hword: hword)
 
 proc makeEntry(t: CSSPropertyType; word: CSSValueWord): CSSComputedEntry =
-  return CSSComputedEntry(et: ceWord, t: t, word: word)
+  return CSSComputedEntry(et: ceWord, p: t, word: word)
 
 proc makeEntry*(t: CSSPropertyType; bit: CSSValueBit): CSSComputedEntry =
-  return CSSComputedEntry(et: ceBit, t: t, bit: bit.dummy)
+  return CSSComputedEntry(et: ceBit, p: t, bit: bit.dummy)
 
 proc makeEntry(t: CSSPropertyType; global: CSSGlobalType): CSSComputedEntry =
-  return CSSComputedEntry(et: ceGlobal, t: t, global: global)
+  return CSSComputedEntry(et: ceGlobal, p: t, global: global)
 
 proc makeEntry*(t: CSSPropertyType; length: CSSLength): CSSComputedEntry =
   makeEntry(t, CSSValueWord(length: length))
@@ -1547,56 +1487,76 @@ proc makeEntry*(t: CSSPropertyType; integer: int32): CSSComputedEntry =
 proc makeEntry(t: CSSPropertyType; number: float32): CSSComputedEntry =
   makeEntry(t, CSSValueHWord(number: number))
 
-proc parseVariable(fun: CSSFunction; t: CSSPropertyType;
-    entry: var CSSComputedEntry; attrs: WindowAttributes): Opt[void] =
-  var i = ?fun.value.skipBlanksCheckHas(0)
-  let tok = fun.value[i]
-  if tok.t != cttIdent:
+proc parseDeclWithVar0*(toks: openArray[CSSToken]): CSSVarEntry =
+  var ctx = initCSSParser(toks)
+  ctx.skipBlanks()
+  var cvar: CSSVarEntry = nil
+  var cvar0: CSSVarEntry = nil
+  while ctx.has():
+    let tok = ctx.consume()
+    if tok.t == cttFunction and tok.ft == cftVar:
+      if ctx.skipBlanksCheckHas().isErr:
+        return nil
+      let tok = ctx.consume()
+      if tok.t != cttIdent:
+        return nil
+      let name = tok.s.substr(2).toAtom()
+      let ncvar = CSSVarEntry(name: name)
+      if cvar0 == nil:
+        cvar0 = ncvar
+      else:
+        cvar.next = ncvar
+      cvar = ncvar
+      ctx.skipBlanks()
+      if ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
+        if tok.t != cttComma:
+          return nil
+        ctx.skipBlanks()
+        while ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
+          cvar.toks.add(tok)
+    else:
+      if cvar == nil:
+        cvar0 = CSSVarEntry(name: CAtomNull)
+        cvar = cvar0
+      elif cvar != nil and cvar.name != CAtomNull:
+        cvar.next = CSSVarEntry(name: CAtomNull)
+        cvar = cvar.next
+      cvar.toks.add(tok)
+  return cvar0
+
+proc parseDeclWithVar*(p: CSSAnyPropertyType; value: openArray[CSSToken]):
+    Opt[CSSComputedEntry] =
+  let cvar = parseDeclWithVar0(value)
+  if cvar == nil:
     return err()
-  entry = CSSComputedEntry(et: ceVar, t: t, cvar: tok.s.substr(2).toAtom())
-  i = fun.value.skipBlanks(i + 1)
-  if i < fun.value.len:
-    if fun.value[i].t != cttComma:
-      return err()
-    i = fun.value.skipBlanks(i + 1)
-    if i < fun.value.len:
-      entry.fallback = (ref CSSComputedEntry)()
-      if fun.value.toOpenArray(i, fun.value.high).parseValue(t,
-          entry.fallback[], attrs).isErr:
-        entry.fallback = nil
-  return ok()
+  return ok(CSSComputedEntry(et: ceVar, p: p, cvar: cvar))
 
 proc parseValue(toks: openArray[CSSToken]; t: CSSPropertyType;
     entry: var CSSComputedEntry; attrs: WindowAttributes): Opt[void] =
   var i = ?toks.skipBlanksCheckHas(0)
   let tok = toks[i]
   inc i
-  if tok.t == cttFunction:
-    let fun = tok.fun
-    if fun.name == cftVar:
-      ?toks.skipBlanksCheckDone(i)
-      return fun.parseVariable(t, entry, attrs)
   let v = valueType(t)
   template set_new(prop, val: untyped) =
     entry = CSSComputedEntry(
-      t: t,
+      p: t,
       et: ceObject,
       obj: CSSValue(v: v, prop: val)
     )
   template set_word(prop, val: untyped) =
     entry = CSSComputedEntry(
-      t: t,
+      p: t,
       et: ceWord,
       word: CSSValueWord(prop: val)
     )
   template set_hword(prop, val: untyped) =
     entry = CSSComputedEntry(
-      t: t,
+      p: t,
       et: ceHWord,
       hword: CSSValueHWord(prop: val)
     )
   template set_bit(prop, val: untyped) =
-    entry = CSSComputedEntry(t: t, et: ceBit, bit: cast[uint8](val))
+    entry = CSSComputedEntry(p: t, et: ceBit, bit: cast[uint8](val))
   case v
   of cvtDisplay: set_bit display, ?parseIdent[CSSDisplay](tok)
   of cvtWhiteSpace: set_bit whiteSpace, ?parseIdent[CSSWhiteSpace](tok)
@@ -1604,18 +1564,18 @@ proc parseValue(toks: openArray[CSSToken]; t: CSSPropertyType;
   of cvtListStyleType:
     set_bit listStyleType, ?parseIdent[CSSListStyleType](tok)
   of cvtFontStyle: set_bit fontStyle, ?parseIdent[CSSFontStyle](tok)
-  of cvtColor: set_word color, ?parseColor(tok)
+  of cvtColor: set_word color, ?parseColor(toks)
   of cvtLength:
     case t
     of cptMinWidth, cptMinHeight:
-      set_word length, ?parseLength(tok, attrs, allowNegative = false)
+      set_word length, ?parseLength(toks, attrs, allowNegative = false)
     of cptMaxWidth, cptMaxHeight:
-      set_word length, ?cssMaxSize(tok, attrs)
+      set_word length, ?parseMaxSize(toks, attrs)
     of cptPaddingLeft, cptPaddingRight, cptPaddingTop, cptPaddingBottom:
-      set_word length, ?parseLength(tok, attrs, hasAuto = false)
+      set_word length, ?parseLength(toks, attrs, hasAuto = false)
     #TODO content for flex-basis
     else:
-      set_word length, ?parseLength(tok, attrs)
+      set_word length, ?parseLength(toks, attrs)
   of cvtContent: set_new content, ?parseContent(toks)
   of cvtInteger:
     case t
@@ -1638,7 +1598,7 @@ proc parseValue(toks: openArray[CSSToken]; t: CSSPropertyType;
   of cvtCounterSet:
     let n = if t == cptCounterIncrement: 1i32 else: 0i32
     set_new counterSet, ?parseCounterSet(toks, n)
-  of cvtImage: set_new image, ?parseImage(tok)
+  of cvtImage: set_new image, ?parseImage(toks)
   of cvtFloat: set_bit float, ?parseIdent[CSSFloat](tok)
   of cvtVisibility: set_bit visibility, ?parseIdent[CSSVisibility](tok)
   of cvtBoxSizing: set_bit boxSizing, ?parseIdent[CSSBoxSizing](tok)
@@ -1711,14 +1671,13 @@ proc getDefaultWord(t: CSSPropertyType): CSSValueWord =
   of cvtZIndex: return CSSValueWord(zIndex: CSSZIndex(auto: true))
   else: return CSSValueWord(dummy: 0)
 
-func parseLengthShorthand(res: var seq[CSSComputedEntry];
+proc parseLengthShorthand(res: var seq[CSSComputedEntry];
     toks: openArray[CSSToken]; props: openArray[CSSPropertyType];
     attrs: WindowAttributes; hasAuto: bool): Opt[void] =
+  var ctx = initCSSParser(toks)
   var lengths: seq[CSSLength] = @[]
-  var i = 0
-  while i < toks.len:
-    lengths.add(?parseLength(toks[i], attrs, hasAuto = hasAuto))
-    i = toks.skipBlanks(i + 1)
+  while ctx.skipBlanksCheckHas().isOk:
+    lengths.add(?ctx.parseLength(attrs, hasAuto, allowNegative = true))
   case lengths.len
   of 1: # top, bottom, left, right
     for t in props:
@@ -1757,33 +1716,31 @@ const ShorthandMap = [
   cstBorderSpacing: @[cptBorderSpacingInline, cptBorderSpacingBlock]
 ]
 
-proc parseComputedValues*(res: var seq[CSSComputedEntry]; name: string;
+proc parseComputedValues*(res: var seq[CSSComputedEntry]; p: CSSAnyPropertyType;
     toks: openArray[CSSToken]; attrs: WindowAttributes): Err[void] =
   var i = ?toks.skipBlanksCheckHas(0)
-  let sh = shorthandType(name)
   let tok = toks[i]
   if global := parseGlobal(tok):
     ?toks.skipBlanksCheckDone(i + 1)
-    case sh
-    of cstNone: res.add(makeEntry(?propertyType(name), global))
+    case p.sh
+    of cstNone: res.add(makeEntry(p.p, global))
     of cstAll:
       for t in CSSPropertyType:
         res.add(makeEntry(t, global))
     else:
-      for t in ShorthandMap[sh]:
+      for t in ShorthandMap[p.sh]:
         res.add(makeEntry(t, global))
     return ok()
-  case sh
+  case p.sh
   of cstNone:
-    let t = ?propertyType(name)
     var entry = CSSComputedEntry()
-    ?toks.parseValue(t, entry, attrs)
+    ?toks.parseValue(p.p, entry, attrs)
     res.add(entry)
   of cstAll: return err()
   of cstMargin:
-    ?res.parseLengthShorthand(toks, ShorthandMap[sh], attrs, hasAuto = true)
+    ?res.parseLengthShorthand(toks, ShorthandMap[p.sh], attrs, hasAuto = true)
   of cstPadding:
-    ?res.parseLengthShorthand(toks, ShorthandMap[sh], attrs, hasAuto = false)
+    ?res.parseLengthShorthand(toks, ShorthandMap[p.sh], attrs, hasAuto = false)
   of cstBackground:
     var bgcolor = makeEntry(cptBackgroundColor,
       getDefaultWord(cptBackgroundColor))
@@ -1791,9 +1748,9 @@ proc parseComputedValues*(res: var seq[CSSComputedEntry]; name: string;
     while i < toks.len:
       let j = toks.findBlank(i)
       let k = j - 1
-      if toks.toOpenArray(i, k).parseValue(bgcolor.t, bgcolor, attrs).isOk:
+      if toks.toOpenArray(i, k).parseValue(bgcolor.p.p, bgcolor, attrs).isOk:
         discard
-      elif toks.toOpenArray(i, k).parseValue(bgimage.t, bgimage, attrs).isOk:
+      elif toks.toOpenArray(i, k).parseValue(bgimage.p.p, bgimage, attrs).isOk:
         discard
       else:
         #TODO when we implement the other shorthands too
@@ -1834,7 +1791,8 @@ proc parseComputedValues*(res: var seq[CSSComputedEntry]; name: string;
       res.add(makeEntry(cptFlexShrink, 1f32))
     if i < toks.len:
       # flex-basis
-      res.add(makeEntry(cptFlexBasis, ?parseLength(toks[i], attrs)))
+      res.add(makeEntry(cptFlexBasis,
+        ?parseLength(toks.toOpenArray(i, toks.high), attrs)))
     else: # omitted, default to 0px
       res.add(makeEntry(cptFlexBasis, CSSLengthZero))
   of cstFlexFlow:
@@ -1863,7 +1821,8 @@ proc parseComputedValues*(res: var seq[CSSComputedEntry]; name: string;
       ?toks.parseValue(cptVerticalAlign, entry, attrs)
       res.add(entry)
     else:
-      let length = ?parseLength(tok, attrs, hasAuto = false)
+      let length = ?parseLength(toks.toOpenArray(i, toks.high), attrs,
+        hasAuto = false)
       let val = CSSValueBit(verticalAlign: VerticalAlignLength)
       res.add(makeEntry(cptVerticalAlign, val))
       res.add(makeEntry(cptVerticalAlignLength, length))
@@ -1876,13 +1835,6 @@ proc parseComputedValues*(res: var seq[CSSComputedEntry]; name: string;
     res.add(makeEntry(cptBorderSpacingInline, a))
     res.add(makeEntry(cptBorderSpacingBlock, b))
   return ok()
-
-proc parseComputedValues*(name: string; value: seq[CSSToken];
-    attrs: WindowAttributes): seq[CSSComputedEntry] =
-  var res: seq[CSSComputedEntry] = @[]
-  if res.parseComputedValues(name, value, attrs).isOk:
-    return move(res)
-  @[]
 
 proc copyFrom*(a, b: CSSValues; t: CSSPropertyType) =
   case t.reprType

@@ -1,7 +1,6 @@
 {.push raises: [].}
 
 import std/options
-import std/strutils
 import std/tables
 
 import chame/tags
@@ -17,10 +16,8 @@ type
   CSSRuleDef* = ref object
     sels*: SelectorList
     specificity*: int
-    normalVals*: seq[CSSComputedEntry]
-    importantVals*: seq[CSSComputedEntry]
-    normalVars*: seq[CSSVariable]
-    importantVars*: seq[CSSVariable]
+    vals*: array[CSSRuleType, seq[CSSComputedEntry]]
+    vars*: array[CSSRuleType, seq[CSSVariable]]
     # Absolute position in the stylesheet; used for sorting rules after
     # retrieval from the cache.
     idx*: int
@@ -165,26 +162,24 @@ proc addRule(sheet: CSSStylesheet; rule: CSSQualifiedRule) =
   if rule.sels.len > 0:
     let ruleDef = CSSRuleDef(sels: move(rule.sels), idx: sheet.len)
     for decl in rule.decls:
-      if decl.name.startsWith("--"):
-        let cvar = CSSVariable(
-          name: decl.name.toOpenArray(2, decl.name.high).toAtom(),
+      let rt = decl.rt
+      case decl.t
+      of cdtUnknown: discard
+      of cdtVariable:
+        ruleDef.vars[rt].add(CSSVariable(
+          name: decl.v,
+          hasVar: decl.hasVar,
           toks: decl.value
-        )
-        if decl.important:
-          ruleDef.importantVars.add(cvar)
+        ))
+      of cdtProperty:
+        if decl.hasVar:
+          if entry := parseDeclWithVar(decl.p, decl.value):
+            ruleDef.vals[rt].add(entry)
         else:
-          ruleDef.normalVars.add(cvar)
-      else:
-        if decl.important:
-          let olen = ruleDef.importantVals.len
-          if ruleDef.importantVals.parseComputedValues(decl.name, decl.value,
+          let olen = ruleDef.vals[rt].len
+          if ruleDef.vals[rt].parseComputedValues(decl.p, decl.value,
               sheet.settings.attrsp[]).isErr:
-            ruleDef.importantVals.setLen(olen)
-        else:
-          let olen = ruleDef.normalVals.len
-          if ruleDef.normalVals.parseComputedValues(decl.name, decl.value,
-              sheet.settings.attrsp[]).isErr:
-            ruleDef.normalVals.setLen(olen)
+            ruleDef.vals[rt].setLen(olen)
     sheet.add(ruleDef)
     inc sheet.len
 
@@ -193,17 +188,17 @@ proc addAtRule(sheet: CSSStylesheet; atrule: CSSAtRule; base: URL) =
   of cartUnknown: discard
   of cartImport:
     if sheet.len == 0 and base != nil:
-      var i = atrule.prelude.skipBlanks(0)
+      var ctx = initCSSParser(atrule.prelude)
       # Warning: this is a tracking vector minefield. If you implement
       # media query based imports, make sure to not filter here, but in
       # DOM after the sheet has been downloaded. (e.g. importList can
       # get a "media" field, etc.)
-      if i < atrule.prelude.len:
-        if (let url = cssURL(atrule.prelude[i]); url.isSome):
-          if (let url = parseURL(url.get, some(base)); url.isSome):
-            i = atrule.prelude.skipBlanks(i + 1)
+      if ctx.skipBlanksCheckHas().isOk:
+        let tok = ctx.consume()
+        if urls := ctx.parseURL(tok):
+          if (let url = parseURL(urls, some(base)); url.isSome):
             # check if there are really no media queries/layers/etc
-            if i == atrule.prelude.len:
+            if ctx.skipBlanksCheckDone().isOk:
               sheet.importList.add(url.get)
   of cartMedia:
     if atrule.oblock != nil:
