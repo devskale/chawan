@@ -26,7 +26,7 @@
   - Test scaling with various image sizes and aspect ratios
   - _Requirements: 1.3, 2.2_
 
-- [ ] 5. Create basic luminance-based ASCII conversion
+- [x] 5. Create basic luminance-based ASCII conversion
   - Implement pixel-to-character conversion using luminance calculation
   - Use basic ASCII character set: " .:-=+*#%@" (10 levels)
   - Convert each pixel region to corresponding ASCII character

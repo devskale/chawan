@@ -22,8 +22,8 @@ proc getAsciiPlaceholderWithDimensions*(width, height: int): string =
   ## Returns an ASCII placeholder showing actual image dimensions
   return "[IMG " & $width & "x" & $height & "]"
 
-# Basic character set for luminance mapping
-const BasicCharset = [' ', '.', '#', '@']
+# Basic character set for luminance mapping (10 levels as specified in requirements)
+const BasicCharset = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@']
 
 proc calculateAsciiDimensions*(pixelWidth, pixelHeight: int, config: AsciiScaleConfig): AsciiDimensions =
   ## Calculate appropriate ASCII art dimensions based on pixel dimensions and configuration
@@ -174,5 +174,68 @@ proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int): string =
     terminalHeight: 24
   )
   return convertToSingleCharAscii(pixels, width, height, defaultConfig)
+
+proc convertToAscii*(pixels: ptr uint8, width, height: int, 
+                    scaleConfig: AsciiScaleConfig): string =
+  ## Convert image to ASCII art using luminance-based pixel-to-character conversion
+  ## Each pixel region is converted to corresponding ASCII character based on luminance
+  ## pixels: RGBA pixel data (4 bytes per pixel)
+  ## Returns multi-line ASCII art representation
+  if pixels == nil or width <= 0 or height <= 0:
+    return getAsciiPlaceholder()
+  
+  # Calculate proper ASCII dimensions
+  let dimensions = calculateAsciiDimensions(width, height, scaleConfig)
+  
+  # Calculate how many pixels each ASCII character represents
+  let pixelsPerCharX = width.float / dimensions.width.float
+  let pixelsPerCharY = height.float / dimensions.height.float
+  
+  var asciiResult = ""
+  
+  # Process each ASCII character position
+  for asciiY in 0 ..< dimensions.height:
+    for asciiX in 0 ..< dimensions.width:
+      # Calculate the pixel region this ASCII character represents
+      let startPixelX = int(asciiX.float * pixelsPerCharX)
+      let endPixelX = min(int((asciiX + 1).float * pixelsPerCharX), width)
+      let startPixelY = int(asciiY.float * pixelsPerCharY)
+      let endPixelY = min(int((asciiY + 1).float * pixelsPerCharY), height)
+      
+      # Calculate average luminance for this region
+      var totalLuminance: uint64 = 0
+      var pixelCount = 0
+      
+      for pixelY in startPixelY ..< endPixelY:
+        for pixelX in startPixelX ..< endPixelX:
+          let pixelOffset = (pixelY * width + pixelX) * 4  # RGBA = 4 bytes per pixel
+          let r = cast[ptr UncheckedArray[uint8]](pixels)[pixelOffset]
+          let g = cast[ptr UncheckedArray[uint8]](pixels)[pixelOffset + 1]
+          let b = cast[ptr UncheckedArray[uint8]](pixels)[pixelOffset + 2]
+          # Skip alpha channel for luminance calculation
+          
+          totalLuminance += uint64(calculateLuminance(r, g, b))
+          inc pixelCount
+      
+      # Convert average luminance to ASCII character
+      let avgLuminance = if pixelCount > 0: uint8(totalLuminance div uint64(pixelCount)) else: 0'u8
+      let asciiChar = mapLuminanceToChar(avgLuminance)
+      asciiResult.add(asciiChar)
+    
+    # Add newline after each row except the last
+    if asciiY < dimensions.height - 1:
+      asciiResult.add('\n')
+  
+  return asciiResult
+
+proc convertToAscii*(pixels: ptr uint8, width, height: int): string =
+  ## Convert image to ASCII art with default scaling configuration
+  let defaultConfig = AsciiScaleConfig(
+    maxWidth: 80,
+    maxHeight: 24,
+    terminalWidth: 80,
+    terminalHeight: 24
+  )
+  return convertToAscii(pixels, width, height, defaultConfig)
 
 {.pop.} # raises: []
