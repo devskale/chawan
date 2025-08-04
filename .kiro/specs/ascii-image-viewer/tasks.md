@@ -33,7 +33,7 @@
   - Test conversion accuracy with grayscale test images
   - _Requirements: 1.1, 1.3_
 
-- [ ] 6. Add ASCII configuration options
+- [x] 6. Add ASCII configuration options
   - Add ascii-max-width and ascii-max-height configuration settings
   - Implement configuration parsing for ASCII-specific options
   - Allow users to control ASCII art dimensions
