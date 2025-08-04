@@ -14,6 +14,10 @@ type
     terminalWidth*: int
     terminalHeight*: int
 
+  AsciiConfig* = object
+    maxWidth*: int32
+    maxHeight*: int32
+
 proc getAsciiPlaceholder*(): string =
   ## Returns a simple ASCII placeholder for any image
   return "[IMG]"
@@ -109,6 +113,16 @@ proc createAsciiScaleConfig*(terminalWidth, terminalHeight: int,
   return AsciiScaleConfig(
     maxWidth: maxWidth,
     maxHeight: maxHeight,
+    terminalWidth: terminalWidth,
+    terminalHeight: terminalHeight
+  )
+
+proc createAsciiScaleConfig*(terminalWidth, terminalHeight: int, 
+                            config: AsciiConfig): AsciiScaleConfig =
+  ## Create an ASCII scale configuration from AsciiConfig
+  return AsciiScaleConfig(
+    maxWidth: int(config.maxWidth),
+    maxHeight: int(config.maxHeight),
     terminalWidth: terminalWidth,
     terminalHeight: terminalHeight
   )

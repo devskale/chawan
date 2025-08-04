@@ -128,6 +128,8 @@ type
     noFormatMode* {.jsgetset.}: set[FormatFlag]
     imageMode* {.jsgetset.}: Option[ImageMode]
     sixelColors* {.jsgetset.}: Option[int32]
+    asciiMaxWidth* {.jsgetset.}: int32
+    asciiMaxHeight* {.jsgetset.}: int32
     altScreen* {.jsgetset.}: Option[bool]
     highlightColor* {.jsgetset.}: ARGBColor
     highlightMarks* {.jsgetset.}: bool
