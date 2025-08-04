@@ -1160,6 +1160,9 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
     })
     var url: URL = nil
     case imageMode
+    of imAscii:
+      # ASCII images are rendered as text, no codec processing needed
+      return
     of imSixel:
       url = newURL("img-codec+x-sixel:encode").get
       headers.add("Cha-Image-Sixel-Halfdump", "1")
@@ -1796,7 +1799,8 @@ proc applySiteconf(pager: Pager; url: URL; charsetOverride: Charset;
     protocol: pager.config.protocol,
     metaRefresh: pager.config.buffer.metaRefresh,
     markLinks: pager.config.buffer.markLinks,
-    colorMode: pager.term.colorMode
+    colorMode: pager.term.colorMode,
+    imageMode: pager.config.display.imageMode
   )
   loaderConfig = LoaderClientConfig(
     originURL: url,

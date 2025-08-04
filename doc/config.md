@@ -689,11 +689,11 @@ completely.</td>
 
 <tr>
 <td>image-mode</td>
-<td>"auto" / "none" / "sixel" / "kitty"</td>
+<td>"auto" / "none" / "sixel" / "kitty" / "ascii"</td>
 <td>"auto"</td>
 <td>Specifies the image output mode. "sixel" uses sixels for output, "kitty"
-uses the Kitty image display protocol, "none" disables image display
-completely.
+uses the Kitty image display protocol, "ascii" displays images as ASCII
+placeholders, "none" disables image display completely.
 <p>
 "auto" tries to detect sixel or kitty support, and falls back to "none" when
 neither are available.  This is the default setting, but you must also

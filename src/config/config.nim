@@ -161,6 +161,7 @@ type
     history* {.jsgetset.}: bool
     markLinks* {.jsgetset.}: bool
     userStyle*: StyleString #TODO getset
+    imageMode* {.jsgetset.}: Option[ImageMode]
 
   Config* = ref object
     jsvfns*: seq[JSValueFunction]

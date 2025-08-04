@@ -723,6 +723,7 @@ proc positionImage(term: Terminal; image: CanvasImage;
 proc clearImage(term: Terminal; image: CanvasImage; maxh: int) =
   case term.imageMode
   of imNone: discard
+  of imAscii: discard # ASCII images are rendered as text, no special clearing needed
   of imSixel:
     # we must clear sixels the same way as we clear text.
     let h = (image.height + term.attrs.ppl - 1) div term.attrs.ppl # ceil
@@ -944,6 +945,7 @@ proc outputImages*(term: Terminal) =
       let y = max(image.y, 0)
       case term.imageMode
       of imNone: assert false
+      of imAscii: discard # ASCII images are rendered as text, no special output needed
       of imSixel: term.outputSixelImage(x, y, image)
       of imKitty: term.outputKittyImage(x, y, image)
       image.damaged = false

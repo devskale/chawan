@@ -1,5 +1,9 @@
 {.push raises: [].}
 
+import std/options
+import adapter/img/ascii
+import config/config
+import config/conftypes
 import css/box
 import css/cssvalues
 import css/lunit
@@ -43,6 +47,7 @@ type
     attrsp: ptr WindowAttributes
     images: seq[PosBitmap]
     spaces: string # buffer filled with spaces for padding
+    imageMode: Option[ImageMode]
 
 # Forward declarations
 proc renderBlock(grid: var FlexibleGrid; state: var RenderState;
@@ -399,19 +404,30 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
       # add Element to background (but don't actually color it)
       grid.paintBackground(state, defaultColor, x1, y1, x2, y2,
         ibox.element, 0, ibox.render.clipBox)
-      let x = (offset.x div state.attrs.ppc).toInt
-      let y = (offset.y div state.attrs.ppl).toInt
-      let offx = (offset.x - x.toLUnit * state.attrs.ppc).toInt
-      let offy = (offset.y - y.toLUnit * state.attrs.ppl).toInt
-      state.images.add(PosBitmap(
-        x: x,
-        y: y,
-        offx: offx,
-        offy: offy,
-        width: ibox.imgstate.size.w.toInt,
-        height: ibox.imgstate.size.h.toInt,
-        bmp: ibox.bmp
-      ))
+      
+      # Check if ASCII mode is enabled
+      if state.imageMode == some(imAscii):
+        # Render ASCII placeholder with dimensions instead of adding to images
+        let width = if ibox.bmp != nil: ibox.bmp.width else: 0
+        let height = if ibox.bmp != nil: ibox.bmp.height else: 0
+        let asciiText = getAsciiPlaceholderWithDimensions(width, height)
+        let format = toFormat(ibox.computed)
+        grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
+      else:
+        # Original image handling for other modes
+        let x = (offset.x div state.attrs.ppc).toInt
+        let y = (offset.y div state.attrs.ppl).toInt
+        let offx = (offset.x - x.toLUnit * state.attrs.ppc).toInt
+        let offy = (offset.y - y.toLUnit * state.attrs.ppl).toInt
+        state.images.add(PosBitmap(
+          x: x,
+          y: y,
+          offx: offx,
+          offy: offy,
+          width: ibox.imgstate.size.w.toInt,
+          height: ibox.imgstate.size.h.toInt,
+          bmp: ibox.bmp
+        ))
   else: # InlineNewLineBox does not have children, so we handle it here
     # only check position here to avoid skipping leaves that use our
     # computed values
@@ -576,11 +592,12 @@ proc renderStack(grid: var FlexibleGrid; state: var RenderState;
     grid.renderStack(state, it)
 
 proc render*(grid: var FlexibleGrid; bgcolor: var CellColor; stack: StackItem;
-    attrsp: ptr WindowAttributes; images: var seq[PosBitmap]) =
+    attrsp: ptr WindowAttributes; images: var seq[PosBitmap]; imageMode: Option[ImageMode]) =
   grid.setLen(0)
   var state = RenderState(
     attrsp: attrsp,
-    bgcolor: defaultColor
+    bgcolor: defaultColor,
+    imageMode: imageMode
   )
   grid.renderStack(state, stack)
   bgcolor = state.bgcolor

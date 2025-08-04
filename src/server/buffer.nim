@@ -143,6 +143,7 @@ type
     userAgent*: string
     referrer*: string
     userStyle*: string
+    imageMode*: Option[ImageMode]
 
   GetValueProc = proc(iface: BufferInterface; promise: EmptyPromise) {.
     nimcall, raises: [].}
@@ -747,7 +748,7 @@ proc maybeReshape(bc: BufferContext) =
       bc.config.markLinks)
     bc.rootBox = BlockBox(stack.box)
     bc.rootBox.layout(addr bc.attrs)
-    bc.lines.render(bc.bgcolor, stack, addr bc.attrs, bc.images)
+    bc.lines.render(bc.bgcolor, stack, addr bc.attrs, bc.images, bc.config.imageMode)
     document.invalid = false
     if bc.hasTask(bcOnReshape):
       bc.resolveTask(bcOnReshape)
