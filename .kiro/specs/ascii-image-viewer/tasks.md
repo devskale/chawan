@@ -12,14 +12,14 @@
   - Test dimension display with various image formats
   - _Requirements: 1.4_
 
-- [ ] 3. Add simple single-character ASCII conversion
+- [x] 3. Add simple single-character ASCII conversion
   - Convert entire image to single ASCII character based on average brightness
   - Use basic character set: " ", ".", "#", "@" based on luminance
   - Display single character repeated to approximate image dimensions
   - Test with high contrast and low contrast images
   - _Requirements: 1.1, 1.3_
 
-- [ ] 4. Implement proper image scaling for ASCII dimensions
+- [x] 4. Implement proper image scaling for ASCII dimensions
   - Calculate appropriate ASCII art dimensions based on terminal character size
   - Scale images to fit within reasonable ASCII grid (e.g., max 80x24 characters)
   - Preserve aspect ratio during scaling

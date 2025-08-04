@@ -3,6 +3,17 @@
 # ASCII image placeholder system
 # This module provides basic ASCII representation for images
 
+type
+  AsciiDimensions* = object
+    width*: int
+    height*: int
+
+  AsciiScaleConfig* = object
+    maxWidth*: int
+    maxHeight*: int
+    terminalWidth*: int
+    terminalHeight*: int
+
 proc getAsciiPlaceholder*(): string =
   ## Returns a simple ASCII placeholder for any image
   return "[IMG]"
@@ -13,6 +24,94 @@ proc getAsciiPlaceholderWithDimensions*(width, height: int): string =
 
 # Basic character set for luminance mapping
 const BasicCharset = [' ', '.', '#', '@']
+
+proc calculateAsciiDimensions*(pixelWidth, pixelHeight: int, config: AsciiScaleConfig): AsciiDimensions =
+  ## Calculate appropriate ASCII art dimensions based on pixel dimensions and configuration
+  ## Preserves aspect ratio within 20% error and respects maximum dimensions
+  if pixelWidth <= 0 or pixelHeight <= 0:
+    return AsciiDimensions(width: 1, height: 1)
+  
+  # Character aspect ratio compensation
+  # Terminal characters are typically taller than they are wide (roughly 2:1 ratio)
+  const CharAspectRatio = 2.0  # height/width ratio of terminal characters
+  
+  # Calculate effective maximum dimensions (leave some margin)
+  let maxWidth = min(config.maxWidth, config.terminalWidth - 2)
+  let maxHeight = min(config.maxHeight, config.terminalHeight - 2)
+  
+  # Ensure we have reasonable bounds
+  if maxWidth < 1 or maxHeight < 1:
+    return AsciiDimensions(width: 1, height: 1)
+  
+  # Calculate the target aspect ratio accounting for character shape
+  let pixelAspectRatio = pixelWidth.float / pixelHeight.float
+  let targetAsciiAspectRatio = pixelAspectRatio / CharAspectRatio
+  
+  # Start with a reasonable base size based on image dimensions
+  # Use a scaling factor that gives reasonable results for typical images
+  let baseScale = 0.1  # This means ~10 pixels per ASCII character
+  var asciiWidth = max(1, int(pixelWidth.float * baseScale + 0.5))
+  var asciiHeight = max(1, int(pixelHeight.float * baseScale + 0.5))
+  
+  # Apply aspect ratio correction to ensure proper proportions
+  let currentAspectRatio = asciiWidth.float / asciiHeight.float
+  if abs(currentAspectRatio - targetAsciiAspectRatio) > 0.01:  # If aspect ratio is off
+    if targetAsciiAspectRatio > currentAspectRatio:
+      # Need to increase width or decrease height
+      asciiWidth = max(1, int(asciiHeight.float * targetAsciiAspectRatio + 0.5))
+    else:
+      # Need to increase height or decrease width
+      asciiHeight = max(1, int(asciiWidth.float / targetAsciiAspectRatio + 0.5))
+  
+  # Scale down if we exceed maximum dimensions while preserving aspect ratio
+  if asciiWidth > maxWidth or asciiHeight > maxHeight:
+    let widthScale = maxWidth.float / asciiWidth.float
+    let heightScale = maxHeight.float / asciiHeight.float
+    let scale = min(widthScale, heightScale)
+    
+    asciiWidth = max(1, int(asciiWidth.float * scale + 0.5))
+    asciiHeight = max(1, int(asciiHeight.float * scale + 0.5))
+  
+  # Handle very small images - ensure minimum reasonable size
+  if asciiWidth < 2 and asciiHeight < 2:
+    if targetAsciiAspectRatio > 1.0:
+      # Wide image - make it at least 2 wide
+      asciiWidth = 2
+      asciiHeight = max(1, int(2.0 / targetAsciiAspectRatio + 0.5))
+    else:
+      # Tall image - make it at least 2 tall
+      asciiHeight = 2
+      asciiWidth = max(1, int(2.0 * targetAsciiAspectRatio + 0.5))
+    
+    # Ensure we don't exceed limits
+    asciiWidth = min(asciiWidth, maxWidth)
+    asciiHeight = min(asciiHeight, maxHeight)
+  
+  # Handle extreme aspect ratios that would result in 1-pixel dimensions
+  if asciiWidth == 1 and targetAsciiAspectRatio < 0.1:
+    # Very tall image - increase width to maintain reasonable aspect ratio
+    let minWidth = max(2, int(asciiHeight.float * 0.1 + 0.5))  # At least 10:1 ratio
+    asciiWidth = min(minWidth, maxWidth)
+  elif asciiHeight == 1 and targetAsciiAspectRatio > 10.0:
+    # Very wide image - increase height to maintain reasonable aspect ratio  
+    let minHeight = max(2, int(asciiWidth.float * 0.1 + 0.5))  # At least 10:1 ratio
+    asciiHeight = min(minHeight, maxHeight)
+  
+  # Final safety bounds
+  asciiWidth = max(1, min(asciiWidth, maxWidth))
+  asciiHeight = max(1, min(asciiHeight, maxHeight))
+  
+  return AsciiDimensions(width: asciiWidth, height: asciiHeight)
+
+proc createAsciiScaleConfig*(terminalWidth, terminalHeight: int, 
+                            maxWidth = 80, maxHeight = 24): AsciiScaleConfig =
+  ## Create an ASCII scale configuration with terminal dimensions and optional max limits
+  return AsciiScaleConfig(
+    maxWidth: maxWidth,
+    maxHeight: maxHeight,
+    terminalWidth: terminalWidth,
+    terminalHeight: terminalHeight
+  )
 
 proc calculateLuminance*(r, g, b: uint8): uint8 =
   ## Calculate luminance using standard RGB to grayscale conversion
@@ -28,10 +127,11 @@ proc mapLuminanceToChar*(luminance: uint8): char =
   let index = min(int(luminance) * BasicCharset.len div 256, BasicCharset.high)
   return BasicCharset[index]
 
-proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int): string =
+proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int, 
+                              scaleConfig: AsciiScaleConfig): string =
   ## Convert entire image to single ASCII character based on average brightness
   ## pixels: RGBA pixel data (4 bytes per pixel)
-  ## Returns single character repeated to approximate image dimensions
+  ## Returns single character repeated to approximate image dimensions with proper scaling
   if pixels == nil or width <= 0 or height <= 0:
     return getAsciiPlaceholder()
   
@@ -51,30 +151,28 @@ proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int): string =
   let avgLuminance = uint8(totalLuminance div uint64(pixelCount))
   let asciiChar = mapLuminanceToChar(avgLuminance)
   
-  # Calculate reasonable ASCII dimensions (scale down from pixel dimensions)
-  # Use a simple scaling factor to make ASCII art readable
-  let maxAsciiWidth = 80
-  let maxAsciiHeight = 24
-  
-  var asciiWidth = width div 8  # Approximate character width scaling
-  var asciiHeight = height div 16  # Approximate character height scaling
-  
-  # Ensure minimum size
-  if asciiWidth < 1: asciiWidth = 1
-  if asciiHeight < 1: asciiHeight = 1
-  
-  # Respect maximum dimensions
-  if asciiWidth > maxAsciiWidth: asciiWidth = maxAsciiWidth
-  if asciiHeight > maxAsciiHeight: asciiHeight = maxAsciiHeight
+  # Calculate proper ASCII dimensions using the new scaling system
+  let dimensions = calculateAsciiDimensions(width, height, scaleConfig)
   
   # Create ASCII representation
   var asciiResult = ""
-  for y in 0 ..< asciiHeight:
-    for x in 0 ..< asciiWidth:
+  for y in 0 ..< dimensions.height:
+    for x in 0 ..< dimensions.width:
       asciiResult.add(asciiChar)
-    if y < asciiHeight - 1:  # Don't add newline after last row
+    if y < dimensions.height - 1:  # Don't add newline after last row
       asciiResult.add('\n')
   
   return asciiResult
+
+# Backward compatibility version with default scaling
+proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int): string =
+  ## Convert entire image to single ASCII character with default scaling configuration
+  let defaultConfig = AsciiScaleConfig(
+    maxWidth: 80,
+    maxHeight: 24,
+    terminalWidth: 80,
+    terminalHeight: 24
+  )
+  return convertToSingleCharAscii(pixels, width, height, defaultConfig)
 
 {.pop.} # raises: []
