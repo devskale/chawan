@@ -408,11 +408,15 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
       # Check if ASCII mode is enabled
       if state.imageMode == some(imAscii):
         # Render ASCII placeholder with dimensions instead of adding to images
-        let width = if ibox.bmp != nil: ibox.bmp.width else: 0
-        let height = if ibox.bmp != nil: ibox.bmp.height else: 0
-        let asciiText = getAsciiPlaceholderWithDimensions(width, height)
-        let format = toFormat(ibox.computed)
-        grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
+        if ibox.bmp != nil:
+          let asciiText = getAsciiPlaceholderWithDimensions(ibox.bmp.width, ibox.bmp.height)
+          let format = toFormat(ibox.computed)
+          grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
+        else:
+          # Fallback to basic placeholder if bitmap is not available
+          let asciiText = getAsciiPlaceholder()
+          let format = toFormat(ibox.computed)
+          grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
       else:
         # Original image handling for other modes
         let x = (offset.x div state.attrs.ppc).toInt
