@@ -362,10 +362,13 @@ type
   CSSEntryType* = enum
     ceBit, ceWord, ceHWord, ceObject, ceVar, ceGlobal
 
-  CSSVarEntry* = ref object
+  CSSVarItem* = object
     name*: CAtom
     toks*: seq[CSSToken]
-    next*: CSSVarEntry
+
+  CSSVarEntry* = ref object
+    resolved*: seq[tuple[vars: CSSVariableMap; entries: seq[CSSComputedEntry]]]
+    items*: seq[CSSVarItem]
 
   CSSComputedEntry* = object
     p*: CSSAnyPropertyType
@@ -385,8 +388,7 @@ type
 
   CSSVariable* = ref object
     name*: CAtom
-    hasVar*: bool
-    toks*: seq[CSSToken]
+    items*: seq[CSSVarItem]
 
 static:
   doAssert sizeof(CSSValueBit) == 1
@@ -970,29 +972,29 @@ func parseLength(val: float32; u: string; attrs: WindowAttributes):
   let u = ?parseEnumNoCase[CSSUnit](u)
   return ok(resolveLength(u, val, attrs))
 
-func parseDimensionValues*(s: string): Option[CSSLength] =
+func parseDimensionValues*(s: string): Opt[CSSLength] =
   var i = s.skipBlanks(0)
   if i >= s.len or s[i] notin AsciiDigit:
-    return none(CSSLength)
+    return err()
   var n = 0f64
   while s[i] in AsciiDigit:
     n *= 10
     n += float32(decValue(s[i]))
     inc i
     if i >= s.len:
-      return some(cssLength(n))
+      return ok(cssLength(n))
   if s[i] == '.':
     inc i
     if i >= s.len:
-      return some(cssLength(n))
+      return ok(cssLength(n))
     var d = 1
     while i < s.len and s[i] in AsciiDigit:
       n += float32(decValue(s[i])) / float32(d)
       inc d
       inc i
   if i < s.len and s[i] == '%':
-    return some(cssLengthPerc(n))
-  return some(cssLength(n))
+    return ok(cssLengthPerc(n))
+  ok(cssLength(n))
 
 func getColorToken(toks: openArray[CSSToken]; i: int; legacy = false):
     Opt[CSSToken] =
@@ -1487,48 +1489,41 @@ proc makeEntry*(t: CSSPropertyType; integer: int32): CSSComputedEntry =
 proc makeEntry(t: CSSPropertyType; number: float32): CSSComputedEntry =
   makeEntry(t, CSSValueHWord(number: number))
 
-proc parseDeclWithVar0*(toks: openArray[CSSToken]): CSSVarEntry =
+proc parseDeclWithVar0*(toks: openArray[CSSToken]): seq[CSSVarItem] =
   var ctx = initCSSParser(toks)
   ctx.skipBlanks()
-  var cvar: CSSVarEntry = nil
-  var cvar0: CSSVarEntry = nil
+  var items: seq[CSSVarItem] = @[]
   while ctx.has():
     let tok = ctx.consume()
     if tok.t == cttFunction and tok.ft == cftVar:
       if ctx.skipBlanksCheckHas().isErr:
-        return nil
+        return @[]
       let tok = ctx.consume()
       if tok.t != cttIdent:
-        return nil
+        return @[]
       let name = tok.s.substr(2).toAtom()
-      let ncvar = CSSVarEntry(name: name)
-      if cvar0 == nil:
-        cvar0 = ncvar
-      else:
-        cvar.next = ncvar
-      cvar = ncvar
+      items.add(CSSVarItem(name: name))
       ctx.skipBlanks()
+      var toks: seq[CSSToken] = @[]
       if ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
         if tok.t != cttComma:
-          return nil
+          return @[]
         ctx.skipBlanks()
         while ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
-          cvar.toks.add(tok)
+          toks.add(tok)
+      items[^1].toks = move(toks)
     else:
-      if cvar == nil:
-        cvar0 = CSSVarEntry(name: CAtomNull)
-        cvar = cvar0
-      elif cvar != nil and cvar.name != CAtomNull:
-        cvar.next = CSSVarEntry(name: CAtomNull)
-        cvar = cvar.next
-      cvar.toks.add(tok)
-  return cvar0
+      if items.len == 0 or items[^1].name != CAtomNull:
+        items.add(CSSVarItem(name: CAtomNull))
+      items[^1].toks.add(tok)
+  move(items)
 
 proc parseDeclWithVar*(p: CSSAnyPropertyType; value: openArray[CSSToken]):
     Opt[CSSComputedEntry] =
-  let cvar = parseDeclWithVar0(value)
-  if cvar == nil:
+  var items = parseDeclWithVar0(value)
+  if items.len == 0:
     return err()
+  let cvar = CSSVarEntry(items: move(items))
   return ok(CSSComputedEntry(et: ceVar, p: p, cvar: cvar))
 
 proc parseValue(toks: openArray[CSSToken]; t: CSSPropertyType;
