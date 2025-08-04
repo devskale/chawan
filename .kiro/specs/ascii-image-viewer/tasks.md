@@ -6,7 +6,7 @@
   - Test that ASCII placeholder appears instead of broken image indicators
   - _Requirements: 1.1_
 
-- [ ] 2. Implement basic image dimension detection
+- [x] 2. Implement basic image dimension detection
   - Extend ASCII placeholder to show actual image dimensions like "[IMG 100x50]"
   - Read image dimensions from existing codec system
   - Test dimension display with various image formats
