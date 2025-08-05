@@ -1161,8 +1161,14 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
     var url: URL = nil
     case imageMode
     of imAscii:
-      # ASCII images are rendered as text, no codec processing needed
-      return
+      # Process ASCII images through codec for proper conversion
+      url = newURL("img-codec+ascii:encode").get
+      # Add terminal dimensions for proper ASCII scaling
+      headers.add("Cha-Terminal-Width", $pager.attrs.width)
+      headers.add("Cha-Terminal-Height", $pager.attrs.height)
+      # Add ASCII-specific configuration
+      headers.add("Cha-Ascii-Max-Width", "80")
+      headers.add("Cha-Ascii-Max-Height", "24")
     of imSixel:
       url = newURL("img-codec+x-sixel:encode").get
       headers.add("Cha-Image-Sixel-Halfdump", "1")
@@ -1201,19 +1207,37 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
       if mem == nil:
         pager.loader.removeCachedItem(cacheId)
         return
-      let blob = newBlob(mem.p, mem.len, "image/x-sixel",
-        (proc(opaque, p: pointer) =
-          deallocMem(cast[MaybeMappedMemory](opaque))
-        ), mem
-      )
-      container.redraw = true
-      cachedImage.data = blob
-      cachedImage.state = cisLoaded
-      cachedImage.cacheId = cacheId
-      cachedImage.transparent =
-        response.headers.getFirst("Cha-Image-Sixel-Transparent") == "1"
-      let plens = response.headers.getFirst("Cha-Image-Sixel-Prelude-Len")
-      cachedImage.preludeLen = parseIntP(plens).get(0)
+      # Handle different image modes
+      case imageMode
+      of imAscii:
+        # For ASCII mode, store the text data directly in the bitmap
+        var asciiText = newString(mem.len)
+        copyMem(unsafeAddr asciiText[0], mem.p, mem.len)
+        # Remove any null terminators
+        let nullPos = asciiText.find('\0')
+        if nullPos >= 0:
+          asciiText.setLen(nullPos)
+        image.bmp.asciiData = asciiText
+        container.redraw = true
+        cachedImage.state = cisLoaded
+        cachedImage.cacheId = cacheId
+        # No need to store blob data for ASCII images
+        deallocMem(mem)
+      else:
+        # For other modes (sixel, kitty), use the existing blob system
+        let blob = newBlob(mem.p, mem.len, "image/x-sixel",
+          (proc(opaque, p: pointer) =
+            deallocMem(cast[MaybeMappedMemory](opaque))
+          ), mem
+        )
+        container.redraw = true
+        cachedImage.data = blob
+        cachedImage.state = cisLoaded
+        cachedImage.cacheId = cacheId
+        cachedImage.transparent =
+          response.headers.getFirst("Cha-Image-Sixel-Transparent") == "1"
+        let plens = response.headers.getFirst("Cha-Image-Sixel-Prelude-Len")
+        cachedImage.preludeLen = parseIntP(plens).get(0)
     )
   )
   container.cachedImages.add(cachedImage)

@@ -1,6 +1,7 @@
 {.push raises: [].}
 
 import std/options
+import std/strutils
 import adapter/img/ascii
 import config/config
 import config/conftypes
@@ -407,8 +408,23 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
       
       # Check if ASCII mode is enabled
       if state.imageMode == some(imAscii):
-        # Render ASCII placeholder with dimensions instead of adding to images
-        if ibox.bmp != nil:
+        # Render ASCII art instead of adding to images
+        if ibox.bmp != nil and ibox.bmp.asciiData.len > 0:
+          # Use the processed ASCII data from the codec
+          let asciiText = ibox.bmp.asciiData
+          let format = toFormat(ibox.computed)
+          
+          # Render each line of ASCII art at the correct position
+          let lines = asciiText.split('\n')
+          for i, line in lines:
+            if line.len > 0:
+              let lineOffset = Offset([
+                offset.x,
+                offset.y + (i.toLUnit * state.attrs.ppl)
+              ])
+              grid.setText(state, line, lineOffset, format, ibox.element, clipBox)
+        elif ibox.bmp != nil:
+          # Fallback to placeholder with dimensions if ASCII data not yet available
           let asciiText = getAsciiPlaceholderWithDimensions(ibox.bmp.width, ibox.bmp.height)
           let format = toFormat(ibox.computed)
           grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
