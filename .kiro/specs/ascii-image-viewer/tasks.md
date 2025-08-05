@@ -40,7 +40,7 @@
   - Test configuration changes take effect
   - _Requirements: 2.1, 2.2_
 
-- [ ] 7. Integrate ASCII mode with image display selection
+- [x] 7. Integrate ASCII mode with image display selection
   - Add "ascii" option to display.image-mode configuration
   - Modify image display logic to use ASCII when mode is set to "ascii"
   - Test ASCII mode selection works correctly

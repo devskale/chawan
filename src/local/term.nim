@@ -1402,6 +1402,9 @@ proc detectTermAttributes(term: Terminal; windowOnly: bool): TermStartResult =
           term.imageMode = imKitty
         elif qaSixel in r.attrs:
           term.imageMode = imSixel
+        elif term.config.display.imageMode.isNone:
+          # If no graphics protocol detected and imageMode is auto, fall back to ASCII
+          term.imageMode = imAscii
       if term.imageMode == imSixel: # adjust after windowChange
         if r.registers != 0:
           # I need at least 2 registers, and can't do anything with more
