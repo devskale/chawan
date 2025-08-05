@@ -46,7 +46,7 @@
   - Test ASCII mode selection works correctly
   - _Requirements: 1.2, 3.1_
 
-- [ ] 8. Create ASCII image codec following existing pattern
+- [x] 8. Create ASCII image codec following existing pattern
   - Implement minimal ASCII codec that follows img-codec interface
   - Handle RGBA input and produce ASCII text output
   - Process basic headers for image dimensions

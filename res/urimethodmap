@@ -20,4 +20,5 @@ img-codec+x-unknown:	cgi-bin:stbi
 img-codec+webp:		cgi-bin:jebp
 img-codec+x-sixel:	cgi-bin:sixel
 img-codec+x-cha-canvas:	cgi-bin:canvas
+img-codec+x-ascii:	cgi-bin:ascii_codec
 img-codec+svg+xml:	cgi-bin:nanosvg
