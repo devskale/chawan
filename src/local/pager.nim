@@ -1825,7 +1825,8 @@ proc applySiteconf(pager: Pager; url: URL; charsetOverride: Charset;
     metaRefresh: pager.config.buffer.metaRefresh,
     markLinks: pager.config.buffer.markLinks,
     colorMode: pager.term.colorMode,
-    imageMode: pager.config.display.imageMode
+    imageMode: pager.config.display.imageMode,
+    asciiCharset: pager.config.display.asciiCharset
   )
   loaderConfig = LoaderClientConfig(
     originURL: url,

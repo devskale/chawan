@@ -27,6 +27,7 @@
 {.push raises: [].}
 
 import std/algorithm
+import std/options
 
 import chame/tags
 import css/box
@@ -40,6 +41,8 @@ import types/bitmap
 import types/color
 import types/refstring
 import utils/twtstr
+import config/conftypes
+import adapter/img/ascii
 
 type
   StyledNodeType = enum
@@ -77,6 +80,8 @@ type
     counters: seq[CSSCounter]
     rootProperties: CSSValues
     stackItems: seq[StackItem]
+    imageMode: Option[ImageMode]
+    asciiCharset: string
 
   TreeFrame = object
     parent: Element
@@ -94,6 +99,14 @@ proc build(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
 
 template ctx(frame: TreeFrame): var TreeContext =
   frame.pctx[]
+
+proc parseAsciiCharset(charsetStr: string): AsciiCharset =
+  ## Convert string charset configuration to AsciiCharset enum
+  case charsetStr
+  of "basic": return acBasic
+  of "extended": return acExtended
+  of "blocks": return acBlocks
+  else: return acBasic # default fallback
 
 when defined(debug):
   func `$`*(node: StyledNode): string =
@@ -385,6 +398,37 @@ proc addText(frame: var TreeFrame; s: sink string) =
   #TODO should probably cache these...
   frame.addText(newRefString(s))
 
+proc generateConfigurableAsciiArt(charset: AsciiCharset): string =
+  ## Generate ASCII art using the specified character set
+  case charset
+  of acBasic:
+    return "+-ASCII-IMAGE-+\n" &
+           "|             |\n" &
+           "|    .--.     |\n" &
+           "|   /    \\    |\n" &
+           "|   \\    /    |\n" &
+           "|    '--'     |\n" &
+           "|             |\n" &
+           "+-----------+"
+  of acExtended:
+    return "╔═ASCII-IMAGE═╗\n" &
+           "║             ║\n" &
+           "║    ╭───╮    ║\n" &
+           "║   ╱     ╲   ║\n" &
+           "║   ╲     ╱   ║\n" &
+           "║    ╰───╯    ║\n" &
+           "║             ║\n" &
+           "╚═════════════╝"
+  of acBlocks:
+    return "██ASCII-IMAGE██\n" &
+           "█             █\n" &
+           "█    ████     █\n" &
+           "█   █    █    █\n" &
+           "█   █    █    █\n" &
+           "█    ████     █\n" &
+           "█             █\n" &
+           "███████████████"
+
 proc addImage(frame: var TreeFrame; bmp: NetworkBitmap) =
   if bmp != nil and bmp.cacheId != -1:
     frame.add(StyledNode(
@@ -394,16 +438,9 @@ proc addImage(frame: var TreeFrame; bmp: NetworkBitmap) =
       computed: frame.getAnonInlineComputed()
     ))
   else:
-    # Create simple ASCII art representation instead of just [img]
-    let asciiArt = 
-      "+-ASCII-IMAGE-+\n" &
-      "|             |\n" &
-      "|    .--.     |\n" &
-      "|   /    \\    |\n" &
-      "|   \\    /    |\n" &
-      "|    '--'     |\n" &
-      "|             |\n" &
-      "+-----------+"
+    # Generate ASCII art using configurable character set
+    let charset = parseAsciiCharset(frame.ctx.asciiCharset)
+    let asciiArt = generateConfigurableAsciiArt(charset)
     frame.addText(asciiArt)
 
 proc addBr(frame: var TreeFrame) =
@@ -642,7 +679,7 @@ proc build(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
     )
 
 # Root
-proc buildTree*(element: Element; cached: CSSBox; markLinks: bool): StackItem =
+proc buildTree*(element: Element; cached: CSSBox; markLinks: bool; imageMode: Option[ImageMode] = none(ImageMode); asciiCharset: string = "basic"): StackItem =
   if element.computed == nil:
     element.applyStyle()
   let styledNode = StyledNode(
@@ -654,6 +691,8 @@ proc buildTree*(element: Element; cached: CSSBox; markLinks: bool): StackItem =
   var ctx = TreeContext(
     rootProperties: rootProperties(),
     markLinks: markLinks,
+    imageMode: imageMode,
+    asciiCharset: asciiCharset,
     stackItems: @[stack]
   )
   let root = BlockBox(ctx.build(cached, styledNode, forceZ = false))

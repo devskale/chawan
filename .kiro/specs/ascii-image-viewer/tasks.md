@@ -67,7 +67,7 @@
   - Configuration must flow through multiple system layers to reach integration points
   - The `addImage()` function in `csstree.nim` is the critical integration point
 
-- [ ] 10. Add extended ASCII character sets (**UPDATED APPROACH**)
+- [x] 10. Add extended ASCII character sets (**UPDATED APPROACH**)
   - Modify `addImage()` in `src/css/csstree.nim` to use configurable character sets
   - Access imageMode configuration from TreeFrame context
   - Implement character set selection based on user configuration

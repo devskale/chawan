@@ -144,6 +144,7 @@ type
     referrer*: string
     userStyle*: string
     imageMode*: Option[ImageMode]
+    asciiCharset*: string
 
   GetValueProc = proc(iface: BufferInterface; promise: EmptyPromise) {.
     nimcall, raises: [].}
@@ -745,7 +746,7 @@ proc maybeReshape(bc: BufferContext) =
     return # not parsed yet, nothing to render
   if document.invalid:
     let stack = document.documentElement.buildTree(bc.rootBox,
-      bc.config.markLinks)
+      bc.config.markLinks, bc.config.imageMode, bc.config.asciiCharset)
     bc.rootBox = BlockBox(stack.box)
     bc.rootBox.layout(addr bc.attrs)
     bc.lines.render(bc.bgcolor, stack, addr bc.attrs, bc.images, bc.config.imageMode)
