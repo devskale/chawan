@@ -430,7 +430,7 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
           grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
         else:
           # Fallback to basic placeholder if bitmap is not available
-          let asciiText = getAsciiPlaceholder()
+          let asciiText = "[INLINE-IMG-DEBUG]"
           let format = toFormat(ibox.computed)
           grid.setText(state, asciiText, offset, format, ibox.element, clipBox)
       else:
@@ -509,16 +509,38 @@ proc renderBlock(grid: var FlexibleGrid; state: var RenderState;
         grid.paintBackground(state, bgcolor, ix, iy, iex, iey, box.element,
           bgcolor0.a, box.render.clipBox)
     if box.computed{"background-image"} != nil:
-      # ugly hack for background-image display... TODO actually display images
-      const s = "[img]"
-      let w = s.len * state.attrs.ppc
-      var offset = offset
-      if box.state.size.w < w:
-        # text is larger than image; center it to minimize error
-        offset.x -= w div 2
-        offset.x += box.state.size.w div 2
-      grid.setText(state, s, offset, box.computed.toFormat(), box.element,
-        box.render.clipBox)
+      # Handle background images - create simple ASCII art for ASCII mode
+      let s = if state.imageMode == some(imAscii):
+        # Create simple ASCII art representation
+        "@@@@@@@@@@@@@@@@@@@@\n" &
+        "@                  @\n" &
+        "@   ASCII  IMAGE   @\n" &
+        "@                  @\n" &
+        "@@@@@@@@@@@@@@@@@@@@"
+      else:
+        "[img]"
+      
+      if state.imageMode == some(imAscii):
+        # For ASCII mode, render multi-line ASCII art
+        let lines = s.split('\n')
+        for i, line in lines:
+          if line.len > 0:
+            let lineOffset = Offset([
+              offset.x,
+              offset.y + (i.toLUnit * state.attrs.ppl)
+            ])
+            grid.setText(state, line, lineOffset, box.computed.toFormat(), box.element,
+              box.render.clipBox)
+      else:
+        # Original single-line placeholder handling
+        let w = s.len * state.attrs.ppc
+        var offset = offset
+        if box.state.size.w < w:
+          # text is larger than image; center it to minimize error
+          offset.x -= w div 2
+          offset.x += box.state.size.w div 2
+        grid.setText(state, s, offset, box.computed.toFormat(), box.element,
+          box.render.clipBox)
   if opacity != 0: #TODO this isn't right...
     if box.render.clipBox.start < box.render.clipBox.send:
       for child in box.children:

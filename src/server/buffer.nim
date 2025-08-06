@@ -1975,7 +1975,8 @@ proc launchBuffer*(config: BufferConfig; url: URL; attrs: WindowAttributes;
     urandom,
     config.imageTypes,
     config.userAgent,
-    config.referrer
+    config.referrer,
+    config.imageMode
   )
   if bc.config.scripting != smFalse:
     bc.window.navigate = proc(url: URL) = bc.navigate(url)

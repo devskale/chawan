@@ -93,6 +93,7 @@ image-mode = "ascii"
 sixel-colors = "auto"
 ascii-max-width = 80
 ascii-max-height = 24
+ascii-charset = "basic"
 alt-screen = "auto"
 highlight-color = "cyan"
 highlight-marks = true

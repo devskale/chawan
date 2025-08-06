@@ -130,6 +130,7 @@ type
     sixelColors* {.jsgetset.}: Option[int32]
     asciiMaxWidth* {.jsgetset.}: int32
     asciiMaxHeight* {.jsgetset.}: int32
+    asciiCharset* {.jsgetset.}: string
     altScreen* {.jsgetset.}: Option[bool]
     highlightColor* {.jsgetset.}: ARGBColor
     highlightMarks* {.jsgetset.}: bool

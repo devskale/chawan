@@ -1162,13 +1162,14 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
     case imageMode
     of imAscii:
       # Process ASCII images through codec for proper conversion
-      url = newURL("img-codec+ascii:encode").get
+      url = newURL("img-codec+x-ascii:encode").get
       # Add terminal dimensions for proper ASCII scaling
       headers.add("Cha-Terminal-Width", $pager.attrs.width)
       headers.add("Cha-Terminal-Height", $pager.attrs.height)
       # Add ASCII-specific configuration
-      headers.add("Cha-Ascii-Max-Width", "80")
-      headers.add("Cha-Ascii-Max-Height", "24")
+      headers.add("Cha-Ascii-Max-Width", $pager.config.display.asciiMaxWidth)
+      headers.add("Cha-Ascii-Max-Height", $pager.config.display.asciiMaxHeight)
+      headers.add("Cha-Ascii-Charset", pager.config.display.asciiCharset)
     of imSixel:
       url = newURL("img-codec+x-sixel:encode").get
       headers.add("Cha-Image-Sixel-Halfdump", "1")

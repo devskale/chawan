@@ -1,3 +1,4 @@
+import std/options
 import config/conftypes
 import monoucha/javascript
 import monoucha/quickjs
@@ -59,6 +60,7 @@ type
     images*: bool
     styling*: bool
     autofocus*: bool
+    imageMode*: Option[ImageMode]
 
   Script* = ref object
     #TODO setings

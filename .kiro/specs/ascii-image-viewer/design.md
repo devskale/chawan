@@ -6,22 +6,31 @@ The ASCII image viewer feature adds a new image display mode to Chawan that conv
 
 ## Architecture
 
-### Integration Points
+### Actual Integration Points (Discovered Through Implementation)
 
-The ASCII image viewer integrates with Chawan's existing architecture at several key points:
+The ASCII image viewer integrates with Chawan's architecture differently than originally planned:
 
-1. **Configuration System**: Extends `display.image-mode` to support "ascii" option
-2. **Image Codec System**: Leverages existing `img-codec+*` URI scheme for image decoding
-3. **Rendering Pipeline**: Integrates with the existing text rendering system in `src/css/render.nim`
-4. **Image Processing**: Uses existing image loading and caching infrastructure
+1. **CSS Tree Building** (`src/css/csstree.nim`): **PRIMARY INTEGRATION POINT** - ASCII art is generated in the `addImage()` function when NetworkBitmap is unavailable
+2. **Configuration System**: Extended `EnvironmentSettings` and `DisplayConfig` to support `imageMode: Option[ImageMode]`
+3. **Image Loading Pipeline**: Modified `loadResource()` in `src/html/dom.nim` to call ASCII codec when imageMode is ASCII
+4. **Fallback Mechanism**: ASCII art serves as universal fallback when images fail to load, regardless of configured image mode
 
-### High-Level Flow
+### Revised High-Level Flow
 
 ```
-Image URL → Image Loader → Codec Decoder → ASCII Converter → Text Renderer → Terminal
+Image Element → CSS Tree Building → Check NetworkBitmap → 
+  ├─ Available: Create Image Node
+  └─ Unavailable: Generate ASCII Art → Add as Text Node → Render
 ```
 
-The ASCII converter sits between the existing codec decoder and the rendering system, converting RGBA pixel data to ASCII character representations.
+**Key Discovery**: ASCII integration happens during CSS tree construction, not during rendering. The `addImage()` function in `csstree.nim` is the critical integration point.
+
+### Architecture Lessons Learned
+
+1. **Image Placeholders**: The original `[img]` placeholder was generated in CSS tree building, not rendering
+2. **Fallback Strategy**: ASCII art works best as a universal fallback rather than a separate rendering mode
+3. **Configuration Flow**: imageMode must be passed through: Config → BufferConfig → Window → EnvironmentSettings
+4. **Integration Complexity**: The image loading pipeline is more complex than initially understood, with multiple phases and fallback mechanisms
 
 ## Components and Interfaces
 
@@ -87,14 +96,33 @@ ascii-brightness = 0.0  # -1.0 to 1.0
 ascii-contrast = 1.0    # 0.0 to 2.0
 ```
 
-### 4. Rendering Integration (`src/css/render.nim`)
+### 4. CSS Tree Integration (`src/css/csstree.nim`) - **ACTUAL PRIMARY COMPONENT**
 
-**Purpose**: Integrates ASCII images into the existing text rendering pipeline
+**Purpose**: Generates ASCII art during CSS tree building when images are unavailable
+
+**Key Implementation**:
+```nim
+proc addImage(frame: var TreeFrame; bmp: NetworkBitmap) =
+  if bmp != nil and bmp.cacheId != -1:
+    # Create proper image node
+    frame.add(StyledNode(t: stImage, bmp: bmp, ...))
+  else:
+    # Generate ASCII art fallback
+    let asciiArt = generateAsciiArt()
+    frame.addText(asciiArt)
+```
+
+**Critical Insight**: This is where ASCII images are actually created, not in the rendering phase.
+
+### 5. Configuration Pipeline Extensions
+
+**Purpose**: Pass imageMode configuration through the system
 
 **Key Changes**:
-- Modify `renderInline` to handle ASCII image boxes
-- Extend `InlineImageBox` processing to support ASCII text output
-- Ensure ASCII images respect existing clipping and positioning logic
+- Extended `EnvironmentSettings` with `imageMode*: Option[ImageMode]`
+- Modified `newWindow()` to accept imageMode parameter
+- Updated buffer creation to pass `config.imageMode` to window
+- Enabled image loading pipeline to check imageMode for ASCII codec calls
 
 ## Data Models
 

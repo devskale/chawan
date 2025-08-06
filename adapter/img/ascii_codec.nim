@@ -49,7 +49,7 @@ proc main() =
     
     var width = 0
     var height = 0
-    var asciiConfig = AsciiConfig(maxWidth: 80, maxHeight: 24)
+    var asciiConfig = AsciiConfig(maxWidth: 80, maxHeight: 24, charset: acBasic)
     var terminalWidth = 80
     var terminalHeight = 24
     
@@ -75,6 +75,14 @@ proc main() =
         let h = parseIntP(value).get(-1)
         if h > 0:
           terminalHeight = h
+      of "Cha-Ascii-Charset":
+        case value
+        of "basic":
+          asciiConfig.charset = acBasic
+        of "extended":
+          asciiConfig.charset = acExtended
+        of "blocks":
+          asciiConfig.charset = acBlocks
     
     if width <= 0 or height <= 0:
       die("Cha-Control: ConnectionError InternalError invalid dimensions\n")

@@ -394,7 +394,17 @@ proc addImage(frame: var TreeFrame; bmp: NetworkBitmap) =
       computed: frame.getAnonInlineComputed()
     ))
   else:
-    frame.addText("[img]")
+    # Create simple ASCII art representation instead of just [img]
+    let asciiArt = 
+      "+-ASCII-IMAGE-+\n" &
+      "|             |\n" &
+      "|    .--.     |\n" &
+      "|   /    \\    |\n" &
+      "|   \\    /    |\n" &
+      "|    '--'     |\n" &
+      "|             |\n" &
+      "+-----------+"
+    frame.addText(asciiArt)
 
 proc addBr(frame: var TreeFrame) =
   frame.add(StyledNode(

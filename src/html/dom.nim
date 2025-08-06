@@ -4292,13 +4292,29 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
           # it's the best way, so I added b) as a fallback measure.
           t = window.imageTypes.getOrDefault(ext, "x-unknown")
         let cacheId = window.loader.addCacheFile(response.outputId)
-        let url = newURL("img-codec+" & t & ":decode")
+        # Check if ASCII mode is enabled
+        let isAsciiMode = window.settings.imageMode.isSome and 
+                         window.settings.imageMode.get == imAscii
+        
+        let url = if isAsciiMode:
+          newURL("img-codec+ascii:encode")
+        else:
+          newURL("img-codec+" & t & ":decode")
+        
         if url.isErr:
           return newResolvedPromise()
+        
+        let headers = if isAsciiMode:
+          # For ASCII mode, we need the full image data, not just info
+          newHeaders(hgRequest)
+        else:
+          # For other modes, we only need image info
+          newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"})
+        
         let request = newRequest(
           url.get,
           httpMethod = hmPost,
-          headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
+          headers = headers,
           body = RequestBody(t: rbtOutput, outputId: response.outputId),
         )
         let r = window.corsFetch(request)
@@ -4320,15 +4336,15 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
           if res.isErr:
             return
           let response = res.get
-          # close immediately; all data we're interested in is in the headers.
-          response.close()
           let headers = response.headers
           let dims = headers.getFirst("Cha-Image-Dimensions")
           let width = parseIntP(dims.until('x')).get(-1)
           let height = parseIntP(dims.after('x')).get(-1)
           if width < 0 or height < 0:
             window.console.error("wrong Cha-Image-Dimensions in", $response.url)
+            response.close()
             return
+          
           let bmp = NetworkBitmap(
             width: width,
             height: height,
@@ -4336,6 +4352,15 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
             imageId: window.getImageId(),
             contentType: "image/" & t
           )
+          
+          # For ASCII mode, read the ASCII data from response body
+          if isAsciiMode:
+            let asciiData = response.body.readAll()
+            bmp.asciiData = asciiData
+            response.close()
+          else:
+            # For other modes, close immediately as we only needed headers
+            response.close()
           image.bitmap = bmp
           cachedURL.bmp = bmp
           for share in cachedURL.shared:

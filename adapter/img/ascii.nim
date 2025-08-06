@@ -4,6 +4,11 @@
 # This module provides basic ASCII representation for images
 
 type
+  AsciiCharset* = enum
+    acBasic = "basic"
+    acExtended = "extended" 
+    acBlocks = "blocks"
+
   AsciiDimensions* = object
     width*: int
     height*: int
@@ -13,10 +18,12 @@ type
     maxHeight*: int
     terminalWidth*: int
     terminalHeight*: int
+    charset*: AsciiCharset
 
   AsciiConfig* = object
     maxWidth*: int32
     maxHeight*: int32
+    charset*: AsciiCharset
 
 proc getAsciiPlaceholder*(): string =
   ## Returns a simple ASCII placeholder for any image
@@ -26,8 +33,10 @@ proc getAsciiPlaceholderWithDimensions*(width, height: int): string =
   ## Returns an ASCII placeholder showing actual image dimensions
   return "[IMG " & $width & "x" & $height & "]"
 
-# Basic character set for luminance mapping (10 levels as specified in requirements)
+# Character sets for luminance mapping
 const BasicCharset = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@']
+const ExtendedCharset = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@', 'A', 'B', 'C', 'D', 'E', 'F']
+const BlockCharset = [' ', '.', ':', '#', '@']
 
 proc calculateAsciiDimensions*(pixelWidth, pixelHeight: int, config: AsciiScaleConfig): AsciiDimensions =
   ## Calculate appropriate ASCII art dimensions based on pixel dimensions and configuration
@@ -108,13 +117,14 @@ proc calculateAsciiDimensions*(pixelWidth, pixelHeight: int, config: AsciiScaleC
   return AsciiDimensions(width: asciiWidth, height: asciiHeight)
 
 proc createAsciiScaleConfig*(terminalWidth, terminalHeight: int, 
-                            maxWidth = 80, maxHeight = 24): AsciiScaleConfig =
+                            maxWidth = 80, maxHeight = 24, charset = acBasic): AsciiScaleConfig =
   ## Create an ASCII scale configuration with terminal dimensions and optional max limits
   return AsciiScaleConfig(
     maxWidth: maxWidth,
     maxHeight: maxHeight,
     terminalWidth: terminalWidth,
-    terminalHeight: terminalHeight
+    terminalHeight: terminalHeight,
+    charset: charset
   )
 
 proc createAsciiScaleConfig*(terminalWidth, terminalHeight: int, 
@@ -124,7 +134,8 @@ proc createAsciiScaleConfig*(terminalWidth, terminalHeight: int,
     maxWidth: int(config.maxWidth),
     maxHeight: int(config.maxHeight),
     terminalWidth: terminalWidth,
-    terminalHeight: terminalHeight
+    terminalHeight: terminalHeight,
+    charset: config.charset
   )
 
 proc calculateLuminance*(r, g, b: uint8): uint8 =
@@ -135,11 +146,18 @@ proc calculateLuminance*(r, g, b: uint8): uint8 =
   let bWeight = uint32(b) * 114
   return uint8((rWeight + gWeight + bWeight) div 1000)
 
-proc mapLuminanceToChar*(luminance: uint8): char =
-  ## Map luminance value (0-255) to ASCII character
-  ## Uses basic character set: ' ', '.', '#', '@'
-  let index = min(int(luminance) * BasicCharset.len div 256, BasicCharset.high)
-  return BasicCharset[index]
+proc mapLuminanceToChar*(luminance: uint8, charset: AsciiCharset = acBasic): char =
+  ## Map luminance value (0-255) to ASCII character using specified character set
+  case charset
+  of acBasic:
+    let index = min(int(luminance) * BasicCharset.len div 256, BasicCharset.high)
+    return BasicCharset[index]
+  of acExtended:
+    let index = min(int(luminance) * ExtendedCharset.len div 256, ExtendedCharset.high)
+    return ExtendedCharset[index]
+  of acBlocks:
+    let index = min(int(luminance) * BlockCharset.len div 256, BlockCharset.high)
+    return BlockCharset[index]
 
 proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int, 
                               scaleConfig: AsciiScaleConfig): string =
@@ -163,7 +181,7 @@ proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int,
     totalLuminance += uint64(calculateLuminance(r, g, b))
   
   let avgLuminance = uint8(totalLuminance div uint64(pixelCount))
-  let asciiChar = mapLuminanceToChar(avgLuminance)
+  let asciiChar = mapLuminanceToChar(avgLuminance, scaleConfig.charset)
   
   # Calculate proper ASCII dimensions using the new scaling system
   let dimensions = calculateAsciiDimensions(width, height, scaleConfig)
@@ -185,7 +203,8 @@ proc convertToSingleCharAscii*(pixels: ptr uint8, width, height: int): string =
     maxWidth: 80,
     maxHeight: 24,
     terminalWidth: 80,
-    terminalHeight: 24
+    terminalHeight: 24,
+    charset: acBasic
   )
   return convertToSingleCharAscii(pixels, width, height, defaultConfig)
 
@@ -233,7 +252,7 @@ proc convertToAscii*(pixels: ptr uint8, width, height: int,
       
       # Convert average luminance to ASCII character
       let avgLuminance = if pixelCount > 0: uint8(totalLuminance div uint64(pixelCount)) else: 0'u8
-      let asciiChar = mapLuminanceToChar(avgLuminance)
+      let asciiChar = mapLuminanceToChar(avgLuminance, scaleConfig.charset)
       asciiResult.add(asciiChar)
     
     # Add newline after each row except the last
@@ -248,7 +267,8 @@ proc convertToAscii*(pixels: ptr uint8, width, height: int): string =
     maxWidth: 80,
     maxHeight: 24,
     terminalWidth: 80,
-    terminalHeight: 24
+    terminalHeight: 24,
+    charset: acBasic
   )
   return convertToAscii(pixels, width, height, defaultConfig)
 

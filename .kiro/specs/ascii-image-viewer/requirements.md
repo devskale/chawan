@@ -2,20 +2,32 @@
 
 ## Introduction
 
-This feature adds ASCII-based image viewing capability to Chawan that works universally across all terminal emulators without requiring external libraries or special terminal features. The ASCII image viewer will convert images to text-based representations using ASCII characters, providing a fallback image viewing option that works in any terminal environment where Chawan runs.
+This feature adds ASCII-based image viewing capability to Chawan that works universally across all terminal emulators without requiring external libraries or special terminal features. The ASCII image viewer provides fallback ASCII art representations when images cannot be loaded or displayed through graphics protocols, ensuring visual content is always accessible in any terminal environment.
+
+## Key Architectural Insights Discovered
+
+Through implementation, we discovered that Chawan's image handling occurs in multiple phases:
+
+1. **CSS Tree Building** (`src/css/csstree.nim`): Where image placeholders are initially generated when NetworkBitmap is unavailable
+2. **Image Loading** (`src/html/dom.nim`): Where images are fetched and decoded via codec system  
+3. **Rendering** (`src/css/render.nim`): Where loaded images are positioned and displayed
+
+The primary integration point for ASCII images is in the CSS tree building phase, not the rendering phase as originally assumed.
 
 ## Requirements
 
 ### Requirement 1
 
-**User Story:** As a Chawan user, I want to view images as ASCII art by default in any terminal emulator, so that I can see visual content universally without relying on terminal-specific graphics protocols.
+**User Story:** As a Chawan user, I want to view images as ASCII art when images cannot be loaded, so that I can see visual content universally without relying on terminal-specific graphics protocols.
 
 #### Acceptance Criteria
 
-1. WHEN an image is encountered in a web page THEN the system SHALL convert it to ASCII representation using standard ASCII characters by default
-2. WHEN image display is enabled THEN the system SHALL use ASCII rendering as the primary image display method
-3. WHEN displaying ASCII images THEN the system SHALL maintain reasonable aspect ratios and visual clarity
-4. WHEN processing images THEN the system SHALL support common image formats (JPEG, PNG, GIF, WebP, SVG)
+1. WHEN an image is encountered but NetworkBitmap is unavailable THEN the system SHALL generate ASCII art representation instead of simple text placeholders
+2. WHEN display.image-mode is set to "ascii" THEN the system SHALL prefer ASCII rendering over graphics protocols
+3. WHEN displaying ASCII images THEN the system SHALL provide recognizable visual representations
+4. WHEN images fail to load THEN the system SHALL fall back to ASCII art rather than showing broken image indicators
+
+**Implementation Note:** ASCII art is generated in `addImage()` function in `src/css/csstree.nim` when `bmp == nil or bmp.cacheId == -1`.
 
 ### Requirement 2
 
@@ -34,10 +46,12 @@ This feature adds ASCII-based image viewing capability to Chawan that works univ
 
 #### Acceptance Criteria
 
-1. WHEN image display is enabled THEN the system SHALL use ASCII rendering as the default display method
-2. WHEN users prefer graphics protocols THEN the system SHALL allow configuration to use Sixel or Kitty protocols instead of ASCII
-3. WHEN graphics protocols fail THEN the system SHALL automatically fall back to ASCII rendering
-4. WHEN processing images THEN the system SHALL use existing image loading and caching infrastructure
+1. WHEN images are successfully loaded THEN the system SHALL display them using the configured graphics protocol (Sixel, Kitty, etc.)
+2. WHEN images fail to load or graphics protocols are unavailable THEN the system SHALL automatically fall back to ASCII rendering
+3. WHEN display.image-mode is "ascii" THEN the system SHALL generate ASCII art even for successfully loaded images
+4. WHEN processing images THEN the system SHALL integrate with existing CSS tree building and rendering pipeline
+
+**Implementation Note:** The fallback mechanism is built into the CSS tree building phase, ensuring ASCII art is always available regardless of image loading success.
 
 ### Requirement 4
 
