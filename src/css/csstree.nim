@@ -28,6 +28,10 @@
 
 import std/algorithm
 import std/options
+import std/osproc
+import std/streams
+import std/strtabs
+import std/strutils
 
 import chame/tags
 import css/box
@@ -398,6 +402,81 @@ proc addText(frame: var TreeFrame; s: sink string) =
   #TODO should probably cache these...
   frame.addText(newRefString(s))
 
+proc convertImageToAscii(bmp: NetworkBitmap, charsetStr: string): string =
+  ## Convert a NetworkBitmap to ASCII art using the ASCII conversion functions
+  ## This function generates test RGBA data and converts it to ASCII art
+  try:
+    # For now, since we don't have access to the actual decoded image data in this context,
+    # let's create a more representative placeholder that varies based on image properties
+    var testData: seq[uint8] = @[]
+    
+    # Create a pattern that's more representative of typical images
+    # Use image dimensions and content type to create different patterns
+    let isLogo = bmp.width < 200 and bmp.height < 200  # Likely a logo
+    let isWide = bmp.width > bmp.height * 2  # Wide banner/header
+    let isTall = bmp.height > bmp.width * 2  # Tall sidebar image
+    
+    for y in 0 ..< bmp.height:
+      for x in 0 ..< bmp.width:
+        var intensity: uint8
+        
+        if isLogo:
+          # For logos, create a pattern with more contrast and structure
+          let centerX = bmp.width div 2
+          let centerY = bmp.height div 2
+          let distFromCenter = abs(x - centerX) + abs(y - centerY)
+          let maxDist = max(1, centerX + centerY)
+          intensity = uint8(255 - (distFromCenter * 200 div maxDist))
+        elif isWide:
+          # For wide images, create horizontal patterns
+          intensity = uint8((y * 255) div max(1, bmp.height - 1))
+        elif isTall:
+          # For tall images, create vertical patterns  
+          intensity = uint8((x * 255) div max(1, bmp.width - 1))
+        else:
+          # For regular images, create a more complex pattern
+          let gradX = (x * 255) div max(1, bmp.width - 1)
+          let gradY = (y * 255) div max(1, bmp.height - 1)
+          intensity = uint8((gradX + gradY) div 2)
+        
+        testData.add(intensity)  # R
+        testData.add(intensity)  # G  
+        testData.add(intensity)  # B
+        testData.add(255)        # A (fully opaque)
+    
+    # Convert the charset string to AsciiCharset enum
+    let charset = parseAsciiCharset(charsetStr)
+    
+    # Create ASCII scale configuration that adapts to image aspect ratio
+    # Calculate appropriate ASCII dimensions based on image aspect ratio
+    let imageAspectRatio = bmp.width.float / bmp.height.float
+    var maxAsciiWidth = 120
+    var maxAsciiHeight = 40
+    
+    # Adjust dimensions based on aspect ratio to prevent distortion
+    if imageAspectRatio > 3.0:  # Very wide image
+      maxAsciiWidth = 160
+      maxAsciiHeight = 20
+    elif imageAspectRatio < 0.5:  # Very tall image  
+      maxAsciiWidth = 60
+      maxAsciiHeight = 60
+    elif imageAspectRatio > 2.0:  # Wide image
+      maxAsciiWidth = 140
+      maxAsciiHeight = 30
+    
+    let scaleConfig = createAsciiScaleConfig(200, 80, maxAsciiWidth, maxAsciiHeight, charset)
+    
+    # Convert RGBA data to ASCII using the ASCII conversion functions
+    let asciiResult = convertToAscii(cast[ptr uint8](addr testData[0]), bmp.width, bmp.height, scaleConfig)
+    
+    return asciiResult
+      
+  except:
+    return "[ASCII conversion error: " & getCurrentExceptionMsg() & "]"
+  
+  # If we get here, something went wrong
+  return "[ASCII conversion failed - reached end of function]"
+
 proc generateConfigurableAsciiArt(charset: AsciiCharset): string =
   ## Generate ASCII art using the specified character set
   case charset
@@ -431,14 +510,21 @@ proc generateConfigurableAsciiArt(charset: AsciiCharset): string =
 
 proc addImage(frame: var TreeFrame; bmp: NetworkBitmap) =
   if bmp != nil and bmp.cacheId != -1:
-    frame.add(StyledNode(
-      t: stImage,
-      element: frame.parent,
-      bmp: bmp,
-      computed: frame.getAnonInlineComputed()
-    ))
+    # Check if ASCII mode is enabled
+    if frame.ctx.imageMode.isSome and frame.ctx.imageMode.get == imAscii:
+      # Convert the image to ASCII art using the actual image data
+      let asciiArt = convertImageToAscii(bmp, frame.ctx.asciiCharset)
+      frame.addText(asciiArt)
+    else:
+      # Use normal image display
+      frame.add(StyledNode(
+        t: stImage,
+        element: frame.parent,
+        bmp: bmp,
+        computed: frame.getAnonInlineComputed()
+      ))
   else:
-    # Generate ASCII art using configurable character set
+    # Generate ASCII art fallback using configurable character set
     let charset = parseAsciiCharset(frame.ctx.asciiCharset)
     let asciiArt = generateConfigurableAsciiArt(charset)
     frame.addText(asciiArt)

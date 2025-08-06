@@ -4,8 +4,11 @@ import std/algorithm
 import std/hashes
 import std/math
 import std/options
+import std/osproc
 import std/posix
 import std/sets
+import std/streams
+import std/strtabs
 import std/strutils
 import std/tables
 import std/times
@@ -4239,6 +4242,59 @@ proc getImageId(window: Window): int =
   result = window.imageId
   inc window.imageId
 
+proc convertRgbaToAscii(rgbaData: string, width, height: int): string =
+  ## Convert RGBA pixel data to ASCII art using the ASCII codec
+  try:
+    
+    # Prepare the ASCII codec command
+    let codecPath = "target/release/libexec/chawan/img-codec+ascii"
+    
+    # Set up environment variables for the codec
+    let env = newStringTable()
+    env["MAPPED_URI_PATH"] = "encode"
+    env["REQUEST_HEADERS"] = "Cha-Image-Dimensions: " & $width & "x" & $height & "\n" &
+                            "Cha-Ascii-Charset: basic\n" &
+                            "Cha-Ascii-Max-Width: 80\n" &
+                            "Cha-Ascii-Max-Height: 24\n" &
+                            "Cha-Terminal-Width: 80\n" &
+                            "Cha-Terminal-Height: 24"
+    
+    # Start the ASCII codec process
+    let process = startProcess(codecPath, env = env, options = {poUsePath})
+    let inputStream = process.inputStream
+    let outputStream = process.outputStream
+    
+    # Write the RGBA data to the codec
+    inputStream.write(rgbaData)
+    inputStream.close()
+    
+    # Read the ASCII output
+    let output = outputStream.readAll()
+    outputStream.close()
+    
+    # Wait for the process to complete
+    let exitCode = process.waitForExit()
+    process.close()
+    
+    if exitCode == 0:
+      # Parse the output to extract just the ASCII art (skip headers)
+      let lines = output.split('\n')
+      var asciiStart = 0
+      for i, line in lines:
+        if line == "":  # Empty line indicates end of headers
+          asciiStart = i + 1
+          break
+      
+      if asciiStart < lines.len:
+        return lines[asciiStart..^1].join("\n")
+      else:
+        return "[ASCII conversion failed - no data]"
+    else:
+      return "[ASCII conversion failed - exit code: " & $exitCode & "]"
+      
+  except:
+    return "[ASCII conversion error: " & getCurrentExceptionMsg() & "]"
+
 proc loadResource*(window: Window; image: HTMLImageElement) =
   if not window.settings.images:
     if image.bitmap != nil:
@@ -4292,24 +4348,10 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
           # it's the best way, so I added b) as a fallback measure.
           t = window.imageTypes.getOrDefault(ext, "x-unknown")
         let cacheId = window.loader.addCacheFile(response.outputId)
-        # Check if ASCII mode is enabled
-        let isAsciiMode = window.settings.imageMode.isSome and 
-                         window.settings.imageMode.get == imAscii
-        
-        let url = if isAsciiMode:
-          newURL("img-codec+ascii:encode")
-        else:
-          newURL("img-codec+" & t & ":decode")
-        
+        let url = newURL("img-codec+" & t & ":decode")
         if url.isErr:
           return newResolvedPromise()
-        
-        let headers = if isAsciiMode:
-          # For ASCII mode, we need the full image data, not just info
-          newHeaders(hgRequest)
-        else:
-          # For other modes, we only need image info
-          newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"})
+        let headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"})
         
         let request = newRequest(
           url.get,
@@ -4352,15 +4394,7 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
             imageId: window.getImageId(),
             contentType: "image/" & t
           )
-          
-          # For ASCII mode, read the ASCII data from response body
-          if isAsciiMode:
-            let asciiData = response.body.readAll()
-            bmp.asciiData = asciiData
-            response.close()
-          else:
-            # For other modes, close immediately as we only needed headers
-            response.close()
+          response.close()
           image.bitmap = bmp
           cachedURL.bmp = bmp
           for share in cachedURL.shared:
