@@ -5,6 +5,7 @@ import std/options
 import config/conftypes
 import css/cssparser
 import css/cssvalues
+import html/catom
 import html/script
 import types/opt
 import types/winattrs
@@ -35,6 +36,7 @@ type
     mftWidth = "width"
     mftHeight = "height"
     mftScripting = "scripting"
+    mftContentType = "-cha-content-type"
 
   LengthRange = object
     s: Slice[float32]
@@ -55,7 +57,9 @@ type
     of mftScripting:
       ms: MediaScripting
     of mftWidth, mftHeight:
-      lengthrange*: LengthRange
+      lengthrange: LengthRange
+    of mftContentType:
+      a: CAtom
 
   MediaQuery* = ref object
     case t: MediaConditionType
@@ -74,7 +78,7 @@ type
 
 # Forward declarations
 proc parseMediaCondition(parser: var MediaQueryParser; non = false;
-  noor = false): Opt[MediaQuery]
+  noor = false; nested = false): Opt[MediaQuery]
 
 # Serializer.
 # As usual, the spec is incomplete, so it's hard to say if it's
@@ -98,7 +102,9 @@ func `$`(mf: MediaFeature): string =
       result &= '='
     result &= ' ' & $mf.lengthrange.s.b
   of mftScripting:
-    return "scripting: " & [false: "none", true: "enabled"][mf.b]
+    return "scripting: " & $mf.ms
+  of mftContentType:
+    return $mf.t & ": \"" & ($mf.a).dqEscape() & '"'
 
 func `$`(mq: MediaQuery): string =
   case mq.t
@@ -125,15 +131,11 @@ proc has(parser: var MediaQueryParser): bool =
 proc consume(parser: var MediaQueryParser): CSSToken =
   return parser.ctx.consume()
 
-proc consumeSimpleBlockParen(parser: var MediaQueryParser):
-    Opt[CSSSimpleBlock] =
-  let res = parser.consume()
-  if res.t == cttSimpleBlockParen:
-    return ok(res.oblock)
-  return err()
-
 proc peekTokenType(parser: var MediaQueryParser): CSSTokenType =
   return parser.ctx.peekTokenType()
+
+proc seek(parser: var MediaQueryParser) =
+  parser.ctx.seek()
 
 proc skipBlanks(parser: var MediaQueryParser) =
   parser.ctx.skipBlanks()
@@ -164,6 +166,11 @@ proc consumeIdent(parser: var MediaQueryParser): Opt[CSSToken] =
     return err()
   return ok(parser.consume())
 
+proc consumeString(parser: var MediaQueryParser): Opt[CSSToken] =
+  if parser.peekTokenType() != cttString:
+    return err()
+  return ok(parser.consume())
+
 proc consumeInt(parser: var MediaQueryParser): Opt[int] =
   if parser.peekTokenType() != cttINumber:
     return err()
@@ -188,22 +195,20 @@ proc parseBool(parser: var MediaQueryParser; sfalse, strue: string): Opt[bool] =
 
 proc parseComparison(parser: var MediaQueryParser): Opt[MediaQueryComparison] =
   let tok = parser.consume()
-  if tok.t != cttDelim or tok.c notin {'=', '<', '>'}:
-    return err()
-  case tok.c
-  of '<':
+  case tok.t
+  of cttLt:
     if parser.skipBlanksCheckHas().isOk:
-      if parser.ctx.peekDelim('='):
+      if parser.peekTokenType() == cttEquals:
         discard parser.consume()
         return ok(mqcLe)
     return ok(mqcLt)
-  of '>':
+  of cttGt:
     if parser.skipBlanksCheckHas().isOk:
-      if parser.ctx.peekDelim('='):
+      if parser.peekTokenType() == cttEquals:
         discard parser.consume()
         return ok(mqcGe)
     return ok(mqcGt)
-  of '=': return ok(mqcEq)
+  of cttEquals: return ok(mqcEq)
   else: return err()
 
 proc parseIntRange(parser: var MediaQueryParser; ismin, ismax: bool):
@@ -276,13 +281,20 @@ proc parseFeature0(parser: var MediaQueryParser; t: MediaFeatureType;
     let tok = ?parser.consumeIdent()
     let ms = ?parseEnumNoCase[MediaScripting](tok.s)
     MediaFeature(t: t, ms: ms)
+  of mftContentType:
+    let tok = ?parser.consumeString()
+    MediaFeature(t: t, a: tok.s.toAtom())
   return ok(feature)
 
 proc parseFeature(parser: var MediaQueryParser; t: MediaFeatureType;
     ismin, ismax: bool): Opt[MediaQuery] =
   if not parser.has():
-    return getBoolFeature(t)
+    return err()
   let nt = parser.peekTokenType()
+  if nt == cttRparen:
+    let res = ?getBoolFeature(t)
+    parser.seek()
+    return ok(res)
   if t notin RangeFeatures and (nt != cttColon or ismin or ismax):
     return err()
   if nt == cttColon:
@@ -290,38 +302,36 @@ proc parseFeature(parser: var MediaQueryParser; t: MediaFeatureType;
     discard parser.consume()
   ?parser.skipBlanksCheckHas()
   let feature = ?parser.parseFeature0(t, ismin, ismax)
-  if parser.skipBlanksCheckHas().isOk:
+  ?parser.skipBlanksCheckHas()
+  if parser.consume().t != cttRparen:
     # die if there's still something left to parse
     return err()
   return ok(MediaQuery(t: mctFeature, feature: feature))
 
 proc parseMediaInParens(parser: var MediaQueryParser): Opt[MediaQuery] =
-  let sb = ?parser.consumeSimpleBlockParen()
-  var fparser = MediaQueryParser(
-    ctx: initCSSParser(sb.value),
-    attrs: parser.attrs
-  )
-  fparser.skipBlanks()
-  let tok = ?fparser.consumeIdent()
-  fparser.skipBlanks()
+  if parser.consume().t != cttLparen:
+    return err()
+  ?parser.skipBlanksCheckHas()
+  let tok = ?parser.consumeIdent()
+  parser.skipBlanks()
   if tok.s.equalsIgnoreCase("not"):
-    return fparser.parseMediaCondition(non = true)
+    return parser.parseMediaCondition(non = true, nested = true)
   var tokval = tok.s
   let ismin = tokval.startsWithIgnoreCase("min-")
   let ismax = tokval.startsWithIgnoreCase("max-")
   if ismin or ismax:
     tokval = tokval.substr(4)
   let t = ?parseEnumNoCase[MediaFeatureType](tokval)
-  return fparser.parseFeature(t, ismin, ismax)
+  parser.parseFeature(t, ismin, ismax)
 
 proc parseMediaOr(parser: var MediaQueryParser; left: MediaQuery):
     Opt[MediaQuery] =
-  let right = ?parser.parseMediaCondition()
+  let right = ?parser.parseMediaCondition(nested = true)
   return ok(MediaQuery(t: mctOr, left: left, right: right))
 
 proc parseMediaAnd(parser: var MediaQueryParser; left: MediaQuery;
     noor = false): Opt[MediaQuery] =
-  let right = ?parser.parseMediaCondition(noor = noor)
+  let right = ?parser.parseMediaCondition(noor = noor, nested = true)
   return ok(MediaQuery(t: mctAnd, left: left, right: right))
 
 func negateIf(mq: MediaQuery; non: bool): MediaQuery =
@@ -330,7 +340,7 @@ func negateIf(mq: MediaQuery; non: bool): MediaQuery =
   return mq
 
 proc parseMediaCondition(parser: var MediaQueryParser; non = false;
-    noor = false): Opt[MediaQuery] =
+    noor = false; nested = false): Opt[MediaQuery] =
   var non = non
   if not non:
     if parser.ctx.peekIdentNoCase("not"):
@@ -348,7 +358,7 @@ proc parseMediaCondition(parser: var MediaQueryParser; non = false;
     if noor:
       return err()
     return parser.parseMediaOr(res)
-  return ok(res)
+  err()
 
 proc parseMediaQuery(parser: var MediaQueryParser): Opt[MediaQuery] =
   ?parser.skipBlanksCheckHas()
@@ -429,6 +439,8 @@ func applies(ctx: MediaApplyContext; feature: MediaFeature): bool =
     of msNone: return ctx.scripting == smFalse
     of msInitialOnly: return ctx.scripting != smFalse and ctx.headless == hmDump
     of msEnabled: return ctx.scripting != smFalse and ctx.headless != hmDump
+  of mftContentType:
+    return ctx.contentType.equalsIgnoreCase(feature.a)
 
 func applies(ctx: MediaApplyContext; mq: MediaQuery): bool =
   case mq.t
