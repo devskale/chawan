@@ -1,7 +1,6 @@
 {.push raises: [].}
 
 import std/algorithm
-import std/options
 import std/posix
 import std/strutils
 import std/tables
@@ -286,9 +285,8 @@ proc setCookie*(cookieJar: CookieJar; header: openArray[string]; url: URL;
   let t = getTime().toUnix()
   var sorted = true
   for s in header:
-    let cookie = parseSetCookie(s, t, url, persist)
-    if cookie.isOk:
-      cookieJar.add(cookie.get, persist = persist)
+    if cookie := parseSetCookie(s, t, url, persist):
+      cookieJar.add(cookie, persist = persist)
       sorted = false
   if not sorted:
     cookieJar.cookies.sort(proc(a, b: Cookie): int =

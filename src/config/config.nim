@@ -598,10 +598,10 @@ proc parseConfigValue(ctx: var ConfigParser; x: var Regex; v: TomlValue;
 proc parseConfigValue(ctx: var ConfigParser; x: var URL; v: TomlValue;
     k: string): Err[string] =
   ?typeCheck(v, tvtString, k)
-  let y = parseURL(v.s)
-  if y.isNone:
+  let y = parseURL0(v.s)
+  if y == nil:
     return err(k & ": invalid URL " & v.s)
-  x = y.get
+  x = y
   ok()
 
 proc parseConfigValue(ctx: var ConfigParser; x: var JSValueFunction;
@@ -779,7 +779,7 @@ proc parseConfig*(config: Config; dir: string; buf: openArray[char];
   let toml = parseToml(buf, dir / name, laxnames, config.arraySeen)
   if toml.isOk:
     return config.parseConfig(dir, toml.get, warnings, jsctx)
-  return err("Fatal error: failed to parse config\n" & toml.error)
+  return err("fatal error: failed to parse config\n" & toml.error)
 
 template getNormalAction*(config: Config; s: string): string =
   config.page.getOrDefault(s)
