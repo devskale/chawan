@@ -116,7 +116,7 @@ proc getTemplateContentImpl(builder: ChaDOMBuilder; handle: Node): Node =
   return HTMLTemplateElement(handle).content
 
 proc getParentNodeImpl(builder: ChaDOMBuilder; handle: Node): Option[Node] =
-  return option(handle.parentNode)
+  return option(Node(handle.parentNode))
 
 proc getLocalNameImpl(builder: ChaDOMBuilder; handle: Node): CAtom =
   return Element(handle).localName
@@ -176,6 +176,8 @@ proc removeImpl(builder: ChaDOMBuilder; child: Node) =
     child.remove(suppressObservers = true)
 
 proc moveChildrenImpl(builder: ChaDOMBuilder; fromNode, toNode: Node) =
+  let fromNode = ParentNode(fromNode)
+  let toNode = ParentNode(toNode)
   let toMove = fromNode.getChildList()
   for node in toMove:
     node.remove(suppressObservers = true)
@@ -239,7 +241,7 @@ proc newChaDOMBuilder(url: URL; window: Window; confidence: CharsetConfidence;
 
 # https://html.spec.whatwg.org/multipage/parsing.html#parsing-html-fragments
 proc parseHTMLFragment*(element: Element; s: string): seq[Node] =
-  let url = parseURL("about:blank").get
+  let url = parseURL0("about:blank")
   let builder = newChaDOMBuilder(url, nil, ccIrrelevant)
   let document = builder.document
   document.mode = element.document.mode
@@ -368,7 +370,7 @@ proc parseFromString*(ctx: JSContext; parser: DOMParser; str, t: string):
     let url = if window.document != nil:
       window.document.url
     else:
-      newURL("about:blank").get
+      parseURL0("about:blank")
     let builder = newChaDOMBuilder(url, window, ccIrrelevant)
     var parser = initHTML5Parser(builder, HTML5ParserOpts[Node, CAtom]())
     let res = parser.parseChunk(str)
