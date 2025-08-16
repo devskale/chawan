@@ -2,6 +2,7 @@
 
 import std/options
 import std/os
+import std/posix
 import std/strutils
 import std/tables
 import std/termios
@@ -95,6 +96,11 @@ type
     ry: int
     data: Blob
 
+  TerminalPage {.acyclic.} = ref object
+    a: seq[uint8] # bytes to flush
+    n: int # bytes of s already flushed
+    next: TerminalPage
+
   Terminal* = ref object
     termType: TerminalType
     cs*: Charset
@@ -102,6 +108,8 @@ type
     config: Config
     istream*: PosixStream
     ostream*: PosixStream
+    tdctx: TextDecoderContext
+    eparser: EventParser
     canvas: seq[FixedCell]
     canvasImages*: seq[CanvasImage]
     imagesToClear*: seq[CanvasImage]
@@ -124,13 +132,82 @@ type
     ibuf: array[256, char] # buffer for chars when we can't process them
     ibufLen: int # len of ibuf
     ibufn: int # position in ibuf
-    obuf: array[16384, char] # buffer for output data
-    obufLen: int # len of obuf
+    dynbuf: string # buffer for UTF-8 text input by the user, for areadChar
+    dynbufn: int # position in dynbuf
+    pageHead: TerminalPage # output buffer queue
+    pageTail: TerminalPage # last output buffer
+    registerCb: proc(fd: int) {.raises: [].} # callback to register ostream
     sixelRegisterNum*: int
     kittyId: int # counter for kitty image (*not* placement) ids.
     cursorx: int
     cursory: int
     colorMap: array[16, RGBColor]
+
+  EventState = enum
+    esNone = ""
+    esEsc = "\e"
+    esCSI = "\e["
+    esCSI2 = "\e[2"
+    esCSI20 = "\e[20"
+    esCSI200 = "\e[200"
+    esBracketed = ""
+    esBracketedEsc = "\e"
+    esBracketedCSI = "\e["
+    esBracketedCSI2 = "\e[2"
+    esBracketedCSI20 = "\e[20"
+    esBracketedCSI201 = "\e[201"
+    esMouseBtn
+    esMousePx
+    esMousePy
+    esMouseSkip
+    esBacktrack
+
+  EventParser = object
+    state: EventState
+    keyLen: int8
+    backtrackStack: seq[char]
+    mouse: MouseInput
+    mouseNum: uint32
+
+  InputEventType* = enum
+    ietKey, ietKeyEnd, ietPaste, ietMouse
+
+  InputEvent* = object
+    case t*: InputEventType
+    of ietKey: # key press - UTF-8 bytes
+      c*: char
+    of ietKeyEnd: # key press done (if not in bracketed paste mode)
+      discard
+    of ietPaste: # bracketed paste done
+      discard
+    of ietMouse:
+      m*: MouseInput
+
+  MouseInputType* = enum
+    mitPress = "press", mitRelease = "release", mitMove = "move"
+
+  MouseInputMod* = enum
+    mimShift = "shift", mimCtrl = "ctrl", mimMeta = "meta"
+
+  MouseInputButton* = enum
+    mibLeft = (1, "left")
+    mibMiddle = (2, "middle")
+    mibRight = (3, "right")
+    mibWheelUp = (4, "wheelUp")
+    mibWheelDown = (5, "wheelDown")
+    mibWheelLeft = (6, "wheelLeft")
+    mibWheelRight = (7, "wheelRight")
+    mibThumbInner = (8, "thumbInner")
+    mibThumbTip = (9, "thumbTip")
+    mibButton10 = (10, "button10")
+    mibButton11 = (11, "button11")
+
+  MouseInput* = object
+    t*: MouseInputType
+    button*: MouseInputButton
+    mods*: set[MouseInputMod]
+    col*: int32
+    row*: int32
 
 # control sequence introducer
 const CSI = "\e["
@@ -203,6 +280,11 @@ const RMCUP = DECRST(1049)
 const SGRMOUSEBTNON = DECSET(1002, 1006)
 const SGRMOUSEBTNOFF = DECRST(1002, 1006)
 
+const BracketedPasteOn = DECSET(2004)
+const BracketedPasteOff = DECRST(2004)
+const BracketedPasteStart* = CSI & "200~"
+const BracketedPasteEnd* = CSI & "201~"
+
 # show/hide cursor
 const CNORM = DECSET(25)
 const CIVIS = DECRST(25)
@@ -212,26 +294,57 @@ const APC = "\e_"
 
 const KITTYQUERY = APC & "Gi=1,a=q;" & ST
 
-proc write0(term: Terminal; buffer: openArray[char]) =
-  if not term.ostream.writeDataLoop(buffer):
-    die("error writing to stdout")
-
-proc flush*(term: Terminal) =
-  if term.obufLen > 0:
-    term.write0(term.obuf.toOpenArray(0, term.obufLen - 1))
-    term.obufLen = 0
+proc flush*(term: Terminal): bool =
+  var page = term.pageHead
+  while page != nil:
+    var n = page.n
+    let H = page.a.len - 1
+    while n < page.a.len:
+      let m = term.ostream.writeData(page.a.toOpenArray(n, H))
+      if m < 0:
+        let e = errno
+        if e != EAGAIN and e != EWOULDBLOCK and e != EINTR:
+          die("error writing to stdout: " & $strerror(e))
+        break
+      n += m
+    if n < page.a.len:
+      page.n = n
+      break
+    page = page.next
+  term.pageHead = page
+  if page == nil:
+    term.pageTail = nil
+    return true
+  false
 
 proc write(term: Terminal; s: openArray[char]) =
   if s.len > 0:
-    if s.len + term.obufLen > term.obuf.len:
-      term.flush()
-    if s.len > term.obuf.len:
-      term.write0(s)
-    else:
-      copyMem(addr term.obuf[term.obufLen], unsafeAddr s[0], s.len)
-      term.obufLen += s.len
+    var n = 0
+    if term.pageHead == nil:
+      while n < s.len:
+        let m = term.ostream.writeData(s.toOpenArray(n, s.high))
+        if m < 0:
+          let e = errno
+          if e != EAGAIN and e != EWOULDBLOCK and e != EINTR:
+            die("error writing to stdout: " & $strerror(e))
+          break
+        n += m
+    if n < s.len:
+      let page = TerminalPage()
+      if term.pageTail == nil:
+        term.pageHead = page
+        term.pageTail = page
+        term.registerCb(int(term.ostream.fd))
+      else:
+        term.pageTail.next = page
+        term.pageTail = page
+      # I'd much rather just use @, but that introduces a ridiculous
+      # copy function :(
+      let len = s.len - n
+      page.a = newSeqUninit[uint8](len)
+      copyMem(addr page.a[0], unsafeAddr s[n], len)
 
-proc readChar*(term: Terminal): char =
+proc readChar(term: Terminal): char =
   if term.ibufn == term.ibufLen:
     term.ibufn = 0
     term.ibufLen = term.istream.readData(term.ibuf)
@@ -240,8 +353,160 @@ proc readChar*(term: Terminal): char =
   result = term.ibuf[term.ibufn]
   inc term.ibufn
 
-proc hasBuffer*(term: Terminal): bool =
-  return term.ibufn < term.ibufLen
+proc ahandleRead*(term: Terminal): bool =
+  term.ibufn = 0
+  term.ibufLen = term.istream.readData(term.ibuf)
+  if term.ibufLen < 0:
+    let e = errno
+    if e != EAGAIN and e != EWOULDBLOCK and e != EINTR:
+      term.istream.setBlocking(true)
+      term.ostream.setBlocking(true)
+      die("error reading from stdin")
+    term.ibufLen = 0
+    return false
+  true
+
+# Note: in theory, we should run the escape parser state machine
+# *before* parsing the input.
+# In practice, it doesn't matter how you do it in UTF-8 as long as you
+# stick to 7-bit chars.
+proc areadChar(term: Terminal): Opt[char] =
+  if term.dynbufn == term.dynbuf.len:
+    term.dynbufn = 0
+    term.dynbuf.setLen(0)
+    let H = term.ibufLen - 1
+    for it in term.tdctx.decode(term.ibuf.toOpenArrayByte(term.ibufn, H),
+        finish = false):
+      term.dynbuf &= it
+    term.ibufn = term.ibufLen
+  if term.dynbuf.len == term.dynbufn:
+    return err()
+  let c = term.dynbuf[term.dynbufn]
+  inc term.dynbufn
+  ok(c)
+
+proc backtrack(eparser: var EventParser; s: string; c: char) =
+  let s = $eparser.state
+  eparser.state = esBacktrack
+  eparser.backtrackStack = @[c]
+  for i in countdown(s.high, 0):
+    eparser.backtrackStack.add(s[i])
+
+proc backtrack(eparser: var EventParser; c: char) =
+  eparser.backtrack($eparser.state, c)
+
+proc nextState(eparser: var EventParser; c, cc: char) =
+  if c == cc:
+    inc eparser.state
+  else:
+    eparser.backtrack(cc)
+
+proc areadCharBacktrack(term: Terminal): Opt[char] =
+  if term.eparser.state == esBacktrack:
+    if term.eparser.backtrackStack.len > 0:
+      return ok(term.eparser.backtrackStack.pop())
+    term.eparser.state = esNone
+  return term.areadChar()
+
+proc areadEvent*(term: Terminal): Opt[InputEvent] =
+  while true:
+    if term.eparser.keyLen == 1:
+      dec term.eparser.keyLen
+      return ok(InputEvent(t: ietKeyEnd))
+    let c = ?term.areadCharBacktrack()
+    case term.eparser.state
+    of esBacktrack, esNone:
+      if term.eparser.state != esBacktrack and c == '\e':
+        inc term.eparser.state
+      elif term.eparser.keyLen > 0:
+        dec term.eparser.keyLen
+        return ok(InputEvent(t: ietKey, c: c))
+      else:
+        let u = uint8(c)
+        term.eparser.keyLen = if u <= 0x7F: 1i8
+        elif u shr 5 == 0b110: 2i8
+        elif u shr 4 == 0b1110: 3i8
+        else: 4i8
+        return ok(InputEvent(t: ietKey, c: c))
+    of esBracketed:
+      if c == '\e':
+        inc term.eparser.state
+      else:
+        return ok(InputEvent(t: ietKey, c: c))
+    of esEsc, esBracketedEsc: term.eparser.nextState('[', c)
+    of esCSI:
+      case c
+      of '<':
+        term.eparser.mouse = MouseInput()
+        term.eparser.mouseNum = 0
+        term.eparser.state = esMouseBtn
+      of '2': term.eparser.state = esCSI2
+      else: term.eparser.backtrack(c)
+    of esBracketedCSI: term.eparser.nextState('2', c)
+    of esCSI2, esBracketedCSI2: term.eparser.nextState('0', c)
+    of esCSI20: term.eparser.nextState('0', c)
+    of esBracketedCSI20: term.eparser.nextState('1', c)
+    of esCSI200: term.eparser.nextState('~', c)
+    of esBracketedCSI201:
+      if c == '~':
+        term.eparser.state = esNone
+        return ok(InputEvent(t: ietPaste))
+      term.eparser.backtrack(c)
+    of esMouseBtn, esMousePx, esMousePy:
+      # CSI < btn ; Px ; Py M (press)
+      # CSI < btn ; Px ; Py m (release)
+      case c
+      of '0'..'9':
+        term.eparser.mouseNum *= 10
+        term.eparser.mouseNum += uint32(c) - uint32('0')
+        if term.eparser.mouseNum > uint16.high:
+          term.eparser.state = esMouseSkip
+      of 'm', 'M':
+        if term.eparser.state == esMousePy:
+          var mouse = term.eparser.mouse
+          if mouse.t != mitMove:
+            mouse.t = if c == 'M': mitPress else: mitRelease
+          mouse.row = int32(term.eparser.mouseNum) - 1
+          term.eparser.state = esNone
+          return ok(InputEvent(t: ietMouse, m: mouse))
+        else:
+          term.eparser.state = esNone # welp
+      of ';':
+        case term.eparser.state
+        of esMouseBtn:
+          let btn = term.eparser.mouseNum
+          if (btn and 4) != 0:
+            term.eparser.mouse.mods.incl(mimShift)
+          if (btn and 8) != 0:
+            term.eparser.mouse.mods.incl(mimCtrl)
+          if (btn and 16) != 0:
+            term.eparser.mouse.mods.incl(mimMeta)
+          if (btn and 32) != 0:
+            term.eparser.mouse.t = mitMove
+          var button = (btn and 3) + 1
+          if (btn and 64) != 0:
+            button += 3
+          if (btn and 128) != 0:
+            button += 7
+          if button in
+              uint32(MouseInputButton.low)..uint32(MouseInputButton.high):
+            term.eparser.mouse.button = MouseInputButton(button)
+            term.eparser.state = esMousePx
+          else:
+            term.eparser.state = esMouseSkip
+        of esMousePx:
+          term.eparser.mouse.col = int32(term.eparser.mouseNum) - 1
+          term.eparser.state = esMousePy
+        else: # esMousePy
+          term.eparser.state = esMouseSkip
+        term.eparser.mouseNum = 0
+      else: # we got something unexpected; try not to get stuck...
+        term.eparser.state = esNone
+    of esMouseSkip:
+      # backtracking mouse events is too much effort; just skip it.
+      if c in {'m', 'M'}:
+        term.eparser.state = esNone
+  err()
 
 proc cursorGoto(term: Terminal; x, y: int): string =
   case term.termType
@@ -266,9 +531,13 @@ proc isatty*(term: Terminal): bool =
 
 proc anyKey*(term: Terminal; msg = "[Hit any key]") =
   if term.isatty():
+    term.istream.setBlocking(true)
+    term.ostream.setBlocking(true)
+    doAssert term.flush()
     term.write(term.clearEnd() & msg)
-    term.flush()
     discard term.readChar()
+    term.istream.setBlocking(false)
+    term.ostream.setBlocking(false)
 
 proc resetFormat(term: Terminal): string =
   case term.termType
@@ -480,6 +749,16 @@ proc disableMouse*(term: Terminal) =
   of ttAdm3a, ttVt52, ttVt100: discard
   else: term.write(SGRMOUSEBTNOFF)
 
+proc enableBracketedPaste(term: Terminal) =
+  case term.termType
+  of ttAdm3a, ttVt52, ttVt100: discard
+  else: term.write(BracketedPasteOn)
+
+proc disableBracketedPaste(term: Terminal) =
+  case term.termType
+  of ttAdm3a, ttVt52, ttVt100: discard
+  else: term.write(BracketedPasteOff)
+
 proc encodeAllQMark(res: var string; start: int; te: TextEncoder;
     iq: openArray[uint8]) =
   var n = start
@@ -662,6 +941,7 @@ proc applyConfig(term: Terminal) =
     term.cs = CHARSET_UTF_8
   else:
     term.te = newTextEncoder(term.cs)
+  term.tdctx = initTextDecoderContext(term.cs)
   term.applyConfigDimensions()
 
 proc outputGrid*(term: Terminal) =
@@ -899,7 +1179,6 @@ proc outputKittyImage(term: Terminal; x, y: int; image: CanvasImage) =
   if image.kittyId != 0:
     outs &= ",i=" & $image.kittyId & ",a=p;" & ST
     term.write(outs)
-    term.flush()
     return
   inc term.kittyId # skip i=0
   image.kittyId = term.kittyId
@@ -994,6 +1273,9 @@ proc quit*(term: Terminal) =
     term.disableRawMode()
     if term.config.input.useMouse:
       term.disableMouse()
+    if term.config.input.bracketedPaste:
+      term.disableBracketedPaste()
+    term.istream.setBlocking(true)
     if term.smcup:
       if term.imageMode == imSixel:
         # xterm seems to keep sixels in the alt screen; clear these so
@@ -1007,7 +1289,6 @@ proc quit*(term: Terminal) =
       term.write(XTPOPTITLE)
     term.showCursor()
     term.clearCanvas()
-  term.flush()
 
 type
   QueryAttrs = enum
@@ -1109,7 +1390,7 @@ proc queryAttrs(term: Terminal; windowOnly: bool): QueryResult =
     outs &= XTGETANSI
   outs &= static(GEOMPIXEL & CELLSIZE & GEOMCELL & DA1)
   term.write(outs)
-  term.flush()
+  doAssert term.flush()
   result = QueryResult(success: false, attrs: {})
   while true:
     template fail =
@@ -1439,87 +1720,16 @@ proc detectTermAttributes(term: Terminal; windowOnly: bool): TermStartResult =
       term.colorMode = cmTrueColor
   return res
 
-type
-  MouseInputType* = enum
-    mitPress = "press", mitRelease = "release", mitMove = "move"
-
-  MouseInputMod* = enum
-    mimShift = "shift", mimCtrl = "ctrl", mimMeta = "meta"
-
-  MouseInputButton* = enum
-    mibLeft = (1, "left")
-    mibMiddle = (2, "middle")
-    mibRight = (3, "right")
-    mibWheelUp = (4, "wheelUp")
-    mibWheelDown = (5, "wheelDown")
-    mibWheelLeft = (6, "wheelLeft")
-    mibWheelRight = (7, "wheelRight")
-    mibThumbInner = (8, "thumbInner")
-    mibThumbTip = (9, "thumbTip")
-    mibButton10 = (10, "button10")
-    mibButton11 = (11, "button11")
-
-  MouseInput* = object
-    t*: MouseInputType
-    button*: MouseInputButton
-    mods*: set[MouseInputMod]
-    col*: int32
-    row*: int32
-
-proc parseMouseInput*(term: Terminal): Opt[MouseInput] =
-  var btn = 0
-  while (let c = term.readChar(); c != ';'):
-    let n = decValue(c)
-    if n == -1:
-      return err()
-    btn *= 10
-    btn += n
-  var mods: set[MouseInputMod] = {}
-  if (btn and 4) != 0:
-    mods.incl(mimShift)
-  if (btn and 8) != 0:
-    mods.incl(mimCtrl)
-  if (btn and 16) != 0:
-    mods.incl(mimMeta)
-  var px = 0i32
-  while (let c = term.readChar(); c != ';'):
-    let n = int32(decValue(c))
-    if n == -1:
-      return err()
-    px *= 10
-    px += n
-  var py = 0i32
-  var c: char
-  while (c = term.readChar(); c notin {'m', 'M'}):
-    let n = int32(decValue(c))
-    if n == -1:
-      return err()
-    py *= 10
-    py += n
-  var t = if c == 'M': mitPress else: mitRelease
-  if (btn and 32) != 0:
-    t = mitMove
-  var button = (btn and 3) + 1
-  if (btn and 64) != 0:
-    button += 3
-  if (btn and 128) != 0:
-    button += 7
-  if button notin int(MouseInputButton.low)..int(MouseInputButton.high):
-    return err()
-  ok(MouseInput(
-    t: t,
-    mods: mods,
-    button: MouseInputButton(button),
-    col: px - 1,
-    row: py - 1
-  ))
-
 proc windowChange*(term: Terminal) =
+  term.istream.setBlocking(true)
+  term.ostream.setBlocking(true)
   discard term.detectTermAttributes(windowOnly = true)
   term.applyConfigDimensions()
   term.canvas = newSeq[FixedCell](term.attrs.width * term.attrs.height)
   term.lineDamage = newSeq[int](term.attrs.height)
   term.clearCanvas()
+  term.istream.setBlocking(false)
+  term.ostream.setBlocking(false)
 
 proc initScreen(term: Terminal) =
   # note: deinit happens in quit()
@@ -1529,11 +1739,17 @@ proc initScreen(term: Terminal) =
     term.write(term.enableAltScreen())
   if term.config.input.useMouse:
     term.enableMouse()
+  if term.config.input.bracketedPaste:
+    term.enableBracketedPaste()
   term.cursorx = -1
   term.cursory = -1
+  term.istream.setBlocking(false)
+  term.ostream.setBlocking(false)
 
-proc start*(term: Terminal; istream: PosixStream): TermStartResult =
+proc start*(term: Terminal; istream: PosixStream;
+    registerCb: (proc(fd: int) {.raises: [].})): TermStartResult =
   term.istream = istream
+  term.registerCb = registerCb
   if term.isatty():
     term.enableRawMode()
   result = term.detectTermAttributes(windowOnly = false)
