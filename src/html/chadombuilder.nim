@@ -13,11 +13,11 @@ import html/enums
 import monoucha/fromjs
 import monoucha/javascript
 import monoucha/jserror
+import monoucha/quickjs
+import monoucha/tojs
 import types/opt
 import types/refstring
 import types/url
-
-export htmlparser.ParseResult
 
 # DOMBuilder implementation for Chawan.
 
