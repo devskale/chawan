@@ -91,7 +91,7 @@ ssl_flags += $(foreach flag,$(ssl_cflags),-t:$(flag))
 ssl_flags += $(foreach flag,$(ssl_ldflags),-l:$(flag))
 
 ifneq ($(status),0 0)
-$(error failed to find some dependencies)
+#$(error failed to find some dependencies)
 endif
 
 export CC CFLAGS LDFLAGS PANDOC

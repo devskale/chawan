@@ -6,7 +6,7 @@ console-buffer = true
 
 [buffer]
 styling = true
-images = false
+images = true
 scripting = false
 referer-from = false
 cookie = false
@@ -21,7 +21,7 @@ ignore-case = "auto"
 
 [encoding]
 document-charset = ["utf-8", "sjis", "euc-jp", "latin2"]
-display-charset = "auto"
+display-charset = "utf-8"
 
 [external]
 mailcap = [
@@ -81,7 +81,8 @@ side-wheel-scroll = 5
 color-mode = "auto"
 format-mode = "auto"
 no-format-mode = "overline"
-image-mode = "auto"
+sixel-colors = "auto"
+alt-screen = "auto"
 sixel-colors = "auto"
 alt-screen = "auto"
 highlight-color = "cyan"
