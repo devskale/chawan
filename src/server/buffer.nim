@@ -23,7 +23,6 @@ import css/render
 import html/catom
 import html/chadombuilder
 import html/dom
-import html/enums
 import html/env
 import html/event
 import html/formdata as formdata_impl
@@ -1303,7 +1302,7 @@ proc submitForm(bc: BufferContext; form: HTMLFormElement;
       return nil
     form.firing = true
     #TODO user validity/validity constraints
-    let jsSubmitter = if submitter != form: submitter else: nil
+    let jsSubmitter = EventTarget(if submitter != form: submitter else: nil)
     let event = newSubmitEvent(satSubmit.toAtom(), SubmitEventInit(
       submitter: EventTargetHTMLElement(jsSubmitter),
       bubbles: true,
