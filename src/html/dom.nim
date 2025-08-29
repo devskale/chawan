@@ -212,7 +212,7 @@ type
     SHOW_DOCUMENT_FRAGMENT = 10
     SHOW_NOTATION = 11
 
-  CollectionMatchFun = proc(node: Node): bool {.noSideEffect, raises: [].}
+  CollectionMatchFun = proc(node: Node): bool {.raises: [].}
 
   Collection = ref object of RootObj
     islive: bool
@@ -590,24 +590,24 @@ jsDestructor(CSSStyleDeclaration)
 jsDestructor(DOMRect)
 
 # Forward declarations
-func newCDATASection(document: Document; data: string): CDATASection
-func newComment(document: Document; data: sink string): Comment
-func newText*(document: Document; data: sink string): Text
-func newText(ctx: JSContext; data: sink string = ""): Text
+proc newCDATASection(document: Document; data: string): CDATASection
+proc newComment(document: Document; data: sink string): Comment
+proc newText*(document: Document; data: sink string): Text
+proc newText(ctx: JSContext; data: sink string = ""): Text
 proc newDocument*(): Document
-func newDocumentType*(document: Document;
+proc newDocumentType*(document: Document;
   name, publicId, systemId: sink string): DocumentType
-func newDocumentFragment(document: Document): DocumentFragment
-func newProcessingInstruction(document: Document; target: string;
+proc newDocumentFragment(document: Document): DocumentFragment
+proc newProcessingInstruction(document: Document; target: string;
   data: sink string): ProcessingInstruction
 proc newElement*(document: Document; localName: CAtom;
   namespace = Namespace.HTML; prefix = NO_PREFIX): Element
 proc newElement*(document: Document; localName, namespaceURI, prefix: CAtom):
   Element
 proc newHTMLElement*(document: Document; tagType: TagType): HTMLElement
-func newHTMLCollection(root: Node; match: CollectionMatchFun;
+proc newHTMLCollection(root: Node; match: CollectionMatchFun;
   islive, childonly: bool): HTMLCollection
-func newNodeList(root: Node; match: CollectionMatchFun;
+proc newNodeList(root: Node; match: CollectionMatchFun;
   islive, childonly: bool): NodeList
 proc newDOMTokenList(element: Element; name: StaticAtom): DOMTokenList
 proc newCSSStyleDeclaration(element: Element; value: string; computed = false;
@@ -622,67 +622,69 @@ proc adopt(document: Document; node: Node)
 proc applyAuthorSheets*(document: Document)
 proc applyStyleDependencies*(element: Element; depends: DependencyInfo)
 proc baseURL*(document: Document): URL
-func documentElement*(document: Document): Element
+proc documentElement*(document: Document): Element
 proc invalidateCollections(document: Document)
 proc parseURL0*(document: Document; s: string): URL
 proc parseURL*(document: Document; s: string): Opt[URL]
 proc reflectEvent(document: Document; target: EventTarget;
   name, ctype: StaticAtom; value: string; target2 = none(EventTarget))
 
-func document*(node: Node): Document
-func parentElement*(node: Node): Element
-func serializeFragment(res: var string; node: Node)
-func serializeFragmentInner(res: var string; child: Node; parentType: TagType)
+proc document*(node: Node): Document
+proc nextDescendant(node: Node): Node
+proc parentElement*(node: Node): Element
+proc serializeFragment(res: var string; node: Node)
+proc serializeFragmentInner(res: var string; child: Node; parentType: TagType)
 proc insertBefore*(parent, node: Node; before: Option[Node]): DOMResult[Node]
 proc remove*(node: Node)
 proc replace*(parent, child, node: Node): Err[DOMException]
 
-func countChildren(node: ParentNode; nodeType: type): int
-func hasChild(node: ParentNode; nodeType: type): bool
-func hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool
+proc countChildren(node: ParentNode; nodeType: type): int
+proc hasChild(node: ParentNode; nodeType: type): bool
+proc hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool
 proc insert*(parent: ParentNode; node, before: Node; suppressObservers = false)
 proc replaceAll(parent: ParentNode; node: Node)
 proc replaceAll(parent: ParentNode; s: sink string)
 
-func containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool
+proc containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool
 
-func data(attr: Attr): lent AttrData
+proc data(attr: Attr): lent AttrData
 proc setValue(attr: Attr; s: string)
 
 proc attr*(element: Element; name: CAtom; value: sink string)
 proc attr*(element: Element; name: StaticAtom; value: sink string)
-func attr*(element: Element; s: StaticAtom): lent string
-func attrb*(element: Element; s: CAtom): bool
-func attrb*(element: Element; at: StaticAtom): bool
-func attrl*(element: Element; s: StaticAtom): Opt[int32]
-func attrul*(element: Element; s: StaticAtom): Opt[uint32]
-func attrulgz*(element: Element; s: StaticAtom): Opt[uint32]
+proc attr*(element: Element; s: StaticAtom): lent string
+proc attrb*(element: Element; s: CAtom): bool
+proc attrb*(element: Element; at: StaticAtom): bool
+proc attrl*(element: Element; s: StaticAtom): Opt[int32]
+proc attrul*(element: Element; s: StaticAtom): Opt[uint32]
+proc attrulgz*(element: Element; s: StaticAtom): Opt[uint32]
 proc attrl(element: Element; name: StaticAtom; value: int32)
 proc attrul(element: Element; name: StaticAtom; value: uint32)
 proc attrulgz(element: Element; name: StaticAtom; value: uint32)
 proc delAttr(ctx: JSContext; element: Element; i: int)
 proc elementInsertionSteps(element: Element): bool
 proc elIndex*(this: Element): int
-func findAttr(element: Element; qualifiedName: CAtom): int
-func findAttrNS(element: Element; namespace, localName: CAtom): int
+proc ensureStyle(element: Element)
+proc findAttr(element: Element; qualifiedName: CAtom): int
+proc findAttrNS(element: Element; namespace, localName: CAtom): int
 proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues
 proc invalidate*(element: Element)
 proc invalidate*(element: Element; dep: DependencyType)
-proc ensureStyle(element: Element)
-func outerHTML(element: Element): string
+proc nextDisplayedElement(element: Element): Element
+proc outerHTML(element: Element): string
 proc postConnectionSteps(element: Element)
-func previousElementSibling*(element: Element): Element
+proc previousElementSibling*(element: Element): Element
 proc reflectAttr(element: Element; name: CAtom; value: Option[string])
-func scriptingEnabled(element: Element): bool
-func tagName(element: Element): string
-func tagType*(element: Element; namespace = satNamespaceHTML): TagType
+proc scriptingEnabled(element: Element): bool
+proc tagName(element: Element): string
+proc tagType*(element: Element; namespace = satNamespaceHTML): TagType
 
 proc resetFormOwner(element: FormAssociatedElement)
-func checked*(input: HTMLInputElement): bool {.inline.}
+proc checked*(input: HTMLInputElement): bool {.inline.}
 proc setChecked*(input: HTMLInputElement; b: bool)
-func value*(this: HTMLInputElement): lent string
+proc value*(this: HTMLInputElement): lent string
 proc setValue*(this: HTMLInputElement; value: sink string)
-func value*(option: HTMLOptionElement): string
+proc value*(option: HTMLOptionElement): string
 proc setSelectedness(select: HTMLSelectElement)
 proc updateSheet*(this: HTMLStyleElement)
 proc execute*(element: HTMLScriptElement)
@@ -730,7 +732,7 @@ template toset(ts: openArray[TagType]): set[TagType] =
     tags.incl(tag)
   tags
 
-func makes(name: StaticAtom; ts: set[TagType]): ReflectEntry =
+proc makes(name: StaticAtom; ts: set[TagType]): ReflectEntry =
   ReflectEntry(
     attrname: name,
     funcname: name,
@@ -738,7 +740,7 @@ func makes(name: StaticAtom; ts: set[TagType]): ReflectEntry =
     tags: ts
   )
 
-func makes(attrname, funcname: StaticAtom; ts: set[TagType]): ReflectEntry =
+proc makes(attrname, funcname: StaticAtom; ts: set[TagType]): ReflectEntry =
   ReflectEntry(
     attrname: attrname,
     funcname: funcname,
@@ -746,13 +748,13 @@ func makes(attrname, funcname: StaticAtom; ts: set[TagType]): ReflectEntry =
     tags: ts
   )
 
-func makes(name: StaticAtom; ts: varargs[TagType]): ReflectEntry =
+proc makes(name: StaticAtom; ts: varargs[TagType]): ReflectEntry =
   makes(name, toset(ts))
 
-func makes(attrname, funcname: StaticAtom; ts: varargs[TagType]): ReflectEntry =
+proc makes(attrname, funcname: StaticAtom; ts: varargs[TagType]): ReflectEntry =
   makes(attrname, funcname, toset(ts))
 
-func makeb(attrname, funcname: StaticAtom; ts: varargs[TagType]): ReflectEntry =
+proc makeb(attrname, funcname: StaticAtom; ts: varargs[TagType]): ReflectEntry =
   ReflectEntry(
     attrname: attrname,
     funcname: funcname,
@@ -760,10 +762,10 @@ func makeb(attrname, funcname: StaticAtom; ts: varargs[TagType]): ReflectEntry =
     tags: toset(ts)
   )
 
-func makeb(name: StaticAtom; ts: varargs[TagType]): ReflectEntry =
+proc makeb(name: StaticAtom; ts: varargs[TagType]): ReflectEntry =
   makeb(name, name, ts)
 
-func makeul(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
+proc makeul(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
     ReflectEntry =
   ReflectEntry(
     attrname: name,
@@ -773,7 +775,7 @@ func makeul(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
     u: default
   )
 
-func makeulgz(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
+proc makeulgz(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
     ReflectEntry =
   ReflectEntry(
     attrname: name,
@@ -783,7 +785,7 @@ func makeulgz(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
     u: default
   )
 
-func makef(name, ctype: StaticAtom): ReflectEntry =
+proc makef(name, ctype: StaticAtom): ReflectEntry =
   ReflectEntry(
     attrname: name,
     funcname: name,
@@ -929,33 +931,23 @@ iterator branchElems*(node: Node): Element {.inline.} =
       yield Element(node)
 
 iterator descendants*(node: ParentNode): Node {.inline.} =
-  var stack: seq[Node] = @[]
-  for child in node.rchildList:
-    stack.add(child)
-  while stack.len > 0:
-    let node = stack.pop()
+  var node = node.firstChild
+  while node != nil:
     yield node
-    if node of ParentNode:
-      let node = cast[ParentNode](node)
-      for child in node.rchildList:
-        stack.add(child)
+    node = node.nextDescendant
 
-iterator descendantsIncl(node: ParentNode): Node {.inline.} =
-  var stack = @[Node(node)]
-  while stack.len > 0:
-    let node = stack.pop()
+iterator descendantsIncl(node: Node): Node {.inline.} =
+  var node = node
+  while node != nil:
     yield node
-    if node of ParentNode:
-      let node = cast[ParentNode](node)
-      for child in node.rchildList:
-        stack.add(child)
+    node = node.nextDescendant
 
 iterator elementDescendants*(node: ParentNode): Element {.inline.} =
   for child in node.descendants:
     if child of Element:
       yield Element(child)
 
-iterator elementDescendantsIncl(node: ParentNode): Element {.inline.} =
+iterator elementDescendantsIncl(node: Node): Element {.inline.} =
   for child in node.descendantsIncl:
     if child of Element:
       yield Element(child)
@@ -974,19 +966,10 @@ iterator elementDescendants*(node: ParentNode; tag: set[TagType]): Element
 
 iterator displayedElements*(window: Window; tag: TagType): Element
     {.inline.} =
-  let node = window.document
-  var stack: seq[Node] = @[]
-  for child in node.rchildList:
-    stack.add(child)
-  while stack.len > 0:
-    let node = stack.pop()
-    if node of Element:
-      let element = Element(node)
-      element.ensureStyle()
-      if element.computed{"display"} != DisplayNone:
-        yield element
-        for child in element.rchildList:
-          stack.add(child)
+  var element = window.document.documentElement
+  while element != nil:
+    yield element
+    element = element.nextDisplayedElement
 
 iterator inputs(form: HTMLFormElement): HTMLInputElement {.inline.} =
   for control in form.controls:
@@ -1025,19 +1008,19 @@ iterator options*(select: HTMLSelectElement): HTMLOptionElement {.inline.} =
 # For now, these are the same; on an API level however, getGlobal is
 # guaranteed to be non-null, while getWindow may return null in the
 # future.  (This is in preparation for Worker support.)
-func getGlobal*(ctx: JSContext): Window =
+proc getGlobal*(ctx: JSContext): Window =
   let global = JS_GetGlobalObject(ctx)
   var window: Window
   doAssert ctx.fromJSFree(global, window).isOk
   return window
 
-func getWindow*(ctx: JSContext): Window =
+proc getWindow*(ctx: JSContext): Window =
   let global = JS_GetGlobalObject(ctx)
   var window: Window
   doAssert ctx.fromJSFree(global, window).isOk
   return window
 
-func console(window: Window): Console =
+proc console(window: Window): Console =
   return window.internalConsole
 
 proc setWeak(ctx: JSContext; wwm: WindowWeakMap; key, val: JSValue): Opt[void] =
@@ -1058,26 +1041,26 @@ proc getWeak(ctx: JSContext; wwm: WindowWeakMap; key: JSValueConst): JSValue =
   return JS_Invoke(ctx, global.weakMap[wwm], ctx.getOpaque().strRefs[jstGet],
     1, key.toJSValueConstArray())
 
-func isCell(this: Node): bool =
+proc isCell(this: Node): bool =
   return this of Element and Element(this).tagType in {TAG_TD, TAG_TH}
 
-func isTBody(this: Node): bool =
+proc isTBody(this: Node): bool =
   return this of Element and Element(this).tagType == TAG_TBODY
 
-func isRow(this: Node): bool =
+proc isRow(this: Node): bool =
   return this of Element and Element(this).tagType == TAG_TR
 
-func isOptionOf(node: Node; select: HTMLSelectElement): bool =
+proc isOptionOf(node: Node; select: HTMLSelectElement): bool =
   if node of HTMLOptionElement:
     let parent = node.parentNode
     return parent == select or
       parent of HTMLOptGroupElement and parent.parentNode == select
   return false
 
-func isElement(node: Node): bool =
+proc isElement(node: Node): bool =
   return node of Element
 
-func isForm(node: Node): bool =
+proc isForm(node: Node): bool =
   return node of HTMLFormElement
 
 proc isLink(node: Node): bool =
@@ -1104,7 +1087,7 @@ proc newWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
   of wwmSelectedOptions:
     let this = HTMLSelectElement(this)
     return ctx.toJS(this.newHTMLCollection(
-      match = func(node: Node): bool =
+      match = proc(node: Node): bool =
         return node.isOptionOf(this) and HTMLOptionElement(node).selected,
       islive = true,
       childonly = false
@@ -1442,7 +1425,7 @@ proc getComputedStyle0*(window: Window; element: Element;
 
 # Node
 when defined(debug):
-  func `$`*(node: Node): string =
+  proc `$`*(node: Node): string =
     if node == nil:
       return "null"
     result = ""
@@ -1451,7 +1434,7 @@ when defined(debug):
 proc baseURI(node: Node): string {.jsfget.} =
   return $node.document.baseURL
 
-func document*(node: Node): Document =
+proc document*(node: Node): Document =
   let next = node.internalNext
   if next == nil:
     return Document(node)
@@ -1459,30 +1442,47 @@ func document*(node: Node): Document =
     return Document(next)
   return Document(node.parentNode.firstChild.internalPrev.internalNext)
 
-func parentElement*(node: Node): Element {.jsfget.} =
+proc parentElement*(node: Node): Element {.jsfget.} =
   let p = node.parentNode
   if p != nil and p of Element:
     return Element(p)
   return nil
 
-func nextSibling*(node: Node): Node {.jsfget.} =
+proc nextSibling*(node: Node): Node {.jsfget.} =
   if node.internalNext == nil or node.internalNext.internalNext == nil:
     # if next is nil, then node is a Document.
     # if next.next is nil, then next is ownerDocument.
     return nil
   return node.internalNext
 
-func previousSibling*(node: Node): Node {.jsfget.} =
+proc previousSibling*(node: Node): Node {.jsfget.} =
   if node.parentNode == nil or node == node.parentNode.firstChild:
     return nil
   return node.internalPrev
 
-func ownerDocument(node: Node): Document {.jsfget.} =
+proc nextDescendant(node: Node): Node =
+  if node of ParentNode: # parent
+    let node = cast[ParentNode](node)
+    if node.firstChild != nil:
+      return node.firstChild
+  # climb up until we find a non-last leaf (this might be node itself)
+  var node = node
+  while true:
+    let next = node.nextSibling
+    if next != nil:
+      return next
+    node = node.parentNode
+    if node == nil:
+      break
+  # done
+  return nil
+
+proc ownerDocument(node: Node): Document {.jsfget.} =
   if node of Document:
     return nil
   return node.document
 
-func jsNodeType0(node: Node): NodeType =
+proc jsNodeType0(node: Node): NodeType =
   if node of CharacterData:
     if node of Text:
       return ntText
@@ -1503,10 +1503,10 @@ func jsNodeType0(node: Node): NodeType =
   else: # DocumentFragment
     return ntDocumentFragment
 
-func nodeType(node: Node): uint16 {.jsfget.} =
+proc nodeType(node: Node): uint16 {.jsfget.} =
   return uint16(node.jsNodeType0)
 
-func nodeName(node: Node): string {.jsfget.} =
+proc nodeName(node: Node): string {.jsfget.} =
   if node of Element:
     return Element(node).tagName
   if node of Attr:
@@ -1526,23 +1526,23 @@ func nodeName(node: Node): string {.jsfget.} =
   assert node of Text
   return "#text"
 
-func isValidChild(node: Node): bool =
+proc isValidChild(node: Node): bool =
   return node of DocumentFragment or node of DocumentType or node of Element or
     node of CharacterData
 
-func checkParentValidity(parent: Node): DOMResult[ParentNode] =
+proc checkParentValidity(parent: Node): DOMResult[ParentNode] =
   if parent of ParentNode:
     return ok(cast[ParentNode](parent))
   const msg = "Parent must be a document, a document fragment, or an element"
   return errDOMException(msg, "HierarchyRequestError")
 
-func rootNode(node: Node): Node =
+proc rootNode(node: Node): Node =
   var node = node
   while node.parentNode != nil:
     node = node.parentNode
   return node
 
-func isHostIncludingInclusiveAncestor(a, b: Node): bool =
+proc isHostIncludingInclusiveAncestor(a, b: Node): bool =
   for parent in b.branch:
     if parent == a:
       return true
@@ -1553,7 +1553,7 @@ func isHostIncludingInclusiveAncestor(a, b: Node): bool =
         return true
   return false
 
-func hasNextSibling(node: Node; nodeType: type): bool =
+proc hasNextSibling(node: Node; nodeType: type): bool =
   var node = node.nextSibling
   while node != nil:
     if node of nodeType:
@@ -1561,7 +1561,7 @@ func hasNextSibling(node: Node; nodeType: type): bool =
     node = node.nextSibling
   return false
 
-func hasPreviousSibling(node: Node; nodeType: type): bool =
+proc hasPreviousSibling(node: Node; nodeType: type): bool =
   var node = node.previousSibling
   while node != nil:
     if node of nodeType:
@@ -1569,14 +1569,14 @@ func hasPreviousSibling(node: Node; nodeType: type): bool =
     node = node.previousSibling
   return false
 
-func nodeValue(ctx: JSContext; node: Node): JSValue {.jsfget.} =
+proc nodeValue(ctx: JSContext; node: Node): JSValue {.jsfget.} =
   if node of CharacterData:
     return ctx.toJS(CharacterData(node).data)
   elif node of Attr:
     return ctx.toJS(Attr(node).data.value)
   return JS_NULL
 
-func textContent*(node: Node): string =
+proc textContent*(node: Node): string =
   result = ""
   if node of CharacterData:
     result = CharacterData(node).data
@@ -1586,45 +1586,45 @@ func textContent*(node: Node): string =
       if not (child of Comment):
         result &= child.textContent
 
-func textContent(ctx: JSContext; node: Node): JSValue {.jsfget.} =
+proc textContent(ctx: JSContext; node: Node): JSValue {.jsfget.} =
   if node of Document or node of DocumentType:
     return JS_NULL
   return ctx.toJS(node.textContent)
 
-func isConnected(node: Node): bool {.jsfget.} =
+proc isConnected(node: Node): bool {.jsfget.} =
   return node.rootNode of Document #TODO shadow root
 
-func inSameTree*(a, b: Node): bool =
+proc inSameTree*(a, b: Node): bool =
   a.rootNode == b.rootNode
 
 # a == b or a in b's ancestors
-func contains*(a, b: Node): bool {.jsfunc.} =
+proc contains*(a, b: Node): bool {.jsfunc.} =
   if b != nil:
     for node in b.branch:
       if node == a:
         return true
   return false
 
-func jsParentNode(node: Node): Node {.jsfget: "parentNode".} =
+proc jsParentNode(node: Node): Node {.jsfget: "parentNode".} =
   return node.parentNode
 
-func firstChild*(node: Node): Node {.jsfget.} =
+proc firstChild*(node: Node): Node {.jsfget.} =
   if node of ParentNode:
     return cast[ParentNode](node).firstChild
   nil
 
-func lastChild*(node: Node): Node {.jsfget.} =
+proc lastChild*(node: Node): Node {.jsfget.} =
   let first = node.firstChild
   if first != nil:
     return first.internalPrev
   nil
 
-func hasChildNodes(node: Node): bool {.jsfunc.} =
+proc hasChildNodes(node: Node): bool {.jsfunc.} =
   return node.firstChild != nil
 
 # WARNING the ordering of the arguments in the standard is whack so this
 # doesn't match that
-func preInsertionValidity(parent, node, before: Node): DOMResult[ParentNode] =
+proc preInsertionValidity(parent, node, before: Node): DOMResult[ParentNode] =
   let parent = ?parent.checkParentValidity()
   if node.isHostIncludingInclusiveAncestor(parent):
     return errDOMException("Parent must be an ancestor",
@@ -1881,30 +1881,30 @@ proc cloneNode(node: Node; deep = false): Node {.jsfunc.} =
   #TODO shadow root
   return node.clone(deep = deep)
 
-func isSameNode(node, other: Node): bool {.jsfunc.} =
+proc isSameNode(node, other: Node): bool {.jsfunc.} =
   return node == other
 
-func previousElementSiblingImpl(this: Node): Element =
+proc previousElementSiblingImpl(this: Node): Element =
   for it in this.precedingSiblings:
     if it of Element:
       return Element(it)
   nil
 
-func nextElementSiblingImpl(this: Node): Element =
+proc nextElementSiblingImpl(this: Node): Element =
   for it in this.subsequentSiblings:
     if it of Element:
       return Element(it)
   nil
 
-func childNodes(ctx: JSContext; node: Node): JSValue {.jsfget.} =
+proc childNodes(ctx: JSContext; node: Node): JSValue {.jsfget.} =
   return ctx.getWeakCollection(node, wwmChildNodes)
 
-func equals(a, b: AttrData): bool =
+proc equals(a, b: AttrData): bool =
   return a.qualifiedName == b.qualifiedName and
     a.namespace == b.namespace and
     a.value == b.value
 
-func isEqualNode(node, other: Node): bool {.jsfunc.} =
+proc isEqualNode(node, other: Node): bool {.jsfunc.} =
   if node of DocumentType:
     if not (other of DocumentType):
       return false
@@ -1950,7 +1950,7 @@ func isEqualNode(node, other: Node): bool {.jsfunc.} =
     return CharacterData(node).data == CharacterData(other).data
   true
 
-func serializeFragmentInner(res: var string; child: Node; parentType: TagType) =
+proc serializeFragmentInner(res: var string; child: Node; parentType: TagType) =
   if child of Element:
     let element = Element(child)
     let tags = $element.localName
@@ -1984,7 +1984,7 @@ func serializeFragmentInner(res: var string; child: Node; parentType: TagType) =
   elif child of DocumentType:
     res &= "<!DOCTYPE " & DocumentType(child).name & '>'
 
-func serializeFragment(res: var string; node: Node) =
+proc serializeFragment(res: var string; node: Node) =
   var node = node
   var parentType = TAG_UNKNOWN
   if node of Element:
@@ -2005,11 +2005,11 @@ func serializeFragment(res: var string; node: Node) =
     for child in node.childList:
       res.serializeFragmentInner(child, parentType)
 
-func serializeFragment*(node: Node): string =
+proc serializeFragment*(node: Node): string =
   result = ""
   result.serializeFragment(node)
 
-func findAncestor*(node: Node; tagType: TagType): Element =
+proc findAncestor*(node: Node; tagType: TagType): Element =
   for element in node.ancestors:
     if element.tagType == tagType:
       return element
@@ -2080,29 +2080,29 @@ proc replaceChildrenImpl(ctx: JSContext; parent: Node;
   ok()
 
 # ParentNode
-func firstElementChild*(node: ParentNode): Element =
+proc firstElementChild*(node: ParentNode): Element =
   for child in node.elementList:
     return child
   return nil
 
-func lastElementChild*(node: ParentNode): Element =
+proc lastElementChild*(node: ParentNode): Element =
   for child in node.relementList:
     return child
   return nil
 
-func findFirstChildOf(node: ParentNode; tagType: TagType): Element =
+proc findFirstChildOf(node: ParentNode; tagType: TagType): Element =
   for element in node.elementList:
     if element.tagType == tagType:
       return element
   return nil
 
-func findLastChildOf(node: ParentNode; tagType: TagType): Element =
+proc findLastChildOf(node: ParentNode; tagType: TagType): Element =
   for element in node.relementList:
     if element.tagType == tagType:
       return element
   return nil
 
-func findFirstChildNotOf(node: ParentNode; tagType: set[TagType]): Element =
+proc findFirstChildNotOf(node: ParentNode; tagType: set[TagType]): Element =
   for element in node.elementList:
     if element.tagType notin tagType:
       return element
@@ -2139,19 +2139,19 @@ proc childElementCountImpl(node: ParentNode): int =
     return 0
   return last.elIndex + 1
 
-func countChildren(node: ParentNode; nodeType: type): int =
+proc countChildren(node: ParentNode; nodeType: type): int =
   result = 0
   for child in node.childList:
     if child of nodeType:
       inc result
 
-func hasChild(node: ParentNode; nodeType: type): bool =
+proc hasChild(node: ParentNode; nodeType: type): bool =
   for child in node.childList:
     if child of nodeType:
       return true
   return false
 
-func hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool =
+proc hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool =
   for child in node.childList:
     if child == ex:
       continue
@@ -2159,7 +2159,7 @@ func hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool =
       return true
   return false
 
-func childTextContent*(node: ParentNode): string =
+proc childTextContent*(node: ParentNode): string =
   result = ""
   for child in node.childList:
     if child of Text:
@@ -2172,7 +2172,7 @@ proc getElementsByTagNameImpl(root: ParentNode; tagName: string):
   let localName = tagName.toAtom()
   let localNameLower = localName.toLowerAscii()
   return root.newHTMLCollection(
-    func(node: Node): bool =
+    proc(node: Node): bool =
       if node of Element:
         let element = Element(node)
         if element.namespaceURI == satNamespaceHTML:
@@ -2189,7 +2189,7 @@ proc getElementsByClassNameImpl(node: ParentNode; classNames: string):
   for class in classNames.split(AsciiWhitespace):
     classAtoms.add(class.toAtom())
   return node.newHTMLCollection(
-    func(node: Node): bool =
+    proc(node: Node): bool =
       if node of Element:
         let element = Element(node)
         if element.document.mode == QUIRKS:
@@ -2237,18 +2237,16 @@ proc insertNode(parent: ParentNode; node, before: Node) =
     else:
       element.internalElIndex = 0
   node.document.invalidateCollections()
-  if node of ParentNode:
-    let document = node.document
-    if document != nil and (node of HTMLStyleElement or
-        node of HTMLLinkElement):
-      document.applyAuthorSheets()
-    var nodes: seq[Element] = @[]
-    for el in cast[ParentNode](node).elementDescendantsIncl:
-      #TODO shadow root
-      if el.elementInsertionSteps():
-        nodes.add(el)
-    for el in nodes:
-      el.postConnectionSteps()
+  let document = node.document
+  if document != nil and (node of HTMLStyleElement or node of HTMLLinkElement):
+    document.applyAuthorSheets()
+  var nodes: seq[Element] = @[]
+  for el in node.elementDescendantsIncl:
+    #TODO shadow root
+    if el.elementInsertionSteps():
+      nodes.add(el)
+  for el in nodes:
+    el.postConnectionSteps()
 
 # WARNING ditto
 proc insert*(parent: ParentNode; node, before: Node;
@@ -2286,10 +2284,9 @@ proc querySelectorAllImpl(node: ParentNode; q: string): DOMResult[NodeList] =
   if selectors.len == 0:
     return errDOMException("Invalid selector: " & q, "SyntaxError")
   return ok(node.newNodeList(
-    match = func(node: Node): bool =
+    match = proc(node: Node): bool =
       if node of Element:
-        {.cast(noSideEffect).}:
-          return Element(node).matchesImpl(selectors)
+        return Element(node).matchesImpl(selectors)
       false,
     islive = false,
     childonly = false
@@ -2337,6 +2334,9 @@ proc finalize(collection: NodeIterator) {.jsfin.} =
   collection.finalize0()
   JS_FreeValue(collection.ctx, collection.filter)
 
+proc mark(rt: JSRuntime; this: NodeIterator; markFun: JS_MarkFunc) {.jsmark.} =
+  JS_MarkValue(rt, this.filter, markFun)
+
 proc finalize(collection: HTMLAllCollection) {.jsfin.} =
   collection.finalize0()
 
@@ -2348,7 +2348,7 @@ proc findNode(collection: Collection; node: Node): int =
   collection.refreshCollection()
   return collection.snapshot.find(node)
 
-func newCollection[T: Collection](root: Node; match: CollectionMatchFun;
+proc newCollection[T: Collection](root: Node; match: CollectionMatchFun;
     islive, childonly: bool; inclusive = false): T =
   let collection = T(
     islive: islive,
@@ -2364,28 +2364,28 @@ func newCollection[T: Collection](root: Node; match: CollectionMatchFun;
     collection.populateCollection()
   return collection
 
-func newHTMLCollection(root: Node; match: CollectionMatchFun;
+proc newHTMLCollection(root: Node; match: CollectionMatchFun;
     islive, childonly: bool): HTMLCollection =
   return newCollection[HTMLCollection](root, match, islive, childonly)
 
-func newNodeList(root: Node; match: CollectionMatchFun;
+proc newNodeList(root: Node; match: CollectionMatchFun;
     islive, childonly: bool): NodeList =
   return newCollection[NodeList](root, match, islive, childonly)
 
 # Text
-func newText*(document: Document; data: sink string): Text =
+proc newText*(document: Document; data: sink string): Text =
   return Text(internalNext: document, data: newRefString(data))
 
-func newText(ctx: JSContext; data: sink string = ""): Text {.jsctor.} =
+proc newText(ctx: JSContext; data: sink string = ""): Text {.jsctor.} =
   let window = ctx.getGlobal()
   return window.document.newText(data)
 
 # CDATASection
-func newCDATASection(document: Document; data: string): CDATASection =
+proc newCDATASection(document: Document; data: string): CDATASection =
   return CDATASection(internalNext: document, data: newRefString(data))
 
 # ProcessingInstruction
-func newProcessingInstruction(document: Document; target: string;
+proc newProcessingInstruction(document: Document; target: string;
     data: sink string): ProcessingInstruction =
   return ProcessingInstruction(
     internalNext: document,
@@ -2394,28 +2394,28 @@ func newProcessingInstruction(document: Document; target: string;
   )
 
 # Comment
-func newComment(document: Document; data: sink string): Comment =
+proc newComment(document: Document; data: sink string): Comment =
   return Comment(
     internalNext: document,
     data: newRefString(data)
   )
 
-func newComment(ctx: JSContext; data: sink string = ""): Comment {.jsctor.} =
+proc newComment(ctx: JSContext; data: sink string = ""): Comment {.jsctor.} =
   let window = ctx.getGlobal()
   return window.document.newComment(data)
 
 # DocumentFragment
-func newDocumentFragment(document: Document): DocumentFragment =
+proc newDocumentFragment(document: Document): DocumentFragment =
   return DocumentFragment(internalNext: document)
 
-func newDocumentFragment(ctx: JSContext): DocumentFragment {.jsctor.} =
+proc newDocumentFragment(ctx: JSContext): DocumentFragment {.jsctor.} =
   let window = ctx.getGlobal()
   return window.document.newDocumentFragment()
 
-func firstElementChild(this: DocumentFragment): Element {.jsfget.} =
+proc firstElementChild(this: DocumentFragment): Element {.jsfget.} =
   return ParentNode(this).firstElementChild
 
-func lastElementChild(this: DocumentFragment): Element {.jsfget.} =
+proc lastElementChild(this: DocumentFragment): Element {.jsfget.} =
   return ParentNode(this).lastElementChild
 
 proc childElementCount(this: DocumentFragment): int {.jsfget.} =
@@ -2441,7 +2441,7 @@ proc replaceChildren(ctx: JSContext; this: DocumentFragment;
     nodes: varargs[JSValueConst]): Err[DOMException] {.jsfunc.} =
   return ctx.replaceChildrenImpl(this, nodes)
 
-func children(ctx: JSContext; parentNode: DocumentFragment): JSValue
+proc children(ctx: JSContext; parentNode: DocumentFragment): JSValue
     {.jsfget.} =
   return childrenImpl(ctx, parentNode)
 
@@ -2462,7 +2462,7 @@ proc newDocument*(): Document {.jsctor.} =
   document.implementation = DOMImplementation(document: document)
   return document
 
-func newDocumentType*(document: Document;
+proc newDocumentType*(document: Document;
     name, publicId, systemId: sink string): DocumentType =
   return DocumentType(
     internalNext: document,
@@ -2471,13 +2471,13 @@ func newDocumentType*(document: Document;
     systemId: systemId
   )
 
-func firstElementChild(this: Document): Element {.jsfget.} =
+proc firstElementChild(this: Document): Element {.jsfget.} =
   return ParentNode(this).firstElementChild
 
-func lastElementChild(this: Document): Element {.jsfget.} =
+proc lastElementChild(this: Document): Element {.jsfget.} =
   return ParentNode(this).lastElementChild
 
-func isxml(document: Document): bool =
+proc isxml(document: Document): bool =
   return document.contentType != satTextHtml
 
 proc adopt(document: Document; node: Node) =
@@ -2500,12 +2500,12 @@ proc adopt(document: Document; node: Node) =
     #TODO custom elements
     #..adopting steps
 
-func compatMode(document: Document): string {.jsfget.} =
+proc compatMode(document: Document): string {.jsfget.} =
   if document.mode == QUIRKS:
     return "BackCompat"
   return "CSS1Compat"
 
-func forms(document: Document): HTMLCollection {.jsfget.} =
+proc forms(document: Document): HTMLCollection {.jsfget.} =
   if document.cachedForms == nil:
     document.cachedForms = document.newHTMLCollection(
       match = isForm,
@@ -2523,17 +2523,17 @@ proc links(document: Document): HTMLCollection {.jsfget.} =
     )
   return document.cachedLinks
 
-func getURL(ctx: JSContext; document: Document): JSValue {.jsfget: "URL".} =
+proc getURL(ctx: JSContext; document: Document): JSValue {.jsfget: "URL".} =
   return ctx.toJS($document.url)
 
 #TODO take cookie jar from loader
-func cookie(document: Document): string {.jsfget.} =
+proc cookie(document: Document): string {.jsfget.} =
   return document.internalCookie
 
 proc setCookie(document: Document; cookie: string) {.jsfset: "cookie".} =
   document.internalCookie = cookie
 
-func focus*(document: Document): Element {.jsfget: "activeElement".} =
+proc focus*(document: Document): Element {.jsfget: "activeElement".} =
   return document.internalFocus
 
 proc setFocus*(document: Document; element: Element) =
@@ -2543,13 +2543,13 @@ proc setFocus*(document: Document; element: Element) =
   if element != nil:
     element.invalidate(dtFocus)
 
-func findAutoFocus*(document: Document): Element =
+proc findAutoFocus*(document: Document): Element =
   for child in document.elementDescendants:
     if child.attrb(satAutofocus):
       return child
   return nil
 
-func target*(document: Document): Element =
+proc target*(document: Document): Element =
   return document.internalTarget
 
 proc setTarget*(document: Document; element: Element) =
@@ -2559,7 +2559,7 @@ proc setTarget*(document: Document; element: Element) =
   if element != nil:
     element.invalidate(dtTarget)
 
-func queryCommandSupported(document: Document): bool {.jsfunc.} =
+proc queryCommandSupported(document: Document): bool {.jsfunc.} =
   return false
 
 proc createCDATASection(document: Document; data: string):
@@ -2597,7 +2597,7 @@ proc createEvent(ctx: JSContext; document: Document; atom: CAtom):
   else:
     return errDOMException("Event not supported", "NotSupportedError")
 
-func location(document: Document): Location {.jsfget.} =
+proc location(document: Document): Location {.jsfget.} =
   if document.window == nil:
     return nil
   return document.window.location
@@ -2612,20 +2612,20 @@ proc setLocation*(document: Document; s: string): Err[JSError]
   document.window.navigate(url)
   return ok()
 
-func scriptingEnabled*(document: Document): bool =
+proc scriptingEnabled*(document: Document): bool =
   if document.window == nil:
     return false
   return document.window.settings.scripting != smFalse
 
-func findFirst*(document: Document; tagType: TagType): HTMLElement =
+proc findFirst*(document: Document; tagType: TagType): HTMLElement =
   for element in document.elementDescendants(tagType):
     return HTMLElement(element)
   nil
 
-func head*(document: Document): HTMLElement {.jsfget.} =
+proc head*(document: Document): HTMLElement {.jsfget.} =
   return document.findFirst(TAG_HEAD)
 
-func body*(document: Document): HTMLElement {.jsfget.} =
+proc body*(document: Document): HTMLElement {.jsfget.} =
   return document.findFirst(TAG_BODY)
 
 proc getElementById(document: Document; id: string): Element {.jsfunc.} =
@@ -2640,13 +2640,13 @@ proc getElementById(document: Document; id: string): Element {.jsfunc.} =
 proc getElementsByName(document: Document; name: CAtom): NodeList {.jsfunc.} =
   if name == satUempty.toAtom():
     return document.newNodeList(
-      func(node: Node): bool =
+      proc(node: Node): bool =
         return false,
       islive = false,
       childonly = true
     )
   return document.newNodeList(
-    func(node: Node): bool =
+    proc(node: Node): bool =
       return node of Element and Element(node).name == name,
     islive = true,
     childonly = false
@@ -2660,7 +2660,7 @@ proc getElementsByClassName(document: Document; classNames: string):
     HTMLCollection {.jsfunc.} =
   return document.getElementsByClassNameImpl(classNames)
 
-func children(ctx: JSContext; parentNode: Document): JSValue {.jsfget.} =
+proc children(ctx: JSContext; parentNode: Document): JSValue {.jsfget.} =
   return childrenImpl(ctx, parentNode)
 
 proc querySelector(this: Document; q: string): DOMResult[Element] {.jsfunc.} =
@@ -2705,7 +2705,7 @@ proc parseURL*(document: Document; s: string): Opt[URL] =
     return err()
   ok(url)
 
-func title*(document: Document): string {.jsfget.} =
+proc title*(document: Document): string {.jsfget.} =
   if (let title = document.findFirst(TAG_TITLE); title != nil):
     return title.childTextContent.stripAndCollapse()
   return ""
@@ -2831,7 +2831,7 @@ proc replaceChildren(ctx: JSContext; this: Document;
     nodes: varargs[JSValueConst]): Err[DOMException] {.jsfunc.} =
   return ctx.replaceChildrenImpl(this, nodes)
 
-const (ReflectTable, TagReflectMap, ReflectAllStartIndex) = (func(): (
+const (ReflectTable, TagReflectMap, ReflectAllStartIndex) = (proc(): (
     seq[ReflectEntry],
     Table[TagType, seq[int16]],
     int16) =
@@ -2907,7 +2907,7 @@ proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
     return ctx.eventReflectSet0(element, val, magic, jsReflectSet, entry.ctype)
   return JS_DupValue(ctx, val)
 
-func findMagic(ctype: StaticAtom): cint =
+proc findMagic(ctype: StaticAtom): cint =
   for i in ReflectAllStartIndex ..< int16(ReflectTable.len):
     let entry = ReflectTable[i]
     assert entry.tags == AllTagTypes
@@ -3051,7 +3051,7 @@ iterator items*(tokenList: DOMTokenList): CAtom {.inline.} =
   for tok in tokenList.toks:
     yield tok
 
-func length(tokenList: DOMTokenList): int {.jsfget.} =
+proc length(tokenList: DOMTokenList): int {.jsfget.} =
   return tokenList.toks.len
 
 proc item(ctx: JSContext; tokenList: DOMTokenList; u: uint32): JSValue
@@ -3062,17 +3062,17 @@ proc item(ctx: JSContext; tokenList: DOMTokenList; u: uint32): JSValue
       return ctx.toJS(tokenList.toks[i])
   return JS_NULL
 
-func contains(tokenList: DOMTokenList; a: CAtom): bool =
+proc contains(tokenList: DOMTokenList; a: CAtom): bool =
   return a in tokenList.toks
 
-func containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool =
+proc containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool =
   return tokenList.toks.containsIgnoreCase(a)
 
 proc jsContains(tokenList: DOMTokenList; s: string): bool
     {.jsfunc: "contains".} =
   return s.toAtom() in tokenList.toks
 
-func `$`(tokenList: DOMTokenList): string {.jsfunc: "toString".} =
+proc `$`(tokenList: DOMTokenList): string {.jsfunc: "toString".} =
   var s = ""
   for i, tok in tokenList.toks:
     if i != 0:
@@ -3152,7 +3152,7 @@ const SupportedTokensMap = {
   ]
 }
 
-func supports(tokenList: DOMTokenList; token: string):
+proc supports(tokenList: DOMTokenList; token: string):
     JSResult[bool] {.jsfunc.} =
   let localName = tokenList.localName.toStaticAtom()
   for it in SupportedTokensMap:
@@ -3161,7 +3161,7 @@ func supports(tokenList: DOMTokenList; token: string):
       return ok(lowercase in it[1])
   return errTypeError("No supported tokens defined for attribute")
 
-func value(tokenList: DOMTokenList): string {.jsfget.} =
+proc value(tokenList: DOMTokenList): string {.jsfget.} =
   return $tokenList
 
 proc getter(ctx: JSContext; this: DOMTokenList; atom: JSAtom): JSValue
@@ -3211,7 +3211,7 @@ proc setter(map: DOMStringMap; name, value: string): Err[DOMException]
   map.target.attr(aname, value)
   return ok()
 
-func names(ctx: JSContext; map: DOMStringMap): JSPropertyEnumList
+proc names(ctx: JSContext; map: DOMStringMap): JSPropertyEnumList
     {.jspropnames.} =
   var list = newJSPropertyEnumList(ctx, uint32(map.target.attrs.len))
   for attr in map.target.attrs:
@@ -3224,23 +3224,23 @@ proc dataset(ctx: JSContext; element: HTMLElement): JSValue {.jsfget.} =
   return ctx.getWeakCollection(element, wwmDatalist)
 
 # NodeList
-func length(this: NodeList): uint32 {.jsfget.} =
+proc length(this: NodeList): uint32 {.jsfget.} =
   return uint32(this.getLength())
 
-func item(this: NodeList; u: uint32): Node {.jsfunc.} =
+proc item(this: NodeList; u: uint32): Node {.jsfunc.} =
   let i = int(u)
   if i < this.getLength():
     return this.snapshot[i]
   return nil
 
-func getter(ctx: JSContext; this: NodeList; atom: JSAtom): JSValue
+proc getter(ctx: JSContext; this: NodeList; atom: JSAtom): JSValue
     {.jsgetownprop.} =
   var u: uint32
   if ctx.fromJS(atom, u).isOk:
     return ctx.toJS(this.item(u)).uninitIfNull()
   return JS_UNINITIALIZED
 
-func names(ctx: JSContext; this: NodeList): JSPropertyEnumList {.jspropnames.} =
+proc names(ctx: JSContext; this: NodeList): JSPropertyEnumList {.jspropnames.} =
   let L = this.length
   var list = newJSPropertyEnumList(ctx, L)
   for u in 0 ..< L:
@@ -3251,12 +3251,12 @@ func names(ctx: JSContext; this: NodeList): JSPropertyEnumList {.jspropnames.} =
 proc length(this: HTMLCollection): uint32 {.jsfget.} =
   return uint32(this.getLength())
 
-func item(this: HTMLCollection; u: uint32): Element {.jsfunc.} =
+proc item(this: HTMLCollection; u: uint32): Element {.jsfunc.} =
   if u < this.length:
     return Element(this.snapshot[int(u)])
   return nil
 
-func namedItem(this: HTMLCollection; atom: CAtom): Element {.jsfunc.} =
+proc namedItem(this: HTMLCollection; atom: CAtom): Element {.jsfunc.} =
   this.refreshCollection()
   for it in this.snapshot:
     let it = Element(it)
@@ -3295,7 +3295,7 @@ proc namedItem(ctx: JSContext; this: HTMLFormControlsCollection; name: CAtom):
     JSValue {.jsfunc.} =
   let nodes = newCollection[RadioNodeList](
     this.root,
-    func(node: Node): bool =
+    proc(node: Node): bool =
       if not this.match(node):
         return false
       let element = Element(node)
@@ -3328,20 +3328,20 @@ proc getter(ctx: JSContext; this: HTMLFormControlsCollection; atom: JSAtom):
 proc length(this: HTMLAllCollection): uint32 {.jsfget.} =
   return uint32(this.getLength())
 
-func item(this: HTMLAllCollection; u: uint32): Element {.jsfunc.} =
+proc item(this: HTMLAllCollection; u: uint32): Element {.jsfunc.} =
   let i = int(u)
   if i < this.getLength():
     return Element(this.snapshot[i])
   return nil
 
-func getter(ctx: JSContext; this: HTMLAllCollection; atom: JSAtom): JSValue
+proc getter(ctx: JSContext; this: HTMLAllCollection; atom: JSAtom): JSValue
     {.jsgetownprop.} =
   var u: uint32
   if ctx.fromJS(atom, u).isOk:
     return ctx.toJS(this.item(u)).uninitIfNull()
   return JS_UNINITIALIZED
 
-func names(ctx: JSContext; this: HTMLAllCollection): JSPropertyEnumList
+proc names(ctx: JSContext; this: HTMLAllCollection): JSPropertyEnumList
     {.jspropnames.} =
   let L = this.length
   var list = newJSPropertyEnumList(ctx, L)
@@ -3377,7 +3377,7 @@ proc newLocation*(window: Window): Location =
     JS_FreeValue(ctx, val)
   return location
 
-func document(location: Location): Document =
+proc document(location: Location): Document =
   return location.window.document
 
 proc url(location: Location): URL =
@@ -3495,15 +3495,15 @@ proc setHash(location: Location; s: string) {.jsfset: "hash".} =
   document.window.navigate(copyURL)
 
 # Attr
-func jsOwnerElement(attr: Attr): Element {.jsfget: "ownerElement".} =
+proc jsOwnerElement(attr: Attr): Element {.jsfget: "ownerElement".} =
   if attr.ownerElement of AttrDummyElement:
     return nil
   return attr.ownerElement
 
-func ownerDocument(attr: Attr): Document {.jsfget.} =
+proc ownerDocument(attr: Attr): Document {.jsfget.} =
   return attr.ownerElement.ownerDocument
 
-func data(attr: Attr): lent AttrData =
+proc data(attr: Attr): lent AttrData =
   return attr.ownerElement.attrs[attr.dataIdx]
 
 proc namespaceURI(attr: Attr): CAtom {.jsfget.} =
@@ -3518,14 +3518,14 @@ proc localName(attr: Attr): CAtom {.jsfget.} =
 proc value(attr: Attr): string {.jsfget.} =
   return attr.data.value
 
-func name(attr: Attr): CAtom {.jsfget.} =
+proc name(attr: Attr): CAtom {.jsfget.} =
   return attr.data.qualifiedName
 
 proc setValue(attr: Attr; s: string) {.jsfset: "value".} =
   attr.ownerElement.attr(attr.data.qualifiedName, s)
 
 # NamedNodeMap
-func findAttr(map: NamedNodeMap; dataIdx: int): int =
+proc findAttr(map: NamedNodeMap; dataIdx: int): int =
   for i, attr in map.attrlist.mypairs:
     if attr.dataIdx == dataIdx:
       return i
@@ -3556,7 +3556,7 @@ proc getNamedItemNS(map: NamedNodeMap; namespace, localName: CAtom): Attr
     return map.getAttr(i)
   return nil
 
-func length(map: NamedNodeMap): uint32 {.jsfget.} =
+proc length(map: NamedNodeMap): uint32 {.jsfget.} =
   return uint32(map.element.attrs.len)
 
 proc item(map: NamedNodeMap; i: uint32): Attr {.jsfunc.} =
@@ -3573,7 +3573,7 @@ proc getter(ctx: JSContext; map: NamedNodeMap; atom: JSAtom): Opt[Attr]
   ?ctx.fromJS(atom, s)
   return ok(map.getNamedItem(s))
 
-func names(ctx: JSContext; map: NamedNodeMap): JSPropertyEnumList
+proc names(ctx: JSContext; map: NamedNodeMap): JSPropertyEnumList
     {.jspropnames.} =
   let len = if map.element.namespaceURI == satNamespaceHTML:
     uint32(map.attrlist.len + map.element.attrs.len)
@@ -3591,13 +3591,13 @@ func names(ctx: JSContext; map: NamedNodeMap): JSPropertyEnumList
   return list
 
 # CharacterData
-func length(this: CharacterData): int {.jsfget.} =
+proc length(this: CharacterData): int {.jsfget.} =
   return ($this.data).utf16Len
 
-func previousElementSibling(this: CharacterData): Element {.jsfget.} =
+proc previousElementSibling(this: CharacterData): Element {.jsfget.} =
   return this.previousElementSiblingImpl
 
-func nextElementSibling(this: CharacterData): Element {.jsfget.} =
+proc nextElementSibling(this: CharacterData): Element {.jsfget.} =
   return this.nextElementSiblingImpl
 
 # https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-write-steps
@@ -3629,7 +3629,7 @@ proc write(ctx: JSContext; document: Document; args: varargs[JSValueConst]):
 proc childElementCount(this: Document): int {.jsfget.} =
   return this.childElementCountImpl
 
-func documentElement*(document: Document): Element {.jsfget.} =
+proc documentElement*(document: Document): Element {.jsfget.} =
   return document.firstElementChild()
 
 proc names(ctx: JSContext; document: Document): JSPropertyEnumList
@@ -3664,10 +3664,10 @@ proc getter(ctx: JSContext; document: Document; s: string): JSValue
 proc hash(element: Element): Hash =
   return hash(cast[pointer](element))
 
-func firstElementChild(this: Element): Element {.jsfget.} =
+proc firstElementChild(this: Element): Element {.jsfget.} =
   return ParentNode(this).firstElementChild
 
-func lastElementChild(this: Element): Element {.jsfget.} =
+proc lastElementChild(this: Element): Element {.jsfget.} =
   return ParentNode(this).lastElementChild
 
 proc childElementCount(this: Element): int {.jsfget.} =
@@ -3694,24 +3694,24 @@ proc isLastVisualNode*(element: Element): bool =
       break
   return false
 
-func innerHTML(element: Element): string {.jsfget.} =
+proc innerHTML(element: Element): string {.jsfget.} =
   #TODO xml
   return element.serializeFragment()
 
-func outerHTML(element: Element): string {.jsfget.} =
+proc outerHTML(element: Element): string {.jsfget.} =
   #TODO xml
   result = ""
   result.serializeFragmentInner(element, TAG_UNKNOWN)
 
-func tagTypeNoNS(element: Element): TagType =
+proc tagTypeNoNS(element: Element): TagType =
   return element.localName.toTagType()
 
-func tagType*(element: Element; namespace = satNamespaceHTML): TagType =
+proc tagType*(element: Element; namespace = satNamespaceHTML): TagType =
   if element.namespaceURI != namespace:
     return TAG_UNKNOWN
   return element.tagTypeNoNS
 
-func tagName(element: Element): string {.jsfget.} =
+proc tagName(element: Element): string {.jsfget.} =
   result = $element.prefix
   if result.len > 0:
     result &= ':'
@@ -3724,20 +3724,20 @@ proc normalizeAttrQName(element: Element; qualifiedName: CAtom): CAtom =
     return qualifiedName.toLowerAscii()
   return qualifiedName
 
-func findAttr(element: Element; qualifiedName: CAtom): int =
+proc findAttr(element: Element; qualifiedName: CAtom): int =
   let qualifiedName = element.normalizeAttrQName(qualifiedName)
   for i, attr in element.attrs.mypairs:
     if attr.qualifiedName == qualifiedName:
       return i
   return -1
 
-func findAttrNS(element: Element; namespace, localName: CAtom): int =
+proc findAttrNS(element: Element; namespace, localName: CAtom): int =
   for i, attr in element.attrs.mypairs:
     if attr.namespace == namespace and attr.localName == localName:
       return i
   return -1
 
-func hasAttributes(element: Element): bool {.jsfunc.} =
+proc hasAttributes(element: Element): bool {.jsfunc.} =
   return element.attrs.len > 0
 
 proc attributes(ctx: JSContext; element: Element): JSValue {.jsfget.} =
@@ -3759,48 +3759,47 @@ proc hasAttributeNS(element: Element; namespace, localName: CAtom): bool
     {.jsfunc.} =
   return element.findAttrNS(namespace, localName) != -1
 
-func getAttribute(ctx: JSContext; element: Element; qualifiedName: CAtom):
+proc getAttribute(ctx: JSContext; element: Element; qualifiedName: CAtom):
     JSValue {.jsfunc.} =
   let i = element.findAttr(qualifiedName)
   if i != -1:
     return ctx.toJS(element.attrs[i].value)
   return JS_NULL
 
-func getAttributeNS(ctx: JSContext; element: Element;
+proc getAttributeNS(ctx: JSContext; element: Element;
     namespace, localName: CAtom): JSValue {.jsfunc.} =
   let i = element.findAttrNS(namespace, localName)
   if i != -1:
     return ctx.toJS(element.attrs[i].value)
   return JS_NULL
 
-func attr*(element: Element; s: CAtom): lent string =
+proc attr*(element: Element; s: CAtom): lent string =
   let i = element.findAttr(s)
   if i != -1:
     return element.attrs[i].value
-  {.cast(noSideEffect).}:
-    # the compiler cries if I return string literals :/
-    let emptyStr {.global.} = ""
-    return emptyStr
+  # the compiler cries if I return string literals :/
+  let emptyStr {.global.} = ""
+  return emptyStr
 
-func attr*(element: Element; s: StaticAtom): lent string =
+proc attr*(element: Element; s: StaticAtom): lent string =
   return element.attr(s.toAtom())
 
-func attrl*(element: Element; s: StaticAtom): Opt[int32] =
+proc attrl*(element: Element; s: StaticAtom): Opt[int32] =
   return parseInt32(element.attr(s))
 
-func attrulgz*(element: Element; s: StaticAtom): Opt[uint32] =
+proc attrulgz*(element: Element; s: StaticAtom): Opt[uint32] =
   let x = parseUInt32(element.attr(s), allowSign = true).get(0)
   if x > 0:
     return ok(x)
   err()
 
-func attrul*(element: Element; s: StaticAtom): Opt[uint32] =
+proc attrul*(element: Element; s: StaticAtom): Opt[uint32] =
   return parseUInt32(element.attr(s), allowSign = true)
 
-func attrb*(element: Element; s: CAtom): bool =
+proc attrb*(element: Element; s: CAtom): bool =
   return element.findAttr(s) != -1
 
-func attrb*(element: Element; at: StaticAtom): bool =
+proc attrb*(element: Element; at: StaticAtom): bool =
   return element.attrb(at.toAtom())
 
 proc getElementsByTagName(element: Element; tagName: string): HTMLCollection
@@ -3811,19 +3810,41 @@ proc getElementsByClassName(element: Element; classNames: string):
     HTMLCollection {.jsfunc.} =
   return element.getElementsByClassNameImpl(classNames)
 
-func children(ctx: JSContext; parentNode: Element): JSValue {.jsfget.} =
+proc children(ctx: JSContext; parentNode: Element): JSValue {.jsfget.} =
   return childrenImpl(ctx, parentNode)
 
-func previousElementSibling*(element: Element): Element {.jsfget.} =
+proc previousElementSibling*(element: Element): Element {.jsfget.} =
   return element.previousElementSiblingImpl
 
-func nextElementSibling*(element: Element): Element {.jsfget.} =
+proc nextElementSibling*(element: Element): Element {.jsfget.} =
   return element.nextElementSiblingImpl
 
-func scriptingEnabled(element: Element): bool =
+proc isDisplayed(element: Element): bool =
+  element.ensureStyle()
+  return element.computed{"display"} != DisplayNone
+
+proc nextDisplayedElement(element: Element): Element =
+  for child in element.elementList:
+    if child.isDisplayed():
+      return child
+  # climb up until we find a non-last leaf (this might be node itself)
+  var element = element
+  while true:
+    var next = element.nextElementSibling
+    while next != nil:
+      if next.isDisplayed():
+        return next
+      next = next.nextElementSibling
+    element = element.parentElement
+    if element == nil:
+      break
+  # done
+  return nil
+
+proc scriptingEnabled(element: Element): bool =
   return element.document.scriptingEnabled
 
-func isSubmitButton*(element: Element): bool =
+proc isSubmitButton*(element: Element): bool =
   if element of HTMLButtonElement:
     return element.attr(satType).equalsIgnoreCase("submit")
   elif element of HTMLInputElement:
@@ -3831,7 +3852,7 @@ func isSubmitButton*(element: Element): bool =
     return element.inputType in {itSubmit, itImage}
   return false
 
-func isButton*(element: Element): bool =
+proc isButton*(element: Element): bool =
   if element of HTMLButtonElement:
     return true
   if element of HTMLInputElement:
@@ -3839,7 +3860,7 @@ func isButton*(element: Element): bool =
     return element.inputType in {itSubmit, itButton, itReset, itImage}
   return false
 
-func action*(element: Element): string =
+proc action*(element: Element): string =
   if element.isSubmitButton():
     if element.attrb(satFormaction):
       return element.attr(satFormaction)
@@ -3852,7 +3873,7 @@ func action*(element: Element): string =
     return element.attr(satAction)
   return ""
 
-func enctype*(element: Element): FormEncodingType =
+proc enctype*(element: Element): FormEncodingType =
   if element of HTMLFormElement:
     # Note: see below, this is not in the standard.
     if element.attrb(satEnctype):
@@ -3870,10 +3891,10 @@ func enctype*(element: Element): FormEncodingType =
         return parseEnumNoCase[FormEncodingType](s).get(fetUrlencoded)
   return fetUrlencoded
 
-func parseFormMethod(s: string): FormMethod =
+proc parseFormMethod(s: string): FormMethod =
   return parseEnumNoCase[FormMethod](s).get(fmGet)
 
-func formmethod*(element: Element): FormMethod =
+proc formmethod*(element: Element): FormMethod =
   if element of HTMLFormElement:
     # The standard says nothing about this, but this code path is reached
     # on implicit form submission and other browsers seem to agree on this
@@ -3956,7 +3977,7 @@ proc insertAdjacentHTML(this: Element; position, text: string):
   of iapAfterEnd: this.parentNode.insert(fragment, this.nextSibling)
   ok()
 
-func hover*(element: Element): bool =
+proc hover*(element: Element): bool =
   return element.internalHover
 
 proc setHover*(element: Element; hover: bool) =
@@ -4113,7 +4134,7 @@ proc elIndex*(this: Element): int =
     parent.childElIndicesInvalid = false
   return this.internalElIndex
 
-func isPreviousSiblingOf*(this, other: Element): bool =
+proc isPreviousSiblingOf*(this, other: Element): bool =
   return this.parentNode == other.parentNode and this.elIndex <= other.elIndex
 
 proc querySelector(this: Element; q: string): DOMResult[Element] {.jsfunc.} =
@@ -4391,7 +4412,7 @@ proc delAttr(ctx: JSContext; element: Element; i: int) =
 
 # Returns the attr index if found, or the negation - 1 of an upper bound
 # (where a new attr with the passed name may be inserted).
-func findAttrOrNext(element: Element; qualName: CAtom): int =
+proc findAttrOrNext(element: Element; qualName: CAtom): int =
   for i, data in element.attrs.mypairs:
     if data.qualifiedName == qualName:
       return i
@@ -4417,7 +4438,7 @@ proc attr*(element: Element; name: CAtom; value: sink string) =
 proc attr*(element: Element; name: StaticAtom; value: sink string) =
   element.attr(name.toAtom(), value)
 
-func cmpAttrName(a: AttrData; b: CAtom): int =
+proc cmpAttrName(a: AttrData; b: CAtom): int =
   return cmp(int(a.qualifiedName), int(b))
 
 proc attrns*(element: Element; localName: CAtom; prefix: NamespacePrefix;
@@ -4543,16 +4564,16 @@ proc blur(ctx: JSContext; element: Element) {.jsfunc.} =
       element.document.setFocus(nil)
 
 # DOMRect
-func left(rect: DOMRect): float64 {.jsfget.} =
+proc left(rect: DOMRect): float64 {.jsfget.} =
   return min(rect.x, rect.x + rect.width)
 
-func right(rect: DOMRect): float64 {.jsfget.} =
+proc right(rect: DOMRect): float64 {.jsfget.} =
   return max(rect.x, rect.x + rect.width)
 
-func top(rect: DOMRect): float64 {.jsfget.} =
+proc top(rect: DOMRect): float64 {.jsfget.} =
   return min(rect.y, rect.y + rect.height)
 
-func bottom(rect: DOMRect): float64 {.jsfget.} =
+proc bottom(rect: DOMRect): float64 {.jsfget.} =
   return max(rect.y, rect.y + rect.height)
 
 # CSSStyleDeclaration
@@ -4645,10 +4666,10 @@ proc cssText(this: CSSStyleDeclaration): string {.jsfget.} =
       result &= ' '
     result &= $it
 
-func length(this: CSSStyleDeclaration): uint32 =
+proc length(this: CSSStyleDeclaration): uint32 =
   return uint32(this.decls.len)
 
-func item(this: CSSStyleDeclaration; u: uint32): Option[string] =
+proc item(this: CSSStyleDeclaration; u: uint32): Option[string] =
   if u < this.length:
     return some(this.decls[int(u)].name)
   return none(string)
@@ -4793,7 +4814,7 @@ proc newHTMLElement*(document: Document; tagType: TagType): HTMLElement =
   let localName = tagType.toAtom()
   return HTMLElement(document.newElement(localName, Namespace.HTML, NO_PREFIX))
 
-func crossOriginImpl(element: HTMLElement): CORSAttribute =
+proc crossOriginImpl(element: HTMLElement): CORSAttribute =
   if not element.attrb(satCrossorigin):
     return caNoCors
   case element.attr(satCrossorigin)
@@ -4911,7 +4932,7 @@ proc href(base: HTMLBaseElement): string {.jsfget.} =
   return ""
 
 # <button>
-func jsForm(this: HTMLButtonElement): HTMLFormElement {.jsfget: "form".} =
+proc jsForm(this: HTMLButtonElement): HTMLFormElement {.jsfget: "form".} =
   return this.form
 
 proc setType(this: HTMLButtonElement; s: string) {.jsfset: "type".} =
@@ -4992,7 +5013,7 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
   )
 
 # <form>
-func canSubmitImplicitly*(form: HTMLFormElement): bool =
+proc canSubmitImplicitly*(form: HTMLFormElement): bool =
   const BlocksImplicitSubmission = {
     itText, itSearch, itURL, itTel, itEmail, itPassword, itDate, itMonth,
     itWeek, itTime, itDatetimeLocal, itNumber
@@ -5012,11 +5033,11 @@ func canSubmitImplicitly*(form: HTMLFormElement): bool =
 proc setRelList(form: HTMLFormElement; s: string) {.jsfset: "relList".} =
   form.attr(satRel, s)
 
-func elements(form: HTMLFormElement): HTMLFormControlsCollection {.jsfget.} =
+proc elements(form: HTMLFormElement): HTMLFormControlsCollection {.jsfget.} =
   if form.cachedElements == nil:
     form.cachedElements = newCollection[HTMLFormControlsCollection](
       root = form.rootNode,
-      match = func(node: Node): bool =
+      match = proc(node: Node): bool =
         if node of FormAssociatedElement:
           let element = FormAssociatedElement(node)
           if element.tagType in ListedElements:
@@ -5031,7 +5052,7 @@ proc getter(ctx: JSContext; this: HTMLFormElement; atom: JSAtom): JSValue
     {.jsgetownprop.} =
   return ctx.getter(this.elements, atom)
 
-func length(this: HTMLFormElement): int {.jsfget.} =
+proc length(this: HTMLFormElement): int {.jsfget.} =
   return this.elements.getLength()
 
 proc reset*(form: HTMLFormElement) =
@@ -5082,19 +5103,19 @@ proc resetFormOwner(element: FormAssociatedElement) =
         element.setForm(HTMLFormElement(ancestor))
 
 # <img>
-func crossOrigin(element: HTMLImageElement): CORSAttribute {.jsfget.} =
+proc crossOrigin(element: HTMLImageElement): CORSAttribute {.jsfget.} =
   return element.crossOriginImpl
 
 # <input>
-func jsForm(this: HTMLInputElement): HTMLFormElement {.jsfget: "form".} =
+proc jsForm(this: HTMLInputElement): HTMLFormElement {.jsfget: "form".} =
   return this.form
 
-func value*(this: HTMLInputElement): lent string =
+proc value*(this: HTMLInputElement): lent string =
   if this.internalValue == nil:
     this.internalValue = newRefString("")
   return this.internalValue
 
-func jsValue(ctx: JSContext; this: HTMLInputElement): JSValue
+proc jsValue(ctx: JSContext; this: HTMLInputElement): JSValue
     {.jsfget: "value".} =
   #TODO wat
   return ctx.toJS(this.value)
@@ -5108,7 +5129,7 @@ proc setValue*(this: HTMLInputElement; value: sink string) {.jsfset: "value".} =
 proc setType(this: HTMLInputElement; s: string) {.jsfset: "type".} =
   this.attr(satType, s)
 
-func checked*(input: HTMLInputElement): bool {.inline.} =
+proc checked*(input: HTMLInputElement): bool {.inline.} =
   return input.internalChecked
 
 proc setChecked*(input: HTMLInputElement; b: bool) {.jsfset: "checked".} =
@@ -5123,7 +5144,7 @@ proc setChecked*(input: HTMLInputElement; b: bool) {.jsfset: "checked".} =
   input.invalidate()
   input.internalChecked = b
 
-func inputString*(input: HTMLInputElement): RefString =
+proc inputString*(input: HTMLInputElement): RefString =
   case input.inputType
   of itCheckbox, itRadio:
     if input.checked:
@@ -5180,13 +5201,13 @@ proc setRelList(link: HTMLLinkElement; s: string) {.jsfset: "relList".} =
 
 # <option>
 # https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-disabled
-func isDisabled*(option: HTMLOptionElement): bool =
+proc isDisabled*(option: HTMLOptionElement): bool =
   if option.parentElement of HTMLOptGroupElement and
       option.parentElement.attrb(satDisabled):
     return true
   return option.attrb(satDisabled)
 
-func text(option: HTMLOptionElement): string {.jsfget.} =
+proc text(option: HTMLOptionElement): string {.jsfget.} =
   var s = ""
   for child in option.descendants:
     let parent = child.parentElement
@@ -5195,7 +5216,7 @@ func text(option: HTMLOptionElement): string {.jsfget.} =
       s &= Text(child).data
   return s.stripAndCollapse()
 
-func value*(option: HTMLOptionElement): string {.jsfget.} =
+proc value*(option: HTMLOptionElement): string {.jsfget.} =
   if option.attrb(satValue):
     return option.attr(satValue)
   return option.text
@@ -5203,7 +5224,7 @@ func value*(option: HTMLOptionElement): string {.jsfget.} =
 proc setValue(option: HTMLOptionElement; s: string) {.jsfset: "value".} =
   option.attr(satValue, s)
 
-func select*(option: HTMLOptionElement): HTMLSelectElement =
+proc select*(option: HTMLOptionElement): HTMLSelectElement =
   for anc in option.ancestors:
     if anc of HTMLSelectElement:
       return HTMLSelectElement(anc)
@@ -5241,7 +5262,7 @@ proc `cite=`(this: HTMLQuoteElement; s: sink string) {.jsfset: "cite".} =
   this.attr(satCite, s)
 
 # <select>
-func displaySize(select: HTMLSelectElement): uint32 =
+proc displaySize(select: HTMLSelectElement): uint32 =
   return select.attrul(satSize).get(1)
 
 proc setSelectedness(select: HTMLSelectElement) =
@@ -5260,10 +5281,10 @@ proc setSelectedness(select: HTMLSelectElement) =
     if select.displaySize == 1 and prevSelected == nil and firstOption != nil:
       firstOption.selected = true
 
-func jsForm(this: HTMLSelectElement): HTMLFormElement {.jsfget: "form".} =
+proc jsForm(this: HTMLSelectElement): HTMLFormElement {.jsfget: "form".} =
   return this.form
 
-func jsType(this: HTMLSelectElement): string {.jsfget: "type".} =
+proc jsType(this: HTMLSelectElement): string {.jsfget: "type".} =
   if this.attrb(satMultiple):
     return "select-multiple"
   return "select-one"
@@ -5324,12 +5345,12 @@ proc setLength(this: HTMLOptionsCollection; n: uint32) {.jsfset: "length".} =
     for i in 0 ..< len - n:
       this.item(uint32(i)).remove()
 
-func jsOptions(this: HTMLSelectElement): HTMLOptionsCollection
+proc jsOptions(this: HTMLSelectElement): HTMLOptionsCollection
     {.jsfget: "options".} =
   if this.cachedOptions == nil:
     this.cachedOptions = newCollection[HTMLOptionsCollection](
       root = this,
-      match = func(node: Node): bool =
+      match = proc(node: Node): bool =
         return node.isOptionOf(this),
       islive = true,
       childonly = false
@@ -5368,7 +5389,7 @@ proc getter(ctx: JSContext; this: HTMLSelectElement; u: JSAtom): JSValue
 proc item(this: HTMLSelectElement; u: uint32): Node {.jsfunc.} =
   return this.jsOptions.item(u)
 
-func namedItem(this: HTMLSelectElement; atom: CAtom): Element {.jsfunc.} =
+proc namedItem(this: HTMLSelectElement; atom: CAtom): Element {.jsfunc.} =
   return this.jsOptions.namedItem(atom)
 
 proc selectedOptions(ctx: JSContext; this: HTMLSelectElement): JSValue
@@ -5460,10 +5481,10 @@ proc mark(rt: JSRuntime; element: HTMLScriptElement; markFunc: JS_MarkFunc)
     if script.rt != nil and not JS_IsUninitialized(script.record):
       JS_MarkValue(rt, script.record, markFunc)
 
-func crossOrigin(element: HTMLScriptElement): CORSAttribute {.jsfget.} =
+proc crossOrigin(element: HTMLScriptElement): CORSAttribute {.jsfget.} =
   return element.crossOriginImpl
 
-func referrerpolicy(element: HTMLScriptElement): Option[ReferrerPolicy] =
+proc referrerpolicy(element: HTMLScriptElement): Option[ReferrerPolicy] =
   if o := strictParseEnum[ReferrerPolicy](element.attr(satReferrerpolicy)):
     return some(o)
   none(ReferrerPolicy)
@@ -5827,7 +5848,7 @@ proc prepare*(element: HTMLScriptElement) =
     element.execute()
 
 # <table>
-func caption(this: HTMLTableElement): Element {.jsfget.} =
+proc caption(this: HTMLTableElement): Element {.jsfget.} =
   return this.findFirstChildOf(TAG_CAPTION)
 
 proc setCaption(this: HTMLTableElement; caption: HTMLTableCaptionElement):
@@ -5838,10 +5859,10 @@ proc setCaption(this: HTMLTableElement; caption: HTMLTableCaptionElement):
   discard ?this.insertBefore(caption, option(this.firstChild))
   ok()
 
-func tHead(this: HTMLTableElement): Element {.jsfget.} =
+proc tHead(this: HTMLTableElement): Element {.jsfget.} =
   return this.findFirstChildOf(TAG_THEAD)
 
-func tFoot(this: HTMLTableElement): Element {.jsfget.} =
+proc tFoot(this: HTMLTableElement): Element {.jsfget.} =
   return this.findFirstChildOf(TAG_TFOOT)
 
 proc setTSectImpl(this: HTMLTableElement; sect: HTMLTableSectionElement;
@@ -5971,13 +5992,13 @@ proc deleteRow(this: HTMLTableSectionElement; index = -1): DOMResult[void]
 proc cells(ctx: JSContext; this: HTMLTableRowElement): JSValue {.jsfget.} =
   return ctx.getWeakCollection(this, wwmCells)
 
-func rowIndex(this: HTMLTableRowElement): int {.jsfget.} =
+proc rowIndex(this: HTMLTableRowElement): int {.jsfget.} =
   let table = this.findAncestor(TAG_TABLE)
   if table != nil:
     return HTMLTableElement(table).rows.findNode(this)
   return -1
 
-func sectionRowIndex(this: HTMLTableRowElement): int {.jsfget.} =
+proc sectionRowIndex(this: HTMLTableRowElement): int {.jsfget.} =
   let parent = this.parentElement
   if parent of HTMLTableElement:
     return this.rowIndex
@@ -5986,7 +6007,7 @@ func sectionRowIndex(this: HTMLTableRowElement): int {.jsfget.} =
   return -1
 
 # <textarea>
-func jsForm(this: HTMLTextAreaElement): HTMLFormElement {.jsfget: "form".} =
+proc jsForm(this: HTMLTextAreaElement): HTMLFormElement {.jsfget: "form".} =
   return this.form
 
 proc value*(textarea: HTMLTextAreaElement): string {.jsfget.} =
@@ -5999,7 +6020,7 @@ proc `value=`*(textarea: HTMLTextAreaElement; s: sink string)
   textarea.dirty = true
   textarea.internalValue = s
 
-func textAreaString*(textarea: HTMLTextAreaElement): string =
+proc textAreaString*(textarea: HTMLTextAreaElement): string =
   result = ""
   let split = textarea.value.split('\n')
   let rows = int(textarea.attrul(satRows).get(1))
@@ -6028,7 +6049,7 @@ proc `text=`(this: HTMLTitleElement; s: sink string) {.jsfset: "text".} =
   this.replaceAll(s)
 
 # <video>
-func getSrc*(this: HTMLElement): tuple[src, contentType: string] =
+proc getSrc*(this: HTMLElement): tuple[src, contentType: string] =
   let src = this.attr(satSrc)
   if src != "":
     return (src, "")
@@ -6038,7 +6059,7 @@ func getSrc*(this: HTMLElement): tuple[src, contentType: string] =
       return (src, el.attr(satType))
   return ("", "")
 
-func getReflectFunctions(tags: openArray[TagType]): seq[TabGetSet] =
+proc getReflectFunctions(tags: openArray[TagType]): seq[TabGetSet] =
   result = @[]
   for tag in tags:
     for i in TagReflectMap.getOrDefault(tag):
@@ -6049,7 +6070,7 @@ func getReflectFunctions(tags: openArray[TagType]): seq[TabGetSet] =
         magic: i
       ))
 
-func getElementReflectFunctions(): seq[TabGetSet] =
+proc getElementReflectFunctions(): seq[TabGetSet] =
   result = @[]
   for i in ReflectAllStartIndex ..< int16(ReflectTable.len):
     let entry = ReflectTable[i]
@@ -6179,7 +6200,7 @@ return option;
   JS_FreeValue(ctx, jsWindow)
 
 # Forward declaration hack
-isDefaultPassiveImpl = func(target: EventTarget): bool =
+isDefaultPassiveImpl = proc(target: EventTarget): bool =
   if not (target of Node):
     return false
   let node = Node(target)
@@ -6207,7 +6228,7 @@ getAPIBaseURLImpl = proc(ctx: JSContext): URL =
     return nil
   return window.document.baseURL
 
-isWindowImpl = proc(target: EventTarget): bool {.noSideEffect.} =
+isWindowImpl = proc(target: EventTarget): bool =
   return target of Window
 
 isHTMLElementImpl = proc(target: EventTarget): bool =

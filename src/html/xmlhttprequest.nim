@@ -82,7 +82,7 @@ jsDestructor(XMLHttpRequestUpload)
 jsDestructor(XMLHttpRequest)
 jsDestructor(ProgressEvent)
 
-func newXMLHttpRequest(ctx: JSContext): XMLHttpRequest {.jsctor.} =
+proc newXMLHttpRequest(ctx: JSContext): XMLHttpRequest {.jsctor.} =
   let upload = XMLHttpRequestUpload()
   return XMLHttpRequest(
     upload: upload,
@@ -93,6 +93,10 @@ func newXMLHttpRequest(ctx: JSContext): XMLHttpRequest {.jsctor.} =
 
 proc finalize(this: XMLHttpRequest) {.jsfin.} =
   JS_FreeValueRT(this.rt, this.responseObject)
+
+proc mark(rt: JSRuntime; this: XMLHttpRequest; markFun: JS_MarkFunc)
+    {.jsmark.} =
+  JS_MarkValue(rt, this.responseObject, markFun)
 
 proc newProgressEvent(ctype: CAtom; init = ProgressEventInit()): ProgressEvent
     {.jsctor.} =
@@ -105,7 +109,7 @@ proc newProgressEvent(ctype: CAtom; init = ProgressEventInit()): ProgressEvent
   Event(event).innerEventCreationSteps(EventInit(init))
   return event
 
-func readyState(this: XMLHttpRequest): uint16 {.jsfget.} =
+proc readyState(this: XMLHttpRequest): uint16 {.jsfget.} =
   return uint16(this.readyState)
 
 proc parseMethod(s: string): DOMResult[HttpMethod] =
@@ -429,7 +433,7 @@ proc getAllResponseHeaders(this: XMLHttpRequest): string {.jsfunc.} =
   for it in list:
     result &= it.toLowerAscii() & "\r\n"
 
-func getCharset(this: XMLHttpRequest): Charset =
+proc getCharset(this: XMLHttpRequest): Charset =
   let override = this.contentTypeOverride.toLowerAscii()
   let cs = override.getContentTypeAttr("charset").getCharset()
   if cs != CHARSET_UNKNOWN:
@@ -470,7 +474,7 @@ proc setResponseType(ctx: JSContext; this: XMLHttpRequest;
   this.responseType = value
   ok()
 
-func getContentType(this: XMLHttpRequest): string =
+proc getContentType(this: XMLHttpRequest): string =
   if this.contentTypeOverride != "":
     return this.contentTypeOverride
   return this.response.getContentType()
@@ -524,7 +528,7 @@ proc response(ctx: JSContext; this: XMLHttpRequest): JSValue {.jsfget.} =
     this.responseObject = JS_UNDEFINED
   return JS_DupValue(ctx, this.responseObject)
 
-func xhretGetSet(): seq[TabGetSet] =
+proc xhretGetSet(): seq[TabGetSet] =
   result = @[]
   for i, it in EventReflectMap:
     if it == satReadystatechange:

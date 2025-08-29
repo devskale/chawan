@@ -81,7 +81,7 @@ type
   EventTarget* = ref object of RootObj
     eventListener: EventListener
 
-  EventListener = ref object
+  EventListener {.acyclic.} = ref object
     # if callback is undefined, the listener has been removed
     callback: JSValue
     rt: JSRuntime
@@ -104,11 +104,10 @@ jsDestructor(EventTarget)
 
 # Forward declaration hack
 var isDefaultPassiveImpl*: proc(target: EventTarget): bool {.nimcall,
-  noSideEffect, raises: [].}
+  raises: [].}
 var getParentImpl*: proc(ctx: JSContext; target: EventTarget; isLoad: bool):
   EventTarget {.nimcall, raises: [].}
-var isWindowImpl*: proc(target: EventTarget): bool {.nimcall, noSideEffect,
-  raises: [].}
+var isWindowImpl*: proc(target: EventTarget): bool {.nimcall, raises: [].}
 var isHTMLElementImpl*: proc(target: EventTarget): bool {.nimcall, raises: [].}
 
 iterator eventListeners(this: EventTarget): EventListener =
@@ -185,11 +184,11 @@ proc initEvent(this: Event; ctype: CAtom; bubbles, cancelable: bool)
   if efDispatch notin this.flags:
     this.initialize(ctype, bubbles, cancelable)
 
-func srcElement(this: Event): EventTarget {.jsfget.} =
+proc srcElement(this: Event): EventTarget {.jsfget.} =
   return this.target
 
 #TODO shadow DOM etc.
-func composedPath(this: Event): seq[EventTarget] {.jsfunc.} =
+proc composedPath(this: Event): seq[EventTarget] {.jsfunc.} =
   if this.currentTarget == nil:
     return newSeq[EventTarget]()
   return @[this.currentTarget]
@@ -197,7 +196,7 @@ func composedPath(this: Event): seq[EventTarget] {.jsfunc.} =
 proc stopPropagation(this: Event) {.jsfunc.} =
   this.flags.incl(efStopPropagation)
 
-func cancelBubble(this: Event): bool {.jsfget.} =
+proc cancelBubble(this: Event): bool {.jsfget.} =
   return efStopPropagation in this.flags
 
 proc `cancelBubble=`(this: Event; cancel: bool) {.jsfset: "cancelBubble".} =
@@ -218,10 +217,10 @@ proc `returnValue=`(this: Event; value: bool) {.jsfset: "returnValue".} =
   if not value:
     this.preventDefault()
 
-func defaultPrevented(this: Event): bool {.jsfget.} =
+proc defaultPrevented(this: Event): bool {.jsfget.} =
   return efCanceled in this.flags
 
-func composed(this: Event): bool {.jsfget.} =
+proc composed(this: Event): bool {.jsfget.} =
   return efComposed in this.flags
 
 # CustomEvent
@@ -238,6 +237,9 @@ proc newCustomEvent*(ctx: JSContext; ctype: CAtom;
 proc finalize(this: CustomEvent) {.jsfin.} =
   JS_FreeValueRT(this.rt, this.detail)
 
+proc mark(rt: JSRuntime; this: CustomEvent; markFun: JS_MarkFunc) {.jsmark.} =
+  JS_MarkValue(rt, this.detail, markFun)
+
 proc initCustomEvent(ctx: JSContext; this: CustomEvent; ctype: CAtom;
     bubbles, cancelable: bool; detail: JSValueConst) {.jsfunc.} =
   if efDispatch notin this.flags:
@@ -247,9 +249,6 @@ proc initCustomEvent(ctx: JSContext; this: CustomEvent; ctype: CAtom;
     this.initialize(ctype, bubbles, cancelable)
 
 # MessageEvent
-proc finalize(this: MessageEvent) {.jsfin.} =
-  JS_FreeValueRT(this.rt, this.data)
-
 proc newMessageEvent*(ctx: JSContext; ctype: CAtom;
     eventInit = MessageEventInit(data: JS_NULL)): MessageEvent =
   let event = MessageEvent(
@@ -260,6 +259,12 @@ proc newMessageEvent*(ctx: JSContext; ctype: CAtom;
   )
   event.innerEventCreationSteps(EventInit(eventInit))
   return event
+
+proc finalize(this: MessageEvent) {.jsfin.} =
+  JS_FreeValueRT(this.rt, this.data)
+
+proc mark(rt: JSRuntime; this: MessageEvent; markFun: JS_MarkFunc) {.jsmark.} =
+  JS_MarkValue(rt, this.data, markFun)
 
 # SubmitEvent
 type EventTargetHTMLElement* = distinct EventTarget
@@ -473,10 +478,15 @@ proc removeInternalEventListener(ctx: JSContext; eventTarget: EventTarget;
   var prev: EventListener = nil
   for it in eventTarget.eventListeners:
     if it.ctype == ctype and it.internal:
+      let callback = it.callback
+      it.callback = JS_UNDEFINED
+      it.rt = nil
+      JS_FreeValue(ctx, callback)
       if prev == nil:
         eventTarget.eventListener = it.next
       else:
         prev.next = it.next
+      break
     prev = it
 
 proc addInternalEventListener(ctx: JSContext; eventTarget: EventTarget;
@@ -572,6 +582,7 @@ proc removeEventListener(ctx: JSContext; eventTarget: EventTarget;
         JS_IsStrictEqual(ctx, it.callback, callback) and it.capture == capture:
       let callback = it.callback
       it.callback = JS_UNDEFINED
+      it.rt = nil
       JS_FreeValue(ctx, callback)
       if prev == nil:
         eventTarget.eventListener = it.next
