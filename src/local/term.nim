@@ -907,6 +907,16 @@ proc applyConfig(term: Terminal) =
       term.formatMode.excl(fm)
   if term.config.display.imageMode.isSome:
     term.imageMode = term.config.display.imageMode.get
+    # Print debug output to see if AIR mode is being set
+    try:
+      stderr.writeLine("Image mode set to: ", $term.imageMode)
+    except IOError:
+      discard
+    if term.imageMode == imAir:
+      try:
+        stderr.writeLine("AIR mode is active!")
+      except IOError:
+        discard
   if term.imageMode == imSixel and term.config.display.sixelColors.isSome:
     let n = term.config.display.sixelColors.get
     term.sixelRegisterNum = clamp(n, 2, 65535)
@@ -1061,26 +1071,24 @@ proc loadImage*(term: Terminal; data: Blob; pid, imageId, x, y, width, height,
     # Instead, we convert the image to ASCII art and render it directly
     # into the text buffer
     
-    # TODO: Implement proper image decoding and ASCII conversion
-    # This is a placeholder implementation
+    try:
+      stderr.writeLine("AIR mode: loadImage called for image at (", x, ", ", y, ") size (", width, "x", height, ")")
+    except IOError:
+      discard
     
     # For now, we'll just render a placeholder ASCII art
-    let placeholder = """
-  .-.
-  |X|
-  '-'
-"""
+    let placeholder = "[ASCII-IMAGE]"
+    
     # Render ASCII art into the terminal grid
-    let lines = placeholder.split('\n')
-    for i, line in lines:
-      if i + y >= 0 and i + y < term.attrs.height:
-        for j, char in line:
-          if j + x >= 0 and j + x < term.attrs.width:
-            let idx = (i + y) * term.attrs.width + (j + x)
-            # Update the canvas with the ASCII character
-            term.canvas[idx].str = $char
-            # Mark the line as damaged so it gets redrawn
-            term.lineDamage[i + y] = min(term.lineDamage[i + y], j + x)
+    # We need to render the text at position (x, y)
+    if y >= 0 and y < term.attrs.height:
+      for j, char in placeholder:
+        if x + j >= 0 and x + j < term.attrs.width:
+          let idx = y * term.attrs.width + (x + j)
+          # Update the canvas with the ASCII character
+          term.canvas[idx].str = $char
+          # Mark the line as damaged so it gets redrawn
+          term.lineDamage[y] = min(term.lineDamage[y], x + j)
     
     # Return nil since we don't create a CanvasImage for AIR mode
     return nil

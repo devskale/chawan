@@ -1216,32 +1216,58 @@ proc initImages(pager: Pager; container: Container) =
   var newImages: seq[CanvasImage] = @[]
   var redrawNext = false # redraw images if a new one was loaded before
   for image in container.images:
-    var erry = 0
-    var offx = 0
-    var dispw = 0
-    if pager.term.imageMode == imSixel:
-      let xpx = (image.x - container.fromx) * pager.attrs.ppc
-      offx = -min(xpx, 0)
-      let maxwpx = pager.bufWidth * pager.attrs.ppc
-      dispw = min(image.width + xpx, maxwpx) - xpx
-      let ypx = (image.y - container.fromy) * pager.attrs.ppl
-      erry = -min(ypx, 0) mod 6
-      if dispw <= offx:
+    # Handle AIR mode differently
+    if pager.term.imageMode == imAir:
+      # For AIR mode, we convert images to ASCII art and render them directly
+      # into the text buffer instead of creating CanvasImage objects
+      try:
+        stderr.writeLine("AIR mode: Processing image at position (", image.x, ", ", image.y, ") with size (", image.width, "x", image.height, ")")
+      except IOError:
+        discard
+      let cached = container.findCachedImage(image, 0, 0, 0)
+      if cached == nil:
+        pager.loadCachedImage(container, image, 0, 0, 0)
         continue
-    let cached = container.findCachedImage(image, offx, erry, dispw)
-    let imageId = image.bmp.imageId
-    if cached == nil:
-      pager.loadCachedImage(container, image, offx, erry, dispw)
+      if cached.state != cisLoaded:
+        continue # loading
+      
+      # For AIR mode, we need to decode the image and convert it to ASCII art
+      # This is a simplified implementation that just shows a placeholder
+      # In a full implementation, we would:
+      # 1. Decode the image data in cached.data to RGBA format
+      # 2. Convert the RGBA data to ASCII art
+      # 3. Render the ASCII art in the text buffer
+      
+      # For now, we'll just continue without creating a CanvasImage
       continue
-    if cached.state != cisLoaded:
-      continue # loading
-    let canvasImage = pager.term.loadImage(cached.data, container.process,
-      imageId, image.x - container.fromx, image.y - container.fromy,
-      image.width, image.height, image.x, image.y, pager.bufWidth,
-      pager.bufHeight, erry, offx, dispw, image.offx, image.offy,
-      cached.preludeLen, cached.transparent, redrawNext)
-    if canvasImage != nil:
-      newImages.add(canvasImage)
+    else:
+      # Handle other image modes (Sixel, Kitty) as before
+      var erry = 0
+      var offx = 0
+      var dispw = 0
+      if pager.term.imageMode == imSixel:
+        let xpx = (image.x - container.fromx) * pager.attrs.ppc
+        offx = -min(xpx, 0)
+        let maxwpx = pager.bufWidth * pager.attrs.ppc
+        dispw = min(image.width + xpx, maxwpx) - xpx
+        let ypx = (image.y - container.fromy) * pager.attrs.ppl
+        erry = -min(ypx, 0) mod 6
+        if dispw <= offx:
+          continue
+      let cached = container.findCachedImage(image, offx, erry, dispw)
+      let imageId = image.bmp.imageId
+      if cached == nil:
+        pager.loadCachedImage(container, image, offx, erry, dispw)
+        continue
+      if cached.state != cisLoaded:
+        continue # loading
+      let canvasImage = pager.term.loadImage(cached.data, container.process,
+        imageId, image.x - container.fromx, image.y - container.fromy,
+        image.width, image.height, image.x, image.y, pager.bufWidth,
+        pager.bufHeight, erry, offx, dispw, image.offx, image.offy,
+        cached.preludeLen, cached.transparent, redrawNext)
+      if canvasImage != nil:
+        newImages.add(canvasImage)
   pager.term.clearImages(pager.bufHeight)
   pager.term.canvasImages = newImages
   pager.term.checkImageDamage(pager.bufWidth, pager.bufHeight)
