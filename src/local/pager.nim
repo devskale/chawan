@@ -1231,14 +1231,9 @@ proc initImages(pager: Pager; container: Container) =
       if cached.state != cisLoaded:
         continue # loading
       
-      # For AIR mode, we need to decode the image and convert it to ASCII art
-      # This is a simplified implementation that just shows a placeholder
-      # In a full implementation, we would:
-      # 1. Decode the image data in cached.data to RGBA format
-      # 2. Convert the RGBA data to ASCII art
-      # 3. Render the ASCII art in the text buffer
-      
-      # For now, we'll just continue without creating a CanvasImage
+      # For AIR mode, we don't create CanvasImage objects
+      # The image is rendered as ASCII art directly in the text buffer
+      # by the CSS rendering code
       continue
     else:
       # Handle other image modes (Sixel, Kitty) as before
