@@ -54,7 +54,28 @@ Key features:
    - pkg-config
    - GNU make
 
-### Compilation
+### Compilation on macOS
+
+On macOS, you can install the dependencies using Homebrew:
+
+```bash
+# Install dependencies
+brew install nim openssl libssh2 brotli pkg-config
+
+# Clone the repository
+git clone https://git.sr.ht/~bptato/chawan
+cd chawan
+
+# Build the project using gmake (GNU make)
+gmake
+
+# Install (optional)
+sudo gmake install
+```
+
+Note: On macOS, you need to use `gmake` instead of `make` as the project requires GNU make features.
+
+### Compilation on other Unix-like systems
 
 ```bash
 # Clone the repository
@@ -69,6 +90,22 @@ sudo make install
 ```
 
 ### Running
+
+```bash
+# Open in visual mode (shows keybindings)
+./target/release/bin/cha -V
+
+# Open a website
+./target/release/bin/cha example.org
+
+# View a markdown file
+./target/release/bin/cha README.md
+
+# View man pages
+./target/release/bin/mancha cha
+```
+
+If you've installed the binaries to your system, you can omit the path:
 
 ```bash
 # Open in visual mode (shows keybindings)
@@ -178,6 +215,10 @@ Tests are located in the `test/` directory:
 
 Run tests with:
 ```bash
+# On macOS
+gmake test
+
+# On other Unix-like systems
 make test
 ```
 
