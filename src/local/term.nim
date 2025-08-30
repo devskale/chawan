@@ -1055,6 +1055,36 @@ proc checkImageDamage*(term: Terminal; maxw, maxh: int) =
 proc loadImage*(term: Terminal; data: Blob; pid, imageId, x, y, width, height,
     rx, ry, maxw, maxh, erry, offx, dispw, offx2, offy2, preludeLen: int;
     transparent: bool; redrawNext: var bool): CanvasImage =
+  # Handle AIR mode differently
+  if term.imageMode == imAir:
+    # For AIR mode, we don't create CanvasImage objects
+    # Instead, we convert the image to ASCII art and render it directly
+    # into the text buffer
+    
+    # TODO: Implement proper image decoding and ASCII conversion
+    # This is a placeholder implementation
+    
+    # For now, we'll just render a placeholder ASCII art
+    let placeholder = """
+  .-.
+  |X|
+  '-'
+"""
+    # Render ASCII art into the terminal grid
+    let lines = placeholder.split('\n')
+    for i, line in lines:
+      if i + y >= 0 and i + y < term.attrs.height:
+        for j, char in line:
+          if j + x >= 0 and j + x < term.attrs.width:
+            let idx = (i + y) * term.attrs.width + (j + x)
+            # Update the canvas with the ASCII character
+            term.canvas[idx].str = $char
+            # Mark the line as damaged so it gets redrawn
+            term.lineDamage[i + y] = min(term.lineDamage[i + y], j + x)
+    
+    # Return nil since we don't create a CanvasImage for AIR mode
+    return nil
+  
   if (let image = term.findImage(pid, imageId, rx, ry, width, height, erry,
         offx, dispw); image != nil):
     # reuse image on screen
