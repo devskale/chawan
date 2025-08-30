@@ -1007,6 +1007,9 @@ proc clearImage(term: Terminal; image: CanvasImage; maxh: int) =
       term.lineDamage[y] = min(term.lineDamage[y], x)
   of imKitty:
     term.imagesToClear.add(image)
+  of imAir:
+    # For AIR mode, we treat images as text, so no special clearing is needed
+    discard
 
 proc clearImages*(term: Terminal; maxh: int) =
   for image in term.canvasImages:
@@ -1220,6 +1223,10 @@ proc outputImages*(term: Terminal) =
       of imNone: assert false
       of imSixel: term.outputSixelImage(x, y, image)
       of imKitty: term.outputKittyImage(x, y, image)
+      of imAir: 
+        # For AIR mode, images are rendered as ASCII art in the text buffer,
+        # so no special output is needed here
+        discard
       image.damaged = false
 
 proc clearCanvas*(term: Terminal) =

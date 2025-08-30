@@ -1162,6 +1162,9 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
       headers.add("Cha-Image-Crop-Width", $dispw)
     of imKitty:
       url = parseURL0("img-codec+png:encode")
+    of imAir:
+      # AIR mode doesn't support encoding, so we fall back to Kitty mode for encoding
+      url = parseURL0("img-codec+png:encode")
     of imNone: assert false
     let request = newRequest(
       url,

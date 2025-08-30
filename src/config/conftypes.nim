@@ -29,3 +29,4 @@ type
     imNone = "none"
     imSixel = "sixel"
     imKitty = "kitty"
+    imAir = "air"
