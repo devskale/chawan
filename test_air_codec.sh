@@ -1,25 +1,33 @@
 #!/bin/bash
 
-# Test the AIR codec directly
+# Test script for AIR codec
 echo "Testing AIR codec directly..."
 
-# Create a simple 4x4 RGBA image (64 bytes)
-printf '\x00\x00\x00\xff\x40\x40\x40\xff\x80\x80\x80\xff\xc0\xc0\xc0\xff' > test.rgba
-printf '\x20\x20\x20\xff\x60\x60\x60\xff\xa0\xa0\xa0\xff\xe0\xe0\xe0\xff' >> test.rgba
-printf '\x10\x10\x10\xff\x50\x50\x50\xff\x90\x90\x90\xff\xd0\xd0\xd0\xff' >> test.rgba
-printf '\x30\x30\x30\xff\x70\x70\x70\xff\xb0\xb0\xb0\xff\xf0\xf0\xf0\xff' >> test.rgba
+# Create a simple RGBA test image (4x4 pixels)
+# We'll create a simple pattern with different colors using Python
+python3 -c "
+import sys
+# Create 4x4 RGBA data
+# First row: red, red, green, green
+# Second row: blue, blue, white, white
+# Third row: white, black, black, black
+# Fourth row: black, white, white, white
+data = bytearray()
+# Row 1
+data.extend([255, 0, 0, 255]*2)   # 2 red pixels
+data.extend([0, 255, 0, 255]*2)   # 2 green pixels
+# Row 2
+data.extend([0, 0, 255, 255]*2)   # 2 blue pixels
+data.extend([255, 255, 255, 255]*2)  # 2 white pixels
+# Row 3
+data.extend([255, 255, 255, 255]) # 1 white pixel
+data.extend([0, 0, 0, 255]*3)     # 3 black pixels
+# Row 4
+data.extend([0, 0, 0, 255])       # 1 black pixel
+data.extend([255, 255, 255, 255]*3)  # 3 white pixels
+sys.stdout.buffer.write(data)
+" > test_rgba_data.bin
 
-# Test the decode functionality
-echo "Testing decode functionality..."
-export MAPPED_URI_SCHEME="img-codec+air"
-export MAPPED_URI_PATH="decode"
-export REQUEST_HEADERS="Cha-Image-Dimensions: 4x4"
-
-echo "Input: 4x4 RGBA image"
-echo "Output:"
-cat test.rgba | ./target/release/libexec/chawan/cgi-bin/air
-
-# Clean up
-rm test.rgba
-
-echo "Test completed."
+# Test the AIR codec directly
+echo "Testing AIR codec with 4x4 RGBA data:"
+MAPPED_URI_SCHEME=img-codec+air MAPPED_URI_PATH=decode REQUEST_HEADERS='Cha-Image-Dimensions: 4x4' ./target/release/libexec/chawan/cgi-bin/air < test_rgba_data.bin

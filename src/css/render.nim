@@ -400,13 +400,25 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
       grid.paintBackground(state, defaultColor, x1, y1, x2, y2,
         ibox.element, 0, ibox.render.clipBox)
       
-      # For AIR mode, we render a placeholder instead of adding to state.images
-      # In a full implementation, we would decode the image and convert to ASCII art
+      # Debug output to see if this code is being executed
       try:
-        stderr.writeLine("Rendering image as ASCII placeholder")
+        stderr.writeLine("Processing InlineImageBox: ", ibox.bmp.width, "x", ibox.bmp.height)
       except IOError:
         discard
-      let placeholder = "[ASCII-IMAGE]"
+      
+      # For AIR mode, we add the image to state.images so it can be processed later
+      # For other modes, we also add it to state.images
+      # In AIR mode, the image will be converted to ASCII art in the pager
+      state.images.add(PosBitmap(
+        x: x1,
+        y: y1,
+        width: ibox.bmp.width,
+        height: ibox.bmp.height,
+        bmp: ibox.bmp
+      ))
+      
+      # Show a more descriptive placeholder for AIR mode
+      let placeholder = "[AIR-IMAGE: " & $ibox.bmp.width & "x" & $ibox.bmp.height & "]"
       let format = ibox.computed.toFormat()
       grid.setText(state, placeholder, offset, format, ibox.element, clipBox)
   else: # InlineNewLineBox does not have children, so we handle it here
