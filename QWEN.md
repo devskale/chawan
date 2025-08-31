@@ -31,6 +31,26 @@ only after successfully verifying the architectural setup. move on with implemen
 **Status**: ✅ COMPLETE - The basic AIR mode has been successfully implemented and integrated.
 The `--air` flag now works as intended, allowing terminal browsing with ASCII image rendering.
 
+## Recent Achievement: Improved AIR Mode Box Rendering
+
+We've successfully implemented significant improvements to the AIR mode ASCII box rendering:
+
+1. **Fixed Box Alignment Issues**: Resolved skewed rendering where box elements (top border, info line, bottom border) were not properly aligned
+2. **Implemented Aspect Ratio Preservation**: ASCII boxes now maintain proper proportions based on the original image dimensions
+3. **Added Visual Enhancements**: Created complete box structures with vertical side borders and centered info lines
+
+These improvements provide a much better visual representation of images in terminal environments while maintaining compatibility across all terminal types.
+
+## Main Lessons Learned
+
+1. **Grid Rendering Limitations**: The `setText` function in Chawan's grid rendering system only properly handles single-line strings. Multi-line strings require individual line rendering with proper offset calculations.
+
+2. **Aspect Ratio Implementation**: Properly preserving image aspect ratios in ASCII rendering requires careful calculation considering character dimensions (characters are typically taller than they are wide).
+
+3. **Visual Design Principles**: Centering informational elements within containers and providing complete border structures significantly improves the visual appeal and readability of ASCII art representations.
+
+4. **Constraint Management**: Implementing minimum and maximum size constraints prevents visual issues with extremely small or large images while maintaining proportional representation.
+
 ## Development Status
 
 1 [X] Implement Dummy Ascii Codec
@@ -39,6 +59,8 @@ The `--air` flag now works as intended, allowing terminal browsing with ASCII im
 4 [X] Test dummy ASCII rendering end-to-end
 5 [X] Add --air command line flag for easy usage
 6 [X] Implement size-aware ASCII boxes with proper dimensions
+7 [X] Fix box alignment issues
+8 [X] Implement aspect ratio preservation for ASCII boxes
 
 ## Current Implementation
 
@@ -58,6 +80,7 @@ The implementation includes:
 - Proper error handling and debugging output
 - A convenient `--air` command line flag that automatically enables image processing and sets the display mode
 - **Size-aware ASCII boxes that accurately represent image dimensions**
+- **Properly aligned boxes with aspect ratio preservation**
 
 ## Next Steps for Improvement
 
