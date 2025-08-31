@@ -133,7 +133,7 @@ type
 
   WindowWeakMap* = enum
     wwmChildren, wwmChildNodes, wwmSelectedOptions, wwmTBodies, wwmCells,
-    wwmDatalist, wwmAttributes
+    wwmDataset, wwmAttributes
 
   Window* = ref object of EventTarget
     internalConsole*: Console
@@ -266,9 +266,11 @@ type
   ParentNode* = ref object of Node
     firstChild*: Node
 
-  Attr* = ref object of Node
+  Attr = ref object of Node
     dataIdx: int
-    ownerElement*: Element
+    ownerElement: Element
+    prefix {.jsget.}: CAtom
+    localName {.jsget.}: CAtom
 
   DOMImplementation = object
     document: Document
@@ -343,8 +345,6 @@ type
 
   AttrData* = object
     qualifiedName*: CAtom
-    localName*: CAtom
-    prefix*: CAtom
     namespace*: CAtom
     value*: string
 
@@ -399,23 +399,23 @@ type
     userValidity: bool
     cachedOptions: HTMLOptionsCollection
 
-  HTMLSpanElement* = ref object of HTMLElement
+  HTMLSpanElement = ref object of HTMLElement
 
-  HTMLOptGroupElement* = ref object of HTMLElement
+  HTMLOptGroupElement = ref object of HTMLElement
 
   HTMLOptionElement* = ref object of HTMLElement
     selected* {.jsget.}: bool
     dirty: bool
 
-  HTMLHeadingElement* = ref object of HTMLElement
+  HTMLHeadingElement = ref object of HTMLElement
 
-  HTMLBRElement* = ref object of HTMLElement
+  HTMLBRElement = ref object of HTMLElement
 
-  HTMLMenuElement* = ref object of HTMLElement
+  HTMLMenuElement = ref object of HTMLElement
 
-  HTMLUListElement* = ref object of HTMLElement
+  HTMLUListElement = ref object of HTMLElement
 
-  HTMLOListElement* = ref object of HTMLElement
+  HTMLOListElement = ref object of HTMLElement
 
   HTMLLIElement* = ref object of HTMLElement
     value* {.jsget.}: Option[int32]
@@ -439,8 +439,6 @@ type
   HTMLTemplateElement* = ref object of HTMLElement
     content* {.jsget.}: DocumentFragment
 
-  HTMLUnknownElement* = ref object of HTMLElement
-
   HTMLScriptElement* = ref object of HTMLElement
     parserDocument*: Document
     preparationTimeDocument*: Document
@@ -455,11 +453,11 @@ type
     onReady: (proc(element: HTMLScriptElement) {.nimcall, raises: [].})
     next*: HTMLScriptElement # scriptsToExecSoon/InOrder/OnLoad
 
-  OnCompleteProc = proc(element: HTMLScriptElement, res: ScriptResult)
+  OnCompleteProc = proc(element: HTMLScriptElement; res: ScriptResult)
 
-  HTMLBaseElement* = ref object of HTMLElement
+  HTMLBaseElement = ref object of HTMLElement
 
-  HTMLAreaElement* = ref object of HTMLElement
+  HTMLAreaElement = ref object of HTMLElement
     relList {.jsget.}: DOMTokenList
 
   HTMLButtonElement* = ref object of FormAssociatedElement
@@ -483,7 +481,7 @@ type
 
   HTMLAudioElement* = ref object of HTMLElement
 
-  HTMLIFrameElement* = ref object of HTMLElement
+  HTMLIFrameElement = ref object of HTMLElement
 
   HTMLTableElement = ref object of HTMLElement
     cachedRows: HTMLCollection
@@ -510,6 +508,8 @@ type
   HTMLHeadElement = ref object of HTMLElement
 
   HTMLTitleElement = ref object of HTMLElement
+
+  HTMLUnknownElement = ref object of HTMLElement
 
 jsDestructor(Navigator)
 jsDestructor(PluginArray)
@@ -613,11 +613,6 @@ proc newDOMTokenList(element: Element; name: StaticAtom): DOMTokenList
 proc newCSSStyleDeclaration(element: Element; value: string; computed = false;
   readonly = false): CSSStyleDeclaration
 
-proc getImageId(window: Window): int
-proc loadResource(window: Window; link: HTMLLinkElement)
-proc loadResource*(window: Window; image: HTMLImageElement)
-proc logException(window: Window; url: URL)
-
 proc adopt(document: Document; node: Node)
 proc applyAuthorSheets*(document: Document)
 proc applyStyleDependencies*(element: Element; depends: DependencyInfo)
@@ -647,6 +642,7 @@ proc replaceAll(parent: ParentNode; s: sink string)
 
 proc containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool
 
+proc newAttr(element: Element; dataIdx: int): Attr
 proc data(attr: Attr): lent AttrData
 proc setValue(attr: Attr; s: string)
 
@@ -1069,6 +1065,11 @@ proc isLink(node: Node): bool =
   let element = Element(node)
   return element.tagType in {TAG_A, TAG_AREA} and element.attrb(satHref)
 
+proc logException(window: Window; url: URL) =
+  #TODO excludepassword seems pointless?
+  window.console.error("Exception in document",
+    url.serialize(excludepassword = true), window.jsctx.getExceptionMsg())
+
 proc newWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
     JSValue =
   case wwm
@@ -1104,18 +1105,13 @@ proc newWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
       islive = true,
       childonly = true
     ))
-  of wwmDatalist:
+  of wwmDataset:
     return ctx.toJS(DOMStringMap(target: HTMLElement(this)))
   of wwmAttributes:
     let element = Element(this)
     let map = NamedNodeMap(element: element)
-    let document = element.document
     for i, attr in element.attrs.mypairs:
-      map.attrlist.add(Attr(
-        internalNext: document,
-        dataIdx: i,
-        ownerElement: element
-      ))
+      map.attrlist.add(element.newAttr(i))
     return ctx.toJS(map)
 
 proc getWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
@@ -1608,7 +1604,7 @@ proc contains*(a, b: Node): bool {.jsfunc.} =
 proc jsParentNode(node: Node): Node {.jsfget: "parentNode".} =
   return node.parentNode
 
-proc firstChild*(node: Node): Node {.jsfget.} =
+proc firstChild(node: Node): Node {.jsfget.} =
   if node of ParentNode:
     return cast[ParentNode](node).firstChild
   nil
@@ -1826,15 +1822,12 @@ proc clone(node: Node; document = none(Document), deep = false): Node =
   elif node of Attr:
     let attr = Attr(node)
     let data = attr.data
-    let x = Attr(
-      ownerElement: AttrDummyElement(
-        internalNext: attr.ownerElement.document,
-        internalElIndex: -1,
-        attrs: @[data]
-      ),
-      dataIdx: 0
+    let dummy = AttrDummyElement(
+      internalNext: attr.ownerElement.document,
+      internalElIndex: -1,
+      attrs: @[data]
     )
-    Node(x)
+    Node(dummy.newAttr(0))
   elif node of Text:
     let text = Text(node)
     let x = document.newText(text.data)
@@ -1899,11 +1892,6 @@ proc nextElementSiblingImpl(this: Node): Element =
 proc childNodes(ctx: JSContext; node: Node): JSValue {.jsfget.} =
   return ctx.getWeakCollection(node, wwmChildNodes)
 
-proc equals(a, b: AttrData): bool =
-  return a.qualifiedName == b.qualifiedName and
-    a.namespace == b.namespace and
-    a.value == b.value
-
 proc isEqualNode(node, other: Node): bool {.jsfunc.} =
   if node of DocumentType:
     if not (other of DocumentType):
@@ -1924,7 +1912,7 @@ proc isEqualNode(node, other: Node): bool {.jsfunc.} =
           node.localName != other.localName or node.attrs.len != other.attrs.len:
         return false
       for i, attr in node.attrs.mypairs:
-        if not attr.equals(other.attrs[i]):
+        if attr != other.attrs[i]:
           return false
     var it {.cursor.} = other.firstChild
     for child in node.childList:
@@ -1934,7 +1922,7 @@ proc isEqualNode(node, other: Node): bool {.jsfunc.} =
   elif node of Attr:
     if not (other of Attr):
       return false
-    if not Attr(node).data.equals(Attr(other).data):
+    if Attr(node).data != Attr(other).data:
       return false
   elif node of ProcessingInstruction:
     if not (other of ProcessingInstruction):
@@ -3215,13 +3203,13 @@ proc names(ctx: JSContext; map: DOMStringMap): JSPropertyEnumList
     {.jspropnames.} =
   var list = newJSPropertyEnumList(ctx, uint32(map.target.attrs.len))
   for attr in map.target.attrs:
-    let k = $attr.localName
+    let k = $attr.qualifiedName
     if k.startsWith("data-") and AsciiUpperAlpha notin k:
       list.add(k["data-".len .. ^1].kebabToCamelCase())
   return list
 
 proc dataset(ctx: JSContext; element: HTMLElement): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(element, wwmDatalist)
+  return ctx.getWeakCollection(element, wwmDataset)
 
 # NodeList
 proc length(this: NodeList): uint32 {.jsfget.} =
@@ -3495,6 +3483,24 @@ proc setHash(location: Location; s: string) {.jsfset: "hash".} =
   document.window.navigate(copyURL)
 
 # Attr
+proc newAttr(element: Element; dataIdx: int): Attr =
+  let attr = Attr(
+    internalNext: element.document,
+    dataIdx: dataIdx,
+    ownerElement: element,
+  )
+  let namespace = attr.data.namespace
+  let qualifiedName = attr.data.qualifiedName
+  if namespace == CAtomNull: # no namespace -> qualifiedName == localName
+    attr.prefix = CAtomNull
+    attr.localName = qualifiedName
+  else: # namespace -> qualifiedName == prefix & ':' & localName
+    let prefixs = ($qualifiedName).until(':')
+    let prefixLen = prefixs.len
+    attr.prefix = prefixs.toAtom()
+    attr.localName = ($qualifiedName).substr(prefixLen + 1).toAtom()
+  return attr
+
 proc jsOwnerElement(attr: Attr): Element {.jsfget: "ownerElement".} =
   if attr.ownerElement of AttrDummyElement:
     return nil
@@ -3508,12 +3514,6 @@ proc data(attr: Attr): lent AttrData =
 
 proc namespaceURI(attr: Attr): CAtom {.jsfget.} =
   return attr.data.namespace
-
-proc prefix(attr: Attr): CAtom {.jsfget.} =
-  return attr.data.prefix
-
-proc localName(attr: Attr): CAtom {.jsfget.} =
-  return attr.data.localName
 
 proc value(attr: Attr): string {.jsfget.} =
   return attr.data.value
@@ -3535,11 +3535,7 @@ proc getAttr(map: NamedNodeMap; dataIdx: int): Attr =
   let i = map.findAttr(dataIdx)
   if i != -1:
     return map.attrlist[i]
-  let attr = Attr(
-    internalNext: map.element.document,
-    dataIdx: dataIdx,
-    ownerElement: map.element
-  )
+  let attr = map.element.newAttr(dataIdx)
   map.attrlist.add(attr)
   return attr
 
@@ -3724,16 +3720,33 @@ proc normalizeAttrQName(element: Element; qualifiedName: CAtom): CAtom =
     return qualifiedName.toLowerAscii()
   return qualifiedName
 
+proc cmpAttrName(a: AttrData; b: CAtom): int =
+  return cmp(uint32(a.qualifiedName), uint32(b))
+
 proc findAttr(element: Element; qualifiedName: CAtom): int =
   let qualifiedName = element.normalizeAttrQName(qualifiedName)
-  for i, attr in element.attrs.mypairs:
-    if attr.qualifiedName == qualifiedName:
-      return i
+  let n = element.attrs.lowerBound(qualifiedName, cmpAttrName)
+  if n < element.attrs.len and element.attrs[n].qualifiedName == qualifiedName:
+    return n
   return -1
 
+proc matchesLocalName(qualifiedName, localName: CAtom): bool =
+  let i = ($qualifiedName).find(':') + 1
+  if i == 0:
+    return qualifiedName == localName
+  return ($qualifiedName).toOpenArray(i, ($qualifiedName).high) == $localName
+
 proc findAttrNS(element: Element; namespace, localName: CAtom): int =
+  if namespace == CAtomNull:
+    for i, attr in element.attrs.mypairs:
+      if attr.namespace == CAtomNull and attr.qualifiedName == localName:
+        return i
+    return -1
+  # Potentially slow path, since we don't store namespace prefixes separately.
+  # Still preferable to wasting memory for XML brain damage.
   for i, attr in element.attrs.mypairs:
-    if attr.namespace == namespace and attr.localName == localName:
+    if attr.namespace == namespace and
+        attr.qualifiedName.matchesLocalName(localName):
       return i
   return -1
 
@@ -4390,9 +4403,9 @@ proc delAttr(ctx: JSContext; element: Element; i: int) =
   if map != nil:
     # delete from attrlist + adjust indices invalidated
     var j = -1
-    for i, attr in map.attrlist.mypairs:
+    for k, attr in map.attrlist.mypairs:
       if attr.dataIdx == i:
-        j = i
+        j = k
       elif attr.dataIdx > i:
         dec attr.dataIdx
     if j != -1:
@@ -4424,22 +4437,19 @@ proc attr*(element: Element; name: CAtom; value: sink string) =
   var i = element.findAttrOrNext(name)
   if i >= 0:
     element.attrs[i].value = value
-    element.document.invalidateCollections()
-    element.invalidate()
   else:
     i = -(i + 1)
     element.attrs.insert(AttrData(
+      namespace: CAtomNull,
       qualifiedName: name,
-      localName: name,
       value: value
     ), i)
   element.reflectAttr(name, some(element.attrs[i].value))
+  element.document.invalidateCollections()
+  element.invalidate()
 
 proc attr*(element: Element; name: StaticAtom; value: sink string) =
   element.attr(name.toAtom(), value)
-
-proc cmpAttrName(a: AttrData; b: CAtom): int =
-  return cmp(int(a.qualifiedName), int(b))
 
 proc attrns*(element: Element; localName: CAtom; prefix: NamespacePrefix;
     namespace: Namespace; value: sink string) =
@@ -4448,28 +4458,21 @@ proc attrns*(element: Element; localName: CAtom; prefix: NamespacePrefix;
     return
   let namespace = namespace.toAtom()
   let i = element.findAttrNS(namespace, localName)
-  var prefixAtom, qualifiedName: CAtom
-  if prefix != NO_PREFIX:
-    prefixAtom = prefix.toAtom()
-    let tmp = $prefix & ':' & $localName
-    qualifiedName = tmp.toAtom()
+  let qualifiedName = if prefix != NO_PREFIX:
+    ($prefix & ':' & $localName).toAtom()
   else:
-    qualifiedName = localName
+    localName
   if i != -1:
-    element.attrs[i].prefix = prefixAtom
-    element.attrs[i].qualifiedName = qualifiedName
     element.attrs[i].value = value
   else:
     element.attrs.insert(AttrData(
-      prefix: prefixAtom,
-      localName: localName,
-      qualifiedName: qualifiedName,
       namespace: namespace,
+      qualifiedName: qualifiedName,
       value: value
     ), element.attrs.upperBound(qualifiedName, cmpAttrName))
+  element.reflectAttr(qualifiedName, some(value))
   element.document.invalidateCollections()
   element.invalidate()
-  element.reflectAttr(qualifiedName, some(value))
 
 proc attrl(element: Element; name: StaticAtom; value: int32) =
   element.attr(name, $value)
@@ -4512,13 +4515,14 @@ proc setAttributeNS(element: Element; namespace: CAtom; qualifiedName: string;
   if i != -1:
     element.attrs[i].value = value
   else:
-    element.attrs.add(AttrData(
-      prefix: prefix,
-      localName: localName,
+    element.attrs.insert(AttrData(
       namespace: namespace,
       qualifiedName: qualifiedName,
       value: value
-    ))
+    ), element.attrs.upperBound(qualifiedName, cmpAttrName))
+  element.reflectAttr(qualifiedName, some(value))
+  element.document.invalidateCollections()
+  element.invalidate()
   return ok()
 
 proc removeAttribute(ctx: JSContext; element: Element; qualifiedName: CAtom)
@@ -4796,7 +4800,7 @@ proc setter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom;
     name = "float"
   return this.setProperty(name, value)
 
-proc style*(element: Element): CSSStyleDeclaration {.jsfget.} =
+proc style(element: Element): CSSStyleDeclaration {.jsfget.} =
   if element.cachedStyle == nil:
     element.cachedStyle = newCSSStyleDeclaration(element, "")
   return element.cachedStyle
@@ -5062,26 +5066,8 @@ proc reset*(form: HTMLFormElement) =
 
 # FormAssociatedElement
 proc setForm*(element: FormAssociatedElement; form: HTMLFormElement) =
-  case element.tagType
-  of TAG_INPUT:
-    let input = HTMLInputElement(element)
-    input.form = form
-    form.controls.add(input)
-  of TAG_SELECT:
-    let select = HTMLSelectElement(element)
-    select.form = form
-    form.controls.add(select)
-  of TAG_BUTTON:
-    let button = HTMLButtonElement(element)
-    button.form = form
-    form.controls.add(button)
-  of TAG_TEXTAREA:
-    let textarea = HTMLTextAreaElement(element)
-    textarea.form = form
-    form.controls.add(textarea)
-  of TAG_FIELDSET, TAG_OBJECT, TAG_OUTPUT, TAG_IMG:
-    discard #TODO
-  else: assert false
+  element.form = form
+  form.controls.add(element)
   form.document.invalidateCollections()
 
 proc resetFormOwner(element: FormAssociatedElement) =
@@ -5555,11 +5541,6 @@ proc fetchExternalModuleGraph(element: HTMLScriptElement; url: URL;
       else:
         element.fetchDescendantsAndLink(res.script, rdScript, onComplete)
   )
-
-proc logException(window: Window; url: URL) =
-  #TODO excludepassword seems pointless?
-  window.console.error("Exception in document",
-    url.serialize(excludepassword = true), window.jsctx.getExceptionMsg())
 
 proc fetchInlineModuleGraph(element: HTMLScriptElement; sourceText: string;
     url: URL; options: ScriptOptions; onComplete: OnCompleteProc) =
