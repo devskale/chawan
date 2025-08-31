@@ -20,11 +20,17 @@
    - Ensured proper vertical alignment of top border, info line, and bottom border
    - Removed extra blank lines that were appearing after the boxes
 
-4. **Verified Functionality**:
+4. **Implemented Aspect Ratio Preservation**:
+   - ASCII boxes now maintain proper aspect ratios based on the original image dimensions
+   - Added minimum and maximum height constraints to prevent excessive vertical space
+   - Info line is properly centered within each box
+   - Boxes are visually appealing and proportional to the original images
+
+5. **Verified Functionality**:
    - The AIR codec correctly converts RGBA data to ASCII art
    - Chawan properly recognizes and activates AIR mode when configured
    - Basic infrastructure is in place and working
-   - ASCII boxes are now properly aligned
+   - ASCII boxes are properly aligned and maintain aspect ratios
 
 ## Current State
 
@@ -34,7 +40,8 @@ The AIR codec is fully functional and correctly converts RGBA pixel data to ASCI
 2. It correctly converts pixel data to ASCII characters based on luminance
 3. It handles transparency by converting transparent pixels to spaces
 4. It supports the "info-only" mode for retrieving image dimensions
-5. ASCII boxes are properly aligned in the terminal output
+5. ASCII boxes are properly aligned and maintain aspect ratios
+6. The info line is centered within each box for better visual appeal
 
 ## What's Working
 
@@ -42,6 +49,7 @@ The AIR codec is fully functional and correctly converts RGBA pixel data to ASCI
 - Chawan properly activates AIR mode when configured with `image-mode = "air"`
 - The basic infrastructure is in place
 - ASCII box rendering is properly aligned
+- ASCII boxes maintain proper aspect ratios based on image dimensions
 - The `--air` command line flag works correctly
 
 ## What's Not Working
@@ -96,7 +104,8 @@ Or by using the convenient command line flag:
 2. **No Special Protocols**: Doesn't require Sixel or Kitty support
 3. **Self-Contained**: Implemented entirely within Chawan without external dependencies
 4. **Configurable**: Can be enabled/disabled per user preference
+5. **Visually Appealing**: ASCII boxes maintain proper aspect ratios and are well-proportioned
 
 ## Conclusion
 
-We have successfully implemented the core infrastructure for the ASCII Image Rendering (AIR) mode in Chawan. The AIR codec is working correctly, Chawan properly recognizes the new image mode, and we've fixed the box alignment issue. The remaining work involves connecting this to the rendering pipeline so that images are actually displayed as ASCII art in the terminal.
+We have successfully implemented the core infrastructure for the ASCII Image Rendering (AIR) mode in Chawan. The AIR codec is working correctly, Chawan properly recognizes the new image mode, we've fixed the box alignment issue, and we've implemented proper aspect ratio preservation for the ASCII boxes. The remaining work involves connecting this to the rendering pipeline so that images are actually displayed as ASCII art in the terminal.

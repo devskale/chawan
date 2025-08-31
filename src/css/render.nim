@@ -420,8 +420,19 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
       let charHeight = max(ibox.bmp.height div state.attrs.ppl, 3)  # Minimum 3 chars for border
       
       # Create a simple ASCII box representation
-      # For AIR mode, we render each line separately to ensure proper alignment
+      # For AIR mode, create a box with height based on aspect ratio
       if charWidth >= 3:
+        # Calculate the box height based on the image's aspect ratio
+        # We want the height to be proportional to the width
+        let aspectRatio = float(ibox.bmp.height) / float(ibox.bmp.width)
+        # Calculate height in character cells, with a minimum of 3 lines
+        let minHeight = 3
+        let calculatedHeight = max(int(float(charWidth) * aspectRatio * 0.5), minHeight)  # 0.5 factor to adjust for character aspect ratio
+        
+        # For very tall images, we might want to cap the height to prevent excessive vertical space
+        let maxHeight = 20
+        let boxHeight = min(calculatedHeight, maxHeight)
+        
         # Create top border
         let topBorder = "+" & repeat("-", charWidth - 2) & "+"
         
@@ -434,17 +445,24 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
         # Create bottom border
         let bottomBorder = "+" & repeat("-", charWidth - 2) & "+"
         
-        # Render each line separately to ensure proper alignment
-        # Top border
+        # Render the box borders
+        # Top border (at the original offset)
         grid.setText(state, topBorder, offset, format, ibox.element, clipBox)
         
-        # Info line (positioned one line below)
-        let infoLineOffset = offset(x = offset.x, y = offset.y + state.attrs.ppl)
-        grid.setText(state, infoLine, infoLineOffset, format, ibox.element, clipBox)
-        
-        # Bottom border (positioned two lines below)
-        let bottomLineOffset = offset(x = offset.x, y = offset.y + 2 * state.attrs.ppl)
+        # Bottom border (positioned at the calculated height)
+        let bottomLineOffset = offset(x = offset.x, y = offset.y + (boxHeight - 1) * state.attrs.ppl)
         grid.setText(state, bottomBorder, bottomLineOffset, format, ibox.element, clipBox)
+        
+        # Fill the sides of the box with vertical bars
+        for i in 1..(boxHeight - 2):
+          let sideLineOffset = offset(x = offset.x, y = offset.y + i * state.attrs.ppl)
+          let sideLine = "|" & repeat(" ", charWidth - 2) & "|"
+          grid.setText(state, sideLine, sideLineOffset, format, ibox.element, clipBox)
+        
+        # Place the info line in the middle of the box
+        let infoLinePosition = boxHeight div 2
+        let infoLineOffset = offset(x = offset.x, y = offset.y + infoLinePosition * state.attrs.ppl)
+        grid.setText(state, infoLine, infoLineOffset, format, ibox.element, clipBox)
       else:
         # Fallback for very small images
         let placeholder = "[AIR " & $ibox.bmp.width & "x" & $ibox.bmp.height & "]"
