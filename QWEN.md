@@ -38,6 +38,7 @@ The `--air` flag now works as intended, allowing terminal browsing with ASCII im
 3 [X] Integrate ASCII mode into terminal image pipeline
 4 [X] Test dummy ASCII rendering end-to-end
 5 [X] Add --air command line flag for easy usage
+6 [X] Implement size-aware ASCII boxes with proper dimensions
 
 ## Current Implementation
 
@@ -56,36 +57,35 @@ The implementation includes:
 - Integration with Chawan's image pipeline and configuration system
 - Proper error handling and debugging output
 - A convenient `--air` command line flag that automatically enables image processing and sets the display mode
+- **Size-aware ASCII boxes that accurately represent image dimensions**
 
 ## Next Steps for Improvement
 
 ### 1. Improve ASCII Rendering Quality
-The current implementation uses a basic placeholder approach. To make the ASCII rendering less "dummy" and more sophisticated:
+The current implementation now uses size-aware boxes with proper dimension representation. Future improvements could include:
 
-- **Size-aware boxes**: Implement proper sizing of ASCII art based on available terminal space
-- **Aspect ratio preservation**: Maintain image proportions when converting to ASCII
-- **Dynamic character density**: Adjust character selection based on terminal capabilities
-- **Contrast optimization**: Improve character selection for better visual contrast
+- **Advanced character mapping**: Implement multiple character sets for different rendering qualities and styles
+- **Brightness/contrast adjustment**: Add algorithms to optimize character selection for better visual contrast
+- **Dithering techniques**: Implement better dithering methods for smoother gradients and more detailed ASCII art
+- **Multi-size rendering**: Generate different ASCII art versions for various terminal sizes and resolutions
 
 ### 2. Enhanced Image Processing
-- **Color support**: Add ANSI color codes to ASCII art for terminals that support them
-- **Dithering algorithms**: Implement better dithering techniques for smoother gradients
-- **Multi-size rendering**: Generate different ASCII art versions for various terminal sizes
+- **Color support**: Add ANSI color codes to ASCII art for terminals that support them, creating colored ASCII representations
+- **Animation support**: Handle animated images (GIFs) by rendering frame sequences for basic animation support
 
 ### 3. Performance Optimization
-- **Caching**: Cache ASCII art results to avoid reprocessing the same images
-- **Streaming**: Process images incrementally for large images
-- **Memory management**: Optimize memory usage for image data handling
+- **Caching mechanisms**: Implement caching for ASCII art results to avoid reprocessing the same images
+- **Streaming processing**: Process images incrementally for large images to improve responsiveness
+- **Memory management**: Optimize memory usage for image data handling and processing
 
 ### 4. User Experience Improvements
-- **Progressive loading**: Show low-resolution ASCII art while loading higher-resolution versions
-- **Configurable density**: Allow users to adjust the character set density
-- **Animation support**: Handle animated images (GIFs) by rendering frame sequences
+- **Progressive loading**: Show low-resolution ASCII art while loading higher-resolution versions for better perceived performance
+- **Configurable density**: Allow users to adjust the character set density and rendering style
+- **Responsive design**: Adapt ASCII art based on container size and terminal dimensions
 
 ### 5. Integration with Layout Engine
-- **CSS integration**: Allow CSS to control ASCII art rendering parameters
-- **Responsive design**: Adapt ASCII art based on container size
-- **Text flow**: Better integration with text layout to avoid overlapping
+- **CSS integration**: Allow CSS to control ASCII art rendering parameters for fine-grained customization
+- **Text flow optimization**: Better integration with text layout to avoid overlapping and improve readability
 
 ## Technical Implementation Plan
 
