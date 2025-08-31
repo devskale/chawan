@@ -38,6 +38,7 @@ import html/catom
 import html/dom
 import types/bitmap
 import types/color
+import types/opt
 import types/refstring
 import utils/twtstr
 
@@ -386,15 +387,50 @@ proc addText(frame: var TreeFrame; s: sink string) =
   frame.addText(newRefString(s))
 
 proc addImage(frame: var TreeFrame; bmp: NetworkBitmap) =
-  if bmp != nil and bmp.cacheId != -1:
-    frame.add(StyledNode(
-      t: stImage,
-      element: frame.parent,
-      bmp: bmp,
-      computed: frame.getAnonInlineComputed()
-    ))
+  # Extract size information from element attributes
+  let element = frame.parent
+  var width = 0
+  var height = 0
+  
+  # Try to get width and height from attributes
+  try:
+    let widthStr = element.attr(satWidth)
+    let heightStr = element.attr(satHeight)
+    if widthStr.len > 0:
+      let widthVal = parseIntP(widthStr).get(0)
+      if widthVal > 0:
+        width = widthVal
+    if heightStr.len > 0:
+      let heightVal = parseIntP(heightStr).get(0)
+      if heightVal > 0:
+        height = heightVal
+  except:
+    discard
+  
+  # Create an InlineImageBox regardless of whether the bitmap is loaded
+  # If we have size information, use it; otherwise use default sizes
+  let actualWidth = if width > 0: width else: 100
+  let actualHeight = if height > 0: height else: 100
+  
+  # Create a dummy bitmap with the size information
+  let dummyBmp = if bmp != nil and bmp.cacheId != -1:
+    bmp  # Use the real bitmap if available
   else:
-    frame.addText("[img]")
+    # Create a dummy bitmap with the extracted size
+    NetworkBitmap(
+      width: actualWidth,
+      height: actualHeight,
+      cacheId: -1,  # Invalid cache ID to indicate it's a dummy
+      imageId: -1,
+      contentType: "image/x-unknown"
+    )
+  
+  frame.add(StyledNode(
+    t: stImage,
+    element: frame.parent,
+    bmp: dummyBmp,
+    computed: frame.getAnonInlineComputed()
+  ))
 
 proc addBr(frame: var TreeFrame) =
   frame.add(StyledNode(

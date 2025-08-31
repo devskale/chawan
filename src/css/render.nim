@@ -1,5 +1,6 @@
 {.push raises: [].}
 
+import std/strutils
 import css/box
 import css/cssvalues
 import css/lunit
@@ -400,12 +401,6 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
       grid.paintBackground(state, defaultColor, x1, y1, x2, y2,
         ibox.element, 0, ibox.render.clipBox)
       
-      # Debug output to see if this code is being executed
-      try:
-        stderr.writeLine("Processing InlineImageBox: ", ibox.bmp.width, "x", ibox.bmp.height)
-      except IOError:
-        discard
-      
       # For AIR mode, we add the image to state.images so it can be processed later
       # For other modes, we also add it to state.images
       # In AIR mode, the image will be converted to ASCII art in the pager
@@ -417,10 +412,35 @@ proc renderInline(grid: var FlexibleGrid; state: var RenderState;
         bmp: ibox.bmp
       ))
       
-      # Show a more descriptive placeholder for AIR mode
-      let placeholder = "[AIR-IMAGE: " & $ibox.bmp.width & "x" & $ibox.bmp.height & "]"
+      # Create a properly sized ASCII box for AIR mode
       let format = ibox.computed.toFormat()
-      grid.setText(state, placeholder, offset, format, ibox.element, clipBox)
+      
+      # Calculate the size in character cells
+      let charWidth = max(ibox.bmp.width div state.attrs.ppc, 3)  # Minimum 3 chars for border
+      let charHeight = max(ibox.bmp.height div state.attrs.ppl, 3)  # Minimum 3 chars for border
+      
+      # Create a simple ASCII box representation
+      if charWidth >= 3 and charHeight >= 3:
+        # Create top border
+        let topBorder = "+" & repeat("-", charWidth - 2) & "+"
+        
+        # Create info line with image dimensions
+        let infoText = "AIR " & $ibox.bmp.width & "x" & $ibox.bmp.height
+        let infoTextTruncated = if infoText.len > charWidth - 2: infoText[0..charWidth-3] else: infoText
+        let padding = charWidth - 2 - infoTextTruncated.len
+        let infoLine = "|" & infoTextTruncated & repeat(" ", padding) & "|"
+        
+        # Create bottom border if there's room
+        var boxRepresentation = topBorder & "\n" & infoLine
+        if charHeight > 2:
+          let bottomBorder = "+" & repeat("-", charWidth - 2) & "+"
+          boxRepresentation &= "\n" & bottomBorder
+        
+        grid.setText(state, boxRepresentation, offset, format, ibox.element, clipBox)
+      else:
+        # Fallback for very small images
+        let placeholder = "[AIR " & $ibox.bmp.width & "x" & $ibox.bmp.height & "]"
+        grid.setText(state, placeholder, offset, format, ibox.element, clipBox)
   else: # InlineNewLineBox does not have children, so we handle it here
     # only check position here to avoid skipping leaves that use our
     # computed values
