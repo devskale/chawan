@@ -62,7 +62,7 @@ FLAGS += -d:release --debugger:native
 endif
 
 protocols = file ftp gopher finger man spartan chabookmark \
-	stbi jebp sixel canvas resize nanosvg http gemini sftp ssl
+	stbi jebp sixel ascii canvas resize nanosvg http gemini sftp ssl
 converters = gopher2html md2html ansi2html gmi2html dirlist2html uri2html img2html
 tools = urlenc nc
 
@@ -161,6 +161,7 @@ $(OUTDIR_CGI_BIN)/stbi: adapter/img/stbi.nim adapter/img/stb_image.h \
 	adapter/img/stb_image_write.h $(twtstr) $(sandbox) $(dynstream)
 $(OUTDIR_CGI_BIN)/jebp: adapter/img/jebp.h $(sandbox)
 $(OUTDIR_CGI_BIN)/sixel: src/types/color.nim $(sandbox) $(twtstr) $(dynstream)
+$(OUTDIR_CGI_BIN)/ascii: $(sandbox) $(twtstr) $(dynstream)
 $(OUTDIR_CGI_BIN)/canvas: src/types/canvastypes.nim src/types/path.nim \
 	src/io/packetreader.nim src/types/color.nim adapter/img/stb_image.h \
 	$(sandbox) $(dynstream) $(twtstr)

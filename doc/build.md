@@ -3,6 +3,10 @@
 Chawan uses GNU make for builds.  To build and install it, you'll
 typically want to run `make` and then `make install`.
 
+**Note for macOS users:** Use `gmake` instead of `make`, as macOS ships
+with BSD make by default. You can install GNU make via Homebrew:
+`brew install make`.
+
 ## Variables
 
 Unless noted otherwise, variables can be passed either in the

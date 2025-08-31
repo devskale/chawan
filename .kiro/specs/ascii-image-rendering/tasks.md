@@ -8,7 +8,7 @@
   - Test configuration loading with display.image-mode = "ascii"
   - _Requirements: 6.1_
 
-- [ ] 2. Create dummy ASCII image codec
+- [x] 2. Create dummy ASCII image codec
   - Create adapter/img/ascii.nim with basic CGI structure following sixel.nim pattern
   - Implement simple dummy output that generates fixed ASCII placeholder (e.g., "[IMG WxH]")
   - Add img-codec+x-ascii mapping to res/urimethodmap
