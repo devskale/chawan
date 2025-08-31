@@ -15,6 +15,33 @@ Key features:
 - Supports bookmarks, history, and cookies
 - Can be used as a terminal pager
 
+## Development Goal
+implement AIR (ascii image rendering) mode.
+cha --air google.at
+air mode renders images into ascii characters. this allows terminal browsing in all basci terminals.
+
+### Development Concept
+Deeply understand the image rendering pipeline
+add a dummy ascii codec (DummyAC)
+integrate the DummyAC into the image rendering pipeline.
+verify the dummyAC with real live websites, eg cha --air google.at, or cha --air -d google.at
+only after successfully veryfying the architectural setup. move on with implementing ascii codec.
+   choose wisely to integrate a pre existing codec or develop a new one.
+
+## Development Status
+
+1 [X] Implement Dummy Ascii Codec
+2 [X] Add ASCII image mode to configuration system
+3 [ ] Integrate ASCII mode into terminal image pipeline
+4 [ ] Test dummy ASCII rendering end-to-end
+
+## Lessons Learned
+
+1. On macOS, we need to use `gmake` instead of `make` as the project requires GNU make features.
+2. Environment variables need to be properly set when testing CGI binaries.
+3. File encoding and line endings are important when creating Nim source files.
+4. The configuration system was already prepared for the ASCII image mode through the existing ImageMode enum.
+
 ## Project Structure
 
 ```
@@ -67,7 +94,7 @@ brew install nim openssl libssh2 brotli pkg-config
 git clone https://git.sr.ht/~bptato/chawan
 cd chawan
 
-# Build the project using gmake (GNU make)
+# Build the project using gmake (GNU make) - NOTE: On macOS, you MUST use gmake
 gmake
 
 # Install (optional)
@@ -169,6 +196,15 @@ Chawan supports inline images through multiple protocols:
 
 Image codecs are implemented as local CGI programs that convert between encoded formats and RGBA data. Supported input formats include PNG, JPEG, GIF, BMP, WebP, and SVG.
 
+To enable ASCII image rendering mode, configure Chawan with:
+```toml
+[buffer]
+images = true
+
+[display]
+image-mode = "air"
+```
+
 ### JavaScript
 
 JavaScript is implemented using QuickJS through the Monoucha library. It's disabled by default but can be enabled with `buffer.scripting = true` in the configuration.
@@ -246,149 +282,3 @@ For development information, see `doc/hacking.md`. Key points:
 - Add tests for bug fixes and new features
 
 For bug reports and patches, use the mailing list at ~bptato/chawan-devel@lists.sr.ht or the ticket tracker at https://todo.sr.ht/~bptato/chawan.
-
-## ASCII Image Rendering (AIR) Mode Development Plan
-
-### Overview
-
-The ASCII Image Rendering (AIR) mode will provide a terminal-compatible way to display images as ASCII art. This mode will be especially useful for terminals that don't support Sixel or Kitty graphics protocols.
-
-### High-Level Development Plan
-
-1. **Core Implementation**:
-   - Create an ASCII image codec that converts RGBA data to ASCII art
-   - Integrate the codec with the existing image handling pipeline
-   - Add configuration options for AIR mode
-
-2. **Configuration Integration**:
-   - Add "air" as a valid value for `display.image-mode`
-   - Add AIR-specific configuration options (character set, contrast, etc.)
-
-3. **Rendering Pipeline**:
-   - Implement the conversion algorithm from pixel data to ASCII characters
-   - Optimize for performance and visual quality
-   - Handle different terminal color modes
-
-4. **Testing**:
-   - Create unit tests for the ASCII conversion algorithms
-   - Test with various image formats and sizes
-   - Verify compatibility across different terminal types
-
-### Implementation Steps
-
-1. **Step 1: Create the AIR Codec** (Completed)
-   - Created `adapter/img/air.nim` - The main ASCII rendering implementation
-   - Implemented basic ASCII conversion algorithm
-   - Added support for different character sets and density levels
-   - Successfully compiled the codec
-
-2. **Step 2: Integrate with Image Pipeline** (Completed)
-   - Registered the AIR codec in the URIMethodMap
-   - Updated image handling code to recognize "air" as a valid mode
-   - Added configuration options for AIR mode in `display` section
-   - Updated terminal and pager code to handle the new image mode
-   - Main Chawan binary compiles successfully with the new mode
-
-3. **Step 3: Implement Terminal Integration** (In Progress)
-   - Modify rendering code to display ASCII art in the terminal
-   - Handle different terminal color capabilities (monochrome, 16-color, 256-color, true color)
-   - Implement proper scaling to fit terminal character grid
-
-4. **Step 4: Optimization and Polish** (Pending)
-   - Optimize the conversion algorithm for performance
-   - Add dithering options for better visual quality
-   - Implement configurable character sets for different visual styles
-
-5. **Step 5: Documentation and Examples** (Pending)
-   - Add documentation to `doc/image.md` about AIR mode
-   - Add configuration examples to `doc/config.md`
-   - Create example images for testing
-
-### Technical Considerations
-
-1. **Character Set Selection**:
-   - Use a range of characters from low to high density: ' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'
-   - Allow configuration of custom character sets
-
-2. **Color Handling**:
-   - In monochrome mode: Use character density to represent image brightness
-   - In color modes: Apply foreground/background colors to represent pixel colors
-   - Handle transparency appropriately
-
-3. **Performance**:
-   - Implement efficient pixel-to-character conversion algorithms
-   - Consider caching mechanisms for frequently displayed images
-   - Optimize for the common case of small to medium-sized images
-
-4. **Terminal Compatibility**:
-   - Ensure compatibility with common terminal emulators
-   - Handle different character aspect ratios (typically taller than wide)
-   - Respect terminal color capabilities
-
-### Testing Strategy
-
-1. **Unit Tests**:
-   - Test the core ASCII conversion algorithm with known inputs
-   - Verify proper handling of different pixel formats (RGB, RGBA, grayscale)
-   - Test character set configuration options
-
-2. **Integration Tests**:
-   - Test complete image pipeline with various image formats
-   - Verify proper integration with configuration system
-   - Test in different terminal color modes
-
-3. **Visual Tests**:
-   - Create sample images with known characteristics
-   - Compare output across different terminal emulators
-   - Verify proper scaling and aspect ratio handling
-
-This development plan follows an incremental approach, starting with a simple, testable implementation and gradually adding features and optimizations. Each step is designed to produce a working increment that can be tested and validated before moving to the next step.
-
-### Current Status
-
-- [x] **Step 1: Create the AIR Codec** - COMPLETED
-  - Created and implemented the AIR codec in `adapter/img/air.nim`
-  - Successfully compiled the codec
-  - Tested basic functionality with a sample RGBA image
-  - The codec properly converts RGBA data to ASCII art
-
-- [x] **Step 2: Integrate with Image Pipeline** - COMPLETED
-  - [x] Added "air" to the ImageMode enum
-  - [x] Registered the AIR codec in the URIMethodMap
-  - [x] Updated terminal code to handle the new image mode
-  - [x] Updated pager code to handle the new image mode
-  - [x] Main Chawan binary compiles successfully with the new mode
-
-- [ ] **Step 3: Implement Terminal Integration**
-  - [ ] Modify rendering code to display ASCII art in the terminal
-  - [ ] Handle different terminal color capabilities
-  - [ ] Implement proper scaling to fit terminal character grid
-
-- [ ] **Step 4: Optimization and Polish**
-- [ ] **Step 5: Documentation and Examples**
-
-### Next Steps
-
-To complete the AIR mode implementation, we need to:
-
-1. **Modify the rendering pipeline** to properly display ASCII art in the terminal:
-   - Update the CSS rendering code to handle AIR images
-   - Ensure proper positioning and scaling of ASCII art
-   - Handle text wrapping around ASCII art
-
-2. **Test the implementation** with actual images:
-   - Create test images in various formats (PNG, JPEG, etc.)
-   - Verify that the AIR codec properly converts them to ASCII art
-   - Test with different terminal sizes and color modes
-
-3. **Optimize the implementation**:
-   - Improve the ASCII conversion algorithm for better visual quality
-   - Add dithering options for smoother gradients
-   - Optimize performance for large images
-
-4. **Document the feature**:
-   - Update the image documentation to include information about AIR mode
-   - Add configuration examples
-   - Create user guides for using AIR mode
-
-The core infrastructure for AIR mode is now in place and working. The next step is to connect it to the rendering pipeline so that images are actually displayed as ASCII art in the terminal.
