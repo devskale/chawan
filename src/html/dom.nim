@@ -1238,9 +1238,17 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
     window.imageURLCache.withValue(surl, p):
       if p[].expiry > getTime().toUnix():
         image.bitmap = p[].bmp
+        try:
+          stderr.writeLine("  Using cached image bitmap")
+        except IOError:
+          discard
         return
       elif p[].loading:
         p[].shared.add(image)
+        try:
+          stderr.writeLine("  Image already loading, adding to shared list")
+        except IOError:
+          discard
         return
     let cachedURL = CachedURLImage(expiry: -1, loading: true)
     window.imageURLCache[surl] = cachedURL
@@ -1248,10 +1256,18 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
     let p = window.corsFetch(newRequest(url, headers = headers)).then(
       proc(res: JSResult[Response]): EmptyPromise =
         if res.isErr:
+          try:
+            stderr.writeLine("  Image fetch failed")
+          except IOError:
+            discard
           return newResolvedPromise()
         let response = res.get
         let contentType = response.getContentType("image/x-unknown")
         if not contentType.startsWith("image/"):
+          try:
+            stderr.writeLine("  Not an image content type: ", contentType)
+          except IOError:
+            discard
           return newResolvedPromise()
         var t = contentType.after('/')
         if t == "x-unknown":
@@ -1269,6 +1285,10 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
         let cacheId = window.loader.addCacheFile(response.outputId)
         let url = parseURL0("img-codec+" & t & ":decode")
         if url == nil:
+          try:
+            stderr.writeLine("  Failed to parse codec URL for type: ", t)
+          except IOError:
+            discard
           return newResolvedPromise()
         let request = newRequest(
           url,
@@ -1293,6 +1313,10 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
         cachedURL.expiry = expiry
         return r.then(proc(res: JSResult[Response]) =
           if res.isErr:
+            try:
+              stderr.writeLine("  Image decode failed")
+            except IOError:
+              discard
             return
           let response = res.get
           # close immediately; all data we're interested in is in the headers.
@@ -1302,7 +1326,10 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
           let width = parseIntP(dims.until('x')).get(-1)
           let height = parseIntP(dims.after('x')).get(-1)
           if width < 0 or height < 0:
-            window.console.error("wrong Cha-Image-Dimensions in", $response.url)
+            try:
+              stderr.writeLine("  Wrong Cha-Image-Dimensions in", $response.url)
+            except IOError:
+              discard
             return
           let bmp = NetworkBitmap(
             width: width,
@@ -1311,6 +1338,10 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
             imageId: window.getImageId(),
             contentType: "image/" & t
           )
+          try:
+            stderr.writeLine("  Image loaded successfully: ", width, "x", height)
+          except IOError:
+            discard
           image.bitmap = bmp
           cachedURL.bmp = bmp
           for share in cachedURL.shared:
