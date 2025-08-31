@@ -1007,6 +1007,13 @@ proc clearImage(term: Terminal; image: CanvasImage; maxh: int) =
       term.lineDamage[y] = min(term.lineDamage[y], x)
   of imKitty:
     term.imagesToClear.add(image)
+  of imAscii:
+    # ASCII images are text-based, clear like text similar to sixel
+    let h = (image.height + term.attrs.ppl - 1) div term.attrs.ppl # ceil
+    let ey = min(image.y + h, maxh)
+    let x = max(image.x, 0)
+    for y in max(image.y, 0) ..< ey:
+      term.lineDamage[y] = min(term.lineDamage[y], x)
 
 proc clearImages*(term: Terminal; maxh: int) =
   for image in term.canvasImages:
@@ -1220,6 +1227,7 @@ proc outputImages*(term: Terminal) =
       of imNone: assert false
       of imSixel: term.outputSixelImage(x, y, image)
       of imKitty: term.outputKittyImage(x, y, image)
+      of imAscii: discard # TODO: implement ASCII image output
       image.damaged = false
 
 proc clearCanvas*(term: Terminal) =

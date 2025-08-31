@@ -2,7 +2,7 @@
 
 ## Phase 1: Dummy ASCII Rendering (Proof of Concept)
 
-- [ ] 1. Add ASCII image mode to configuration system
+- [x] 1. Add ASCII image mode to configuration system
   - Add `imAscii = "ascii"` to ImageMode enum in src/config/conftypes.nim
   - Update configuration parsing to recognize "ascii" image mode
   - Test configuration loading with display.image-mode = "ascii"

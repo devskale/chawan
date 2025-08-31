@@ -1162,6 +1162,8 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
       headers.add("Cha-Image-Crop-Width", $dispw)
     of imKitty:
       url = parseURL0("img-codec+png:encode")
+    of imAscii:
+      url = parseURL0("img-codec+x-ascii:encode")
     of imNone: assert false
     let request = newRequest(
       url,
