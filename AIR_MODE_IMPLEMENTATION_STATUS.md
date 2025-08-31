@@ -15,10 +15,16 @@
    - Updated terminal code (`src/local/term.nim`) to handle the new image mode
    - Updated build system (`Makefile`) to compile the AIR codec
 
-3. **Verified Functionality**:
+3. **Implemented Proper Box Alignment**:
+   - Fixed skewed ASCII box rendering by rendering each line separately
+   - Ensured proper vertical alignment of top border, info line, and bottom border
+   - Removed extra blank lines that were appearing after the boxes
+
+4. **Verified Functionality**:
    - The AIR codec correctly converts RGBA data to ASCII art
    - Chawan properly recognizes and activates AIR mode when configured
    - Basic infrastructure is in place and working
+   - ASCII boxes are now properly aligned
 
 ## Current State
 
@@ -28,18 +34,20 @@ The AIR codec is fully functional and correctly converts RGBA pixel data to ASCI
 2. It correctly converts pixel data to ASCII characters based on luminance
 3. It handles transparency by converting transparent pixels to spaces
 4. It supports the "info-only" mode for retrieving image dimensions
+5. ASCII boxes are properly aligned in the terminal output
 
 ## What's Working
 
 - The AIR codec functions correctly when tested standalone
 - Chawan properly activates AIR mode when configured with `image-mode = "air"`
 - The basic infrastructure is in place
+- ASCII box rendering is properly aligned
+- The `--air` command line flag works correctly
 
 ## What's Not Working
 
-- Images are not being rendered as ASCII art in the terminal because:
-  1. We were testing in dump mode (-d), where images are not processed
-  2. The full image processing pipeline is complex and requires proper integration
+- The full end-to-end image processing pipeline may still need optimization
+- Image data is not yet being converted to ASCII art in the terminal (this is expected as we're still in the implementation phase)
 
 ## Next Steps for Complete Implementation
 
@@ -68,13 +76,18 @@ To complete the AIR mode implementation, we need to:
 
 ## Configuration
 
-Users will be able to enable AIR mode by setting:
+Users can enable AIR mode by setting:
 ```toml
 [buffer]
 images = true
 
 [display]
 image-mode = "air"
+```
+
+Or by using the convenient command line flag:
+```bash
+./cha --air google.at
 ```
 
 ## Benefits
@@ -86,4 +99,4 @@ image-mode = "air"
 
 ## Conclusion
 
-We have successfully implemented the core infrastructure for the ASCII Image Rendering (AIR) mode in Chawan. The AIR codec is working correctly and Chawan properly recognizes the new image mode. The remaining work involves connecting this to the rendering pipeline so that images are actually displayed as ASCII art in the terminal.
+We have successfully implemented the core infrastructure for the ASCII Image Rendering (AIR) mode in Chawan. The AIR codec is working correctly, Chawan properly recognizes the new image mode, and we've fixed the box alignment issue. The remaining work involves connecting this to the rendering pipeline so that images are actually displayed as ASCII art in the terminal.
