@@ -56,6 +56,7 @@ proc help(i: int) {.noreturn.} =
 Usage: cha [options] [URL(s) or file(s)...]
 Options:
     --                          Interpret all following arguments as URLs
+    --air                       Enable ASCII Image Rendering mode
     -c, --css <stylesheet>      Pass stylesheet (e.g. -c 'a{color: blue}')
     -d, --dump                  Print page to stdout
     -h, --help                  Print this usage message
@@ -138,6 +139,10 @@ proc parseRun(ctx: var ParamParseContext) =
   ctx.opts.add("start.startup-script = \"\"\"" & script & "\"\"\"")
   ctx.opts.add("start.headless = true")
 
+proc parseAir(ctx: var ParamParseContext) =
+  ctx.opts.add("buffer.images = true")
+  ctx.opts.add("display.image-mode = \"air\"")
+
 proc parse(ctx: var ParamParseContext) =
   var escapeAll = false
   while ctx.i < ctx.params.len:
@@ -181,6 +186,7 @@ proc parse(ctx: var ParamParseContext) =
             break
       else:
         case param
+        of "--air": ctx.parseAir()
         of "--config": ctx.parseConfig()
         of "--input-charset": ctx.parseInputCharset()
         of "--monochrome": ctx.parseMonochrome()
