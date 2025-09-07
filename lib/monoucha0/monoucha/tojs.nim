@@ -79,8 +79,10 @@ proc toJS*[T: JSDict](ctx: JSContext; dict: T): JSValue
 # The idea here is to allow conversion of var objects to quasi-reference types
 # by saving a pointer to their ancestor and incrementing/decrementing the
 # ancestor's reference count instead.
-proc toJSP*(ctx: JSContext; parent: ref object; child: var object): JSValue
-proc toJSP*(ctx: JSContext; parent: ptr object; child: var object): JSValue
+proc toJSP*[T: object](ctx: JSContext; parent: ref object; child: var T):
+  JSValue
+proc toJSP*[T: object](ctx: JSContext; parent: ptr object; child: var T):
+  JSValue
 
 # Same as toJS, but used in constructors. ctor contains the target prototype,
 # used for subclassing from JS.
@@ -302,12 +304,12 @@ proc toJSP0(ctx: JSContext; p, tp, toRef: pointer; ctor: JSValueConst):
   # We are constructing a new JS object, so we must add unforgeable properties
   # here.
   let ctxOpaque = ctx.getOpaque()
-  if int(class) < ctxOpaque.unforgeable.len and
-      ctxOpaque.unforgeable[int(class)].len > 0:
-    let ufp0 = addr ctxOpaque.unforgeable[int(class)][0]
+  if int(class) < ctxOpaque.classes.len and
+      ctxOpaque.classes[int(class)].unforgeable.len > 0:
+    let ufp0 = addr ctxOpaque.classes[int(class)].unforgeable[0]
     let ufp = cast[ptr UncheckedArray[JSCFunctionListEntry]](ufp0)
     JS_SetPropertyFunctionList(ctx, jsObj, ufp,
-      cint(ctxOpaque.unforgeable[int(class)].len))
+      cint(ctxOpaque.classes[int(class)].unforgeable.len))
   GC_ref(cast[RootRef](toRef))
   return jsObj
 
@@ -427,13 +429,15 @@ proc toJSP1(ctx: JSContext; p, tp, toRef: pointer): JSValue =
   JS_GetRuntime(ctx).getOpaque().parentMap[p] = toRef
   return ctx.toJSP0(p, tp, toRef, JS_UNDEFINED)
 
-proc toJSP*(ctx: JSContext; parent: ref object; child: var object): JSValue =
+proc toJSP*[T: object](ctx: JSContext; parent: ref object; child: var T):
+    JSValue =
   let p = addr child
   # Save parent as the original ancestor for this tree.
   let tp = getTypePtr(child)
   return ctx.toJSP1(p, tp, cast[pointer](parent))
 
-proc toJSP*(ctx: JSContext; parent: ptr object; child: var object): JSValue =
+proc toJSP*[T: object](ctx: JSContext; parent: ptr object; child: var T):
+    JSValue =
   let p = addr child
   # Increment the reference count of parent's root ancestor, and save the
   # increment/decrement callbacks for the child as well.
