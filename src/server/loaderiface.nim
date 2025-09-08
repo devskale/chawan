@@ -3,8 +3,6 @@
 #
 # See server/loader for a more detailed description of the protocol.
 
-import std/options
-
 import config/conftypes
 import config/cookie
 import io/dynstream
@@ -16,7 +14,6 @@ import server/connecterror
 import server/headers
 import server/request
 import server/response
-import server/urlfilter
 import types/opt
 import types/referrer
 import types/url
@@ -80,16 +77,17 @@ type
     originURL*: URL
     cookieJar*: CookieJar
     defaultHeaders*: Headers
-    filter*: URLFilter
     proxy*: URL
-    referrerPolicy*: ReferrerPolicy
+    allowSchemes*: seq[string]
+    allowAllSchemes*: bool # only true for pager process
     insecureSslNoVerify*: bool
+    referrerPolicy*: ReferrerPolicy
     cookieMode*: CookieMode
 
 proc getRedirect*(response: Response; request: Request): Request =
   if response.status in 301u16..303u16 or response.status in 307u16..308u16:
     let location = response.headers.getFirst("Location")
-    if url := parseURL(location, option(request.url)):
+    if url := parseURL(location, request.url):
       let status = response.status
       if status == 303 and request.httpMethod notin {hmGet, hmHead} or
           status == 301 or
