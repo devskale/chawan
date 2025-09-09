@@ -430,6 +430,24 @@ proc anyPropertyType*(s: string): Opt[CSSAnyPropertyType] =
     return ok(CSSAnyPropertyType(sh: sh, p: p))
   return ok(CSSAnyPropertyType(sh: sh))
 
+proc cssNumberToken*(n: float32): CSSToken =
+  let unum = CSSTokenNum(f: n)
+  return CSSToken(t: cttNumber, unum: unum)
+
+proc cssDimensionToken*(n: float32; dim: string): CSSToken =
+  let unum = CSSTokenNum(f: n)
+  return CSSToken(t: cttDimension, unum: unum, s: dim)
+
+proc cssPercentageToken*(n: float32): CSSToken =
+  let unum = CSSTokenNum(f: n)
+  return CSSToken(t: cttPercentage, unum: unum)
+
+func normt*(tok: CSSToken): CSSTokenType =
+  case tok.t
+  of cttINumber: return cttNumber
+  of cttIDimension: return cttDimension
+  else: return tok.t
+
 const IdentStart = AsciiAlpha + NonAscii + {'_'}
 const Ident = IdentStart + AsciiDigit + {'-'}
 
