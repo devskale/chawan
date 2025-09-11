@@ -12,11 +12,13 @@ import std/os
 import std/posix
 
 import ../protocol/lcgi
+import io/chafile
 import io/poll
 import utils/sandbox
 
 proc usage() {.noreturn.} =
-  stderr.fwrite("Usage: " & paramStr(0) & " [host] [port] [-m msg]\n")
+  let stderr = cast[ChaFile](stderr)
+  discard stderr.writeLine("Usage: " & paramStr(0) & " [host] [port] [-m msg]")
   quit(1)
 
 proc main() =
@@ -40,13 +42,13 @@ proc main() =
     inc i
   var os = newPosixStream(STDOUT_FILENO)
   let ips = newPosixStream(STDIN_FILENO)
-  var df = cint(-1)
-  if msg == "": # ugly hack to suppress error messages
-    df = dup(os.fd)
-    os.sclose()
-  let ps = os.connectSocket(host, port)
-  if df != -1:
-    os = newPosixStream(df)
+  let res = connectSocket(host, port)
+  if res.isErr:
+    if msg != "":
+      cgiDie(res.error.code, res.error.s)
+    else:
+      quit(1)
+  let ps = res.get
   if msg != "":
     if not os.writeDataLoop(msg):
       quit(1)
