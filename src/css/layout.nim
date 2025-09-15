@@ -724,6 +724,7 @@ type
     whitespacenum: int
     whitespaceBox: InlineTextBox
     word: InlineAtomState
+    wordIntrSize: LUnit # intrinsic size of currently processed word segment
     wrappos: int # position of last wrapping opportunity, or -1
     lastTextBox: InlineBox
     padding: RelativeRect
@@ -1271,6 +1272,10 @@ proc addAtom(fstate: var FlowState; istate: var InlineState;
     # In all cases, the line's height must at least equal the atom's height.
     fstate.lbstate.size.h = max(fstate.lbstate.size.h, iastate.size.h)
 
+proc flushWordIntrSize(fstate: var FlowState) =
+  fstate.intr.w = max(fstate.intr.w, fstate.wordIntrSize)
+  fstate.wordIntrSize = 0
+
 # Returns true if wrapped.
 proc addWord(fstate: var FlowState; istate: var InlineState): bool =
   if fstate.word.run.str == "":
@@ -1278,18 +1283,7 @@ proc addWord(fstate: var FlowState; istate: var InlineState): bool =
   fstate.word.run.str.mnormalize() #TODO this may break on EOL.
   if fstate.word.run.str == "":
     return false
-  let wordBreak = istate.ibox.computed{"word-break"}
-  if fstate.wrappos != -1:
-    # set intr.w to the first wrapping opportunity
-    fstate.intr.w = max(fstate.intr.w, fstate.wrappos)
-  elif istate.prevrw >= 2 and wordBreak != WordBreakKeepAll or
-      wordBreak == WordBreakBreakAll:
-    # last char was double width; we can wrap anywhere.
-    # (I think this isn't quite right when double width + half width
-    # are mixed, but whatever...)
-    fstate.intr.w = max(fstate.intr.w, istate.prevrw)
-  else:
-    fstate.intr.w = max(fstate.intr.w, fstate.word.size.w)
+  fstate.flushWordIntrSize()
   let wrapped = fstate.addAtom(istate, fstate.word)
   fstate.newWord(istate.ibox)
   return wrapped
@@ -1320,12 +1314,13 @@ proc checkWrap(fstate: var FlowState; state: var InlineState; u: uint32;
   state.prevrw = uw
   if fstate.word.run.str.len == 0:
     state.firstrw = uw
-  if uw >= 2:
-    # remove wrap opportunity, so we wrap properly on the last CJK char (instead
-    # of any dash inside CJK sentences)
-    fstate.wrappos = -1
   case state.ibox.computed{"word-break"}
   of WordBreakNormal:
+    if uw == 2:
+      # remove wrap opportunity, so we wrap properly on the last CJK char
+      # (instead of any dash inside CJK sentences)
+      fstate.wrappos = -1
+      fstate.flushWordIntrSize()
     if uw == 2 or fstate.wrappos != -1: # break on cjk and wrap opportunities
       let plusWidth = fstate.word.size.w + shift + uw * fstate.cellWidth
       if fstate.shouldWrap(plusWidth, nil):
@@ -1333,6 +1328,8 @@ proc checkWrap(fstate: var FlowState; state: var InlineState; u: uint32;
           fstate.finishLine(state, wrap = true)
           fstate.whitespacenum = 0
   of WordBreakBreakAll:
+    fstate.wrappos = -1
+    fstate.flushWordIntrSize()
     let plusWidth = fstate.word.size.w + shift + uw * fstate.cellWidth
     if fstate.shouldWrap(plusWidth, nil):
       if not fstate.addWordEOL(state): # no line wrapping occured in addAtom
@@ -1385,6 +1382,13 @@ proc processWhitespace(fstate: var FlowState; istate: var InlineState;
   # set the "last word's last rune width" to the previous rune width
   istate.lastrw = istate.prevrw
 
+proc addWrapPos(fstate: var FlowState; shy: bool) =
+  # largest gap between wrapping opportunities is the intrinsic minimum
+  # width
+  fstate.flushWordIntrSize()
+  fstate.wrappos = fstate.word.run.str.len
+  fstate.hasshy = shy
+
 proc layoutTextLoop(fstate: var FlowState; state: var InlineState;
     str: string) =
   let luctx = fstate.lctx.luctx
@@ -1398,31 +1402,32 @@ proc layoutTextLoop(fstate: var FlowState; state: var InlineState;
         let w = uint32(c).width()
         fstate.checkWrap(state, uint32(c), w)
         fstate.word.run.str &= c
-        fstate.word.size.w += w * fstate.cellWidth
+        let cw = w * fstate.cellWidth
+        fstate.word.size.w += cw
+        fstate.wordIntrSize += cw
         fstate.lbstate.charwidth += w
         if c == '-': # ascii dash
-          fstate.wrappos = fstate.word.run.str.len
-          fstate.hasshy = false
+          fstate.addWrapPos(shy = false)
       inc i
     else:
       let pi = i
-      let u = str.nextUTF8(i)
+      var u = str.nextUTF8(i)
       if luctx.isEnclosingMark(u) or luctx.isNonspacingMark(u) or
           luctx.isFormat(u):
         continue
+      if u == 0xAD: # soft hyphen
+        fstate.addWrapPos(shy = true)
+        continue
+      if u in TabPUARange: # filter out chars placed in our PUA range
+        u = 0xFFFD
       let w = u.width()
       fstate.checkWrap(state, u, w)
-      if u == 0xAD: # soft hyphen
-        fstate.wrappos = fstate.word.run.str.len
-        fstate.hasshy = true
-      elif u in TabPUARange: # filter out chars placed in our PUA range
-        fstate.word.run.str &= "\uFFFD"
-        fstate.word.size.w += 0xFFFD.width() * fstate.cellWidth
-      else:
-        for j in pi ..< i:
-          fstate.word.run.str &= str[j]
-        fstate.word.size.w += w * fstate.cellWidth
-        fstate.lbstate.charwidth += w
+      for j in pi ..< i:
+        fstate.word.run.str &= str[j]
+      let cw = w * fstate.cellWidth
+      fstate.word.size.w += cw
+      fstate.wordIntrSize += cw
+      fstate.lbstate.charwidth += w
   discard fstate.addWord(state)
   let shift = fstate.computeShift(state)
   fstate.lbstate.widthAfterWhitespace = fstate.lbstate.size.w + shift
@@ -2086,6 +2091,9 @@ type
     reflow: seq[bool]
     width: LUnit
     height: LUnit
+    borderWidth: LUnit
+    borderTop: LUnit
+    borderBottom: LUnit
     box: BlockBox
     ncols: int
 
@@ -2104,18 +2112,21 @@ type
     maxwidth: LUnit
     blockSpacing: LUnit
     inlineSpacing: LUnit
+    borderWidth: LUnit
     space: AvailableSpace # space we got from parent
+    border: CSSBorder
 
 proc layoutTableCell(lctx: LayoutContext; box: BlockBox;
-    space: AvailableSpace) =
+    space: AvailableSpace; border: CSSBorder) =
   var sizes = ResolvedSizes(
     padding: lctx.resolvePadding(space.w, box.computed),
     space: availableSpace(w = space.w, h = maxContent()),
     bounds: DefaultBounds
   )
+  box.resetState()
+  box.state.border = border
   if sizes.space.w.isDefinite():
     sizes.space.w.u -= sizes.padding[dtHorizontal].sum()
-  box.resetState()
   var bctx = BlockContext(lctx: lctx)
   if box.computed{"position"} != PositionStatic:
     lctx.pushPositioned(box)
@@ -2172,8 +2183,34 @@ proc growRowspan(pctx: var TableContext; ctx: var RowContext;
     inc i
     inc growi
 
+proc getBorder(computed: CSSValues): CSSBorder =
+  return CSSBorder(
+    s: [
+      dtHorizontal: BorderStyleSpan(
+        start: computed{"border-left-style"},
+        send: computed{"border-right-style"},
+      ),
+      dtVertical: BorderStyleSpan(
+        start: computed{"border-top-style"},
+        send: computed{"border-bottom-style"},
+      )
+    ]
+  )
+
+proc getCellBorder(box: BlockBox; firstCell, firstRow, lastCell, lastRow: bool):
+    CSSBorder =
+  var border = box.computed.getBorder()
+  border.merge[dtHorizontal] = not firstCell
+  border.merge[dtVertical] = not firstRow
+  if not lastCell:
+    border.s[dtHorizontal].send = BorderStyleNone
+  if not lastRow:
+    border.s[dtVertical].send = BorderStyleNone
+  border
+
 proc preLayoutTableRow(pctx: var TableContext; row, parent: BlockBox;
     rowi, numrows: int): RowContext =
+  let lctx = pctx.lctx
   result = RowContext(box: row)
   var n = 0
   var i = 0
@@ -2184,6 +2221,7 @@ proc preLayoutTableRow(pctx: var TableContext; row, parent: BlockBox;
   for box in row.children:
     let box = BlockBox(box)
     assert box.computed{"display"} == DisplayTableCell
+    let firstCell = i == 0
     pctx.growRowspan(result, growi, i, n, growlen)
     let colspan = box.computed{"-cha-colspan"}
     let rowspan = min(box.computed{"-cha-rowspan"}, numrows - rowi)
@@ -2195,7 +2233,9 @@ proc preLayoutTableRow(pctx: var TableContext; row, parent: BlockBox;
     )
     #TODO specified table height should be distributed among rows.
     # Allow the table cell to use its specified width.
-    pctx.lctx.layoutTableCell(box, space)
+    let border = box.getCellBorder(firstCell, rowi == 0, box.next == nil,
+      row.next == nil)
+    lctx.layoutTableCell(box, space, border)
     let wrapper = CellWrapper(
       box: box,
       colspan: colspan,
@@ -2212,6 +2252,16 @@ proc preLayoutTableRow(pctx: var TableContext; row, parent: BlockBox;
     if result.reflow.len < n + colspan:
       result.reflow.setLen(n + colspan)
     let minw = box.state.intr.w div colspan
+    if border.left notin BorderStyleNoneHidden:
+      result.width += lctx.cellSize.w
+      result.borderWidth += lctx.cellSize.w
+    if border.right notin BorderStyleNoneHidden:
+      result.width += lctx.cellSize.w
+      result.borderWidth += lctx.cellSize.w
+    if border.top notin BorderStyleNoneHidden:
+      result.borderTop = max(lctx.cellSize.h, result.borderTop)
+    if border.bottom notin BorderStyleNoneHidden:
+      result.borderBottom = max(lctx.cellSize.h, result.borderBottom)
     let w = box.state.size.w div colspan
     for i in n ..< n + colspan:
       # Add spacing.
@@ -2280,7 +2330,7 @@ proc layoutTableRow(tctx: TableContext; ctx: RowContext;
   var toBaseline: seq[CellWrapper] = @[]
   # cells that we must update row height of
   var toHeight: seq[CellWrapper] = @[]
-  for cellw in ctx.cells:
+  for i, cellw in ctx.cells.mypairs:
     var w: LUnit = 0
     for i in n ..< n + cellw.colspan:
       w += tctx.cols[i].width
@@ -2299,13 +2349,18 @@ proc layoutTableRow(tctx: TableContext; ctx: RowContext;
       # </TABLE>
       # the TD with a width of 5ch should be 9ch wide as well.
       let space = availableSpace(w = stretch(w), h = maxContent())
-      tctx.lctx.layoutTableCell(cellw.box, space)
+      let border = cellw.box.state.border
+      tctx.lctx.layoutTableCell(cellw.box, space, border)
       w = max(w, cellw.box.state.size.w)
       row.state.intr.w += cellw.box.state.intr.w
     let cell = cellw.box
     x += tctx.inlineSpacing
     if cell != nil:
+      if cell.state.border.left notin BorderStyleNoneHidden:
+        x += tctx.lctx.attrs.ppc
       cell.state.offset.x += x
+      if cell.state.border.right notin BorderStyleNoneHidden:
+        w += tctx.lctx.attrs.ppc
     x += tctx.inlineSpacing
     x += w
     row.state.intr.w += tctx.inlineSpacing * 2
@@ -2344,6 +2399,7 @@ proc preLayoutTableRows(tctx: var TableContext; rows: openArray[BlockBox];
   for i, row in rows.mypairs:
     let rctx = tctx.preLayoutTableRow(row, table, i, rows.len)
     tctx.maxwidth = max(rctx.width, tctx.maxwidth)
+    tctx.borderWidth = max(rctx.borderWidth, tctx.borderWidth)
     tctx.rows.add(rctx)
 
 proc preLayoutTableRows(tctx: var TableContext; table: BlockBox) =
@@ -2419,7 +2475,8 @@ proc needsRedistribution(tctx: TableContext; computed: CSSValues): bool =
 
 proc redistributeWidth(tctx: var TableContext) =
   # Remove inline spacing from distributable width.
-  var W = max(tctx.space.w.u - tctx.cols.len * tctx.inlineSpacing * 2, 0)
+  var W = max(tctx.space.w.u - tctx.cols.len * tctx.inlineSpacing * 2 -
+    tctx.borderWidth, 0)
   var weight = 0f32
   var avail = tctx.calcUnspecifiedColIndices(W, weight)
   var redo = true
@@ -2463,13 +2520,13 @@ proc layoutTableRows(tctx: TableContext; table: BlockBox;
   for roww in tctx.rows:
     if roww.box.computed{"visibility"} == VisibilityCollapse:
       continue
-    y += tctx.blockSpacing
+    y += tctx.blockSpacing + roww.borderTop
     let row = roww.box
     tctx.layoutTableRow(roww, table, row)
     row.state.offset.y += y
     row.state.offset.x += sizes.padding.left
     row.state.size.w += sizes.padding[dtHorizontal].sum()
-    y += tctx.blockSpacing
+    y += tctx.blockSpacing + roww.borderBottom
     y += row.state.size.h
     table.state.size.w = max(row.state.size.w, table.state.size.w)
     table.state.intr.w = max(row.state.intr.w, table.state.intr.w)
@@ -2490,7 +2547,13 @@ proc layoutCaption(lctx: LayoutContext; box: BlockBox; space: AvailableSpace;
 
 proc layoutInnerTable(tctx: var TableContext; table, parent: BlockBox;
     sizes: ResolvedSizes) =
-  if table.computed{"border-collapse"} != BorderCollapseCollapse:
+  if table.computed{"border-collapse"} != BorderCollapseCollapse and
+      tctx.border.left in BorderStyleNoneHidden and
+      tctx.border.right in BorderStyleNoneHidden and
+      tctx.border.top in BorderStyleNoneHidden and
+      tctx.border.bottom in BorderStyleNoneHidden:
+    # if borders aren't default, ignore border-collapse
+    #TODO this doesn't look like a very good solution
     tctx.inlineSpacing = table.computed{"-cha-border-spacing-inline"}.px(0)
     tctx.blockSpacing = table.computed{"-cha-border-spacing-block"}.px(0)
   tctx.preLayoutTableRows(table) # first pass
@@ -2533,7 +2596,11 @@ proc layoutTable(bctx: BlockContext; box: BlockBox; sizes: ResolvedSizes) =
   let lctx = bctx.lctx
   let table = BlockBox(box.firstChild)
   table.resetState()
-  var tctx = TableContext(lctx: lctx, space: sizes.space)
+  var tctx = TableContext(
+    lctx: lctx,
+    space: sizes.space,
+    border: box.computed.getBorder()
+  )
   let caption = BlockBox(table.next)
   var captionSpace = availableSpace(
     w = fitContent(sizes.space.w),
