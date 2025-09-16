@@ -4,13 +4,13 @@
 import std/algorithm
 import std/options
 import std/strutils
-import std/tables
 
 import io/packetreader
 import io/packetwriter
 import monoucha/fromjs
 import monoucha/javascript
 import monoucha/jserror
+import monoucha/jstypes
 import monoucha/libunicode
 import monoucha/quickjs
 import monoucha/tojs
@@ -1133,19 +1133,17 @@ proc serializeFormURLEncoded*(kvs: seq[(string, string)]; spaceAsPlus = true):
     result &= '='
     result.percentEncode(value, ApplicationXWWWFormUrlEncodedSet, spaceAsPlus)
 
-proc newURLSearchParams(ctx: JSContext; init: varargs[JSValueConst]):
+proc newURLSearchParams(ctx: JSContext; init: JSValueConst = JS_UNDEFINED):
     Opt[URLSearchParams] {.jsctor.} =
   let params = URLSearchParams()
-  if init.len > 0:
-    let val = init[0]
-    if ctx.fromJS(val, params.list).isOk:
+  if not JS_IsUndefined(init):
+    if ctx.fromJS(init, params.list).isOk:
       discard
-    elif (var t: Table[string, string]; ctx.fromJS(val, t).isOk):
-      for k, v in t:
-        params.list.add((k, v))
+    elif (var t: JSKeyValuePair[string, string]; ctx.fromJS(init, t).isOk):
+      params.list = move(t.s)
     else:
       var res: string
-      ?ctx.fromJS(val, res)
+      ?ctx.fromJS(init, res)
       if res.len > 0 and res[0] == '?':
         res.delete(0..0)
       params.list = parseFromURLEncoded(res)
