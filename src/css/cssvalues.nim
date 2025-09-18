@@ -20,39 +20,6 @@ import utils/twtstr
 export CSSPropertyType
 
 type
-  CSSUnit* = enum
-    cuAuto = ""
-    cuCap = "cap"
-    cuCh = "ch"
-    cuCm = "cm"
-    cuDvmax = "dvmax"
-    cuDvmin = "dvmin"
-    cuEm = "em"
-    cuEx = "ex"
-    cuIc = "ic"
-    cuIn = "in"
-    cuLh = "lh"
-    cuLvmax = "lvmax"
-    cuLvmin = "lvmin"
-    cuMm = "mm"
-    cuPc = "pc"
-    cuPt = "pt"
-    cuPx = "px"
-    cuRcap = "rcap"
-    cuRch = "rch"
-    cuRem = "rem"
-    cuRex = "rex"
-    cuRic = "ric"
-    cuRlh = "rlh"
-    cuSvmax = "svmax"
-    cuSvmin = "svmin"
-    cuVb = "vb"
-    cuVh = "vh"
-    cuVi = "vi"
-    cuVmax = "vmax"
-    cuVmin = "vmin"
-    cuVw = "vw"
-
   CSSValueType* = enum
     cvtBgcolorIsCanvas = "bgcolorIsCanvas"
     cvtBorderCollapse = "borderCollapse"
@@ -277,6 +244,8 @@ type
     BorderStyleRidge = "ridge"
     BorderStyleInset = "inset"
     BorderStyleOutset = "outset"
+    BorderStyleBracket = "-cha-bracket"
+    BorderStyleParen = "-cha-paren"
 
 type
   # CSSLength may represent:
@@ -454,6 +423,7 @@ const ValueTypes = [
   cptFlexGrow: cvtNumber,
   cptFlexShrink: cvtNumber,
   cptFontWeight: cvtInteger,
+  cptInputIntrinsicSize: cvtNumber,
   cptOpacity: cvtNumber,
 
   # words
@@ -533,6 +503,7 @@ const WhiteSpacePreserve* = {
   WhitespacePre, WhitespacePreLine, WhitespacePreWrap
 }
 const BorderStyleNoneHidden* = {BorderStyleNone, BorderStyleHidden}
+const BorderStyleInput* = {BorderStyleBracket, BorderStyleParen}
 
 type
   CSSCalcSumType = enum
@@ -1023,10 +994,10 @@ proc resolveLength*(u: CSSUnit; val: float32; attrs: WindowAttributes):
   of cuVmax, cuSvmax, cuLvmax, cuDvmax:
     cssLength(max(attrs.widthPx, attrs.heightPx) / 100 * val)
 
-proc parseLength(val: float32; u: string; attrs: WindowAttributes):
-    Opt[CSSLength] =
-  let u = ?parseEnumNoCase[CSSUnit](u)
-  return ok(resolveLength(u, val, attrs))
+proc parseLength(tok: CSSToken; attrs: WindowAttributes): Opt[CSSLength] =
+  if tok.dt in CSSDimensionType(CSSUnit.low)..CSSDimensionType(CSSUnit.high):
+    return ok(resolveLength(tok.dt, tok.num, attrs))
+  return err()
 
 proc parseDimensionValues*(s: string): Opt[CSSLength] =
   var i = s.skipBlanks(0)
@@ -1052,19 +1023,14 @@ proc parseDimensionValues*(s: string): Opt[CSSLength] =
     return ok(cssLengthPerc(n))
   ok(cssLength(n))
 
-type CSSAngleType = enum
-  catDeg = "deg"
-  catGrad = "grad"
-  catRad = "rad"
-  catTurn = "turn"
-
 # The return value is in degrees.
 proc parseAngle(tok: CSSToken): Opt[float32] =
-  case ?parseEnumNoCase[CSSAngleType](tok.s)
+  case tok.dt
   of catDeg: return ok(tok.num)
   of catGrad: return ok(tok.num * 0.9f32)
   of catRad: return ok(radToDeg(tok.num))
   of catTurn: return ok(tok.num * 360f32)
+  else: return err()
 
 template calcSumNumber(num: float32): CSSCalcSum =
   CSSCalcSum(t: ccstNumber, n: num)
@@ -1073,7 +1039,7 @@ proc parseCalcValue(ctx: var CSSParser; attrs: ptr WindowAttributes):
     Opt[CSSCalcSum] =
   ?ctx.skipBlanksCheckHas()
   case (let t = ctx.peekTokenType(); t)
-  of cttNumber, cttINumber:
+  of cttNumber:
     let tok = ctx.consume()
     return ok(calcSumNumber(tok.num))
   of cttIdent:
@@ -1098,13 +1064,13 @@ proc parseCalcValue(ctx: var CSSParser; attrs: ptr WindowAttributes):
     let tok = ctx.consume()
     let length = cssLengthPerc(tok.num)
     return ok(CSSCalcSum(t: ccstLength, l: length))
-  of cttDimension, cttIDimension:
+  of cttDimension:
     let tok = ctx.consume()
     if deg := parseAngle(tok):
       return ok(CSSCalcSum(t: ccstDegree, deg: deg))
     if attrs == nil:
       return err()
-    let length = ?parseLength(tok.num, tok.s, attrs[])
+    let length = ?parseLength(tok, attrs[])
     return ok(CSSCalcSum(t: ccstLength, l: length))
   else:
     return err()
@@ -1181,9 +1147,9 @@ proc parseColorComponent(ctx: var CSSParser): Opt[CSSToken] =
     let res = ?ctx.parseCalc(nil)
     case res.t
     of ccstNumber: return ok(cssNumberToken(res.n))
-    of ccstDegree: return ok(cssDimensionToken(res.deg, "deg"))
+    of ccstDegree: return ok(cssDimensionToken(res.deg, catDeg))
     of ccstLength: return ok(cssPercentageToken(res.l.perc))
-  of cttNumber, cttINumber, cttPercentage, cttDimension, cttIDimension:
+  of cttNumber, cttPercentage, cttDimension:
     return ok(ctx.consume())
   of cttIdent:
     if not ctx.peekIdentNoCase("none"):
@@ -1193,7 +1159,7 @@ proc parseColorComponent(ctx: var CSSParser): Opt[CSSToken] =
 
 proc parseRGBComponent(tok: CSSToken): Opt[uint8] =
   case tok.t
-  of cttDimension, cttIDimension:
+  of cttDimension:
     return err()
   of cttIdent: # none
     return ok(0u8)
@@ -1207,10 +1173,10 @@ proc parseRGBComponent(tok: CSSToken): Opt[uint8] =
 proc parseHue(tok: CSSToken): Opt[uint32] =
   var n = 0i32
   case tok.t
-  of cttNumber, cttINumber:
+  of cttNumber:
     n = tok.toi
   of cttIdent: discard # none -> 0
-  of cttDimension, cttIDimension:
+  of cttDimension:
     n = int32(?parseAngle(tok))
   else: return err()
   n = n mod 360
@@ -1219,7 +1185,7 @@ proc parseHue(tok: CSSToken): Opt[uint32] =
   return ok(uint32(n))
 
 proc parseSatOrLight(tok: CSSToken): Opt[uint8] =
-  if tok.t in {cttNumber, cttINumber, cttPercentage}:
+  if tok.t in {cttNumber, cttPercentage}:
     return ok(uint8(clamp(tok.toi, 0i32, 100i32)))
   return err()
 
@@ -1245,12 +1211,12 @@ proc parseLegacyColorFun(ctx: var CSSParser; ft: CSSFunctionType):
       return err()
     ctx.seekToken()
     let v4 = ?ctx.parseColorComponent()
-    if v4.t in {cttIdent, cttDimension, cttIDimension}:
+    if v4.t in {cttIdent, cttDimension}:
       return err()
     a = uint8(clamp(v4.num, 0, 1) * 255)
   case ft
   of cftRgb, cftRgba:
-    if legacy and (v1.normt != v2.normt or v2.normt != v3.normt):
+    if legacy and (v1.t != v2.t or v2.t != v3.t):
       return err()
     let r = ?parseRGBComponent(v1)
     let g = ?parseRGBComponent(v2)
@@ -1279,7 +1245,7 @@ proc parseANSI(ctx: var CSSParser): Opt[CSSColor] =
   ?ctx.skipBlanksCheckHas()
   let tok = ctx.consume()
   case tok.t
-  of cttINumber, cttNumber:
+  of cttNumber:
     return ansiColorNumeric(tok.toi)
   of cttFunction:
     if tok.ft != cftCalc:
@@ -1350,7 +1316,7 @@ proc parseLength*(ctx: var CSSParser; attrs: WindowAttributes;
     hasAuto = true; allowNegative = true): Opt[CSSLength] =
   ?ctx.skipBlanksCheckHas()
   case (let tok = ctx.consume(); tok.t)
-  of cttNumber, cttINumber:
+  of cttNumber:
     if tok.num == 0:
       return ok(CSSLengthZero)
   of cttPercentage:
@@ -1358,11 +1324,10 @@ proc parseLength*(ctx: var CSSParser; attrs: WindowAttributes;
     if not allowNegative and n < 0:
       return err()
     return ok(cssLengthPerc(n))
-  of cttDimension, cttIDimension:
-    let n = tok.num
-    if not allowNegative and n < 0:
+  of cttDimension:
+    if not allowNegative and tok.num < 0:
       return err()
-    return parseLength(n, tok.s, attrs)
+    return parseLength(tok, attrs)
   of cttIdent:
     if hasAuto and tok.s.equalsIgnoreCase("auto"):
       return ok(CSSLengthAuto)
@@ -1384,12 +1349,12 @@ proc parseLength*(toks: openArray[CSSToken]; attrs: WindowAttributes;
 proc parseAbsoluteLength(tok: CSSToken; attrs: WindowAttributes):
     Opt[CSSLength] =
   case tok.t
-  of cttNumber, cttINumber:
+  of cttNumber:
     if tok.num == 0:
       return ok(CSSLengthZero)
-  of cttDimension, cttIDimension:
-    if (let n = tok.num; n >= 0):
-      return parseLength(n, tok.s, attrs)
+  of cttDimension:
+    if tok.num >= 0:
+      return parseLength(tok, attrs)
   else: discard
   err()
 
@@ -1481,7 +1446,7 @@ proc parseFontWeight(ctx: var CSSParser): Opt[int32] =
     let i = FontWeightMap.parseIdent(tok)
     if i != -1:
       return ok(int32(i))
-  elif tok.t in {cttNumber, cttINumber}:
+  elif tok.t == cttNumber:
     let i = tok.toi
     if i in 1i32..1000i32:
       return ok(i)
@@ -1511,7 +1476,7 @@ proc parseCounterSet(ctx: var CSSParser; n: int32): Opt[seq[CSSCounterSet]] =
     if not ctx.has() or ctx.peekTokenType() == cttWhitespace:
       r.num = n
       res.add(r)
-    elif ctx.peekTokenType() in {cttNumber, cttINumber}:
+    elif ctx.peekTokenType() == cttNumber:
       r.num = ctx.consume().toi
       res.add(r)
     else:
@@ -1562,7 +1527,7 @@ proc parseImage(ctx: var CSSParser): Opt[NetworkBitmap] =
 
 proc parseInteger(ctx: var CSSParser; range: Slice[int32]): Opt[int32] =
   let tok = ctx.consume()
-  if tok.t in {cttNumber, cttINumber}:
+  if tok.t == cttNumber:
     let i = tok.toi
     if i in range:
       return ok(i)
@@ -1577,7 +1542,7 @@ proc parseZIndex(ctx: var CSSParser): Opt[CSSZIndex] =
 
 proc parseNumber(ctx: var CSSParser; range: Slice[float32]): Opt[float32] =
   let tok = ctx.peekToken()
-  if tok.t in {cttNumber, cttINumber}:
+  if tok.t == cttNumber:
     if (let n = tok.num; n in range):
       ctx.seekToken()
       return ok(n)
@@ -1626,7 +1591,7 @@ proc makeEntry(t: CSSPropertyType; zIndex: CSSZIndex): CSSComputedEntry =
 proc makeEntry*(t: CSSPropertyType; integer: int32): CSSComputedEntry =
   makeEntry(t, CSSValueHWord(integer: integer))
 
-proc makeEntry(t: CSSPropertyType; number: float32): CSSComputedEntry =
+proc makeEntry*(t: CSSPropertyType; number: float32): CSSComputedEntry =
   makeEntry(t, CSSValueHWord(number: number))
 
 proc makeEntry(t: CSSPropertyType; image: NetworkBitmap): CSSComputedEntry =
@@ -1692,7 +1657,7 @@ proc parseValue(ctx: var CSSParser; t: CSSPropertyType;
       makeEntry(t, ?ctx.parseMaxSize(attrs))
     of cptPaddingLeft, cptPaddingRight, cptPaddingTop, cptPaddingBottom:
       makeEntry(t, ?ctx.parseLength(attrs, hasAuto = false,
-        allowNegative = true))
+        allowNegative = false))
     #TODO content for flex-basis
     else:
       makeEntry(t, ?ctx.parseLength(attrs, hasAuto = true,
@@ -1859,7 +1824,7 @@ proc parseBorder(ctx: var CSSParser; sh: CSSShorthandType;
       else:
         color = makeEntry(cptBackgroundColor, ?ctx.parseColor())
         inc ncolor
-    of cttDimension, cttNumber, cttIDimension, cttINumber:
+    of cttDimension, cttNumber:
       width = makeEntry(cptBorderLeftWidth, ?ctx.parseLineWidth(attrs))
       inc nwidth
     else:
@@ -2155,20 +2120,20 @@ proc borderChar*(style: CSSBorderStyle; c: BoxDrawingChar): string =
   of BorderStyleNone, BorderStyleHidden: ""
   of BorderStyleDotted:
     case c
-    of bdcHorizontalBar: "\u2508"
-    of bdcVerticalBar: "\u250A"
+    of HorizontalBar: "\u2508"
+    of VerticalBar: "\u250A"
     else: $c # no dotted corners in Unicode
   of BorderStyleDashed:
     case c
-    of bdcHorizontalBar: "\u254C"
-    of bdcVerticalBar: "\u254E"
+    of HorizontalBar: "\u254C"
+    of VerticalBar: "\u254E"
     else: $c # likewise
   of BorderStyleSolid: # the default
     $c
   of BorderStyleOutset, BorderStyleGroove: # like solid, but thicker
     case c
-    of bdcHorizontalBar: "\u2501"
-    of bdcVerticalBar: "\u2503"
+    of HorizontalBar: "\u2501"
+    of VerticalBar: "\u2503"
     of bdcCornerTopLeft: "\u250F"
     of bdcCornerTopRight: "\u2513"
     of bdcCornerBottomLeft: "\u2517"
@@ -2181,8 +2146,8 @@ proc borderChar*(style: CSSBorderStyle; c: BoxDrawingChar): string =
   of BorderStyleDouble, BorderStyleInset, BorderStyleRidge:
     # interpret inset/ridge as double
     case c
-    of bdcHorizontalBar: "\u2550"
-    of bdcVerticalBar: "\u2551"
+    of HorizontalBar: "\u2550"
+    of VerticalBar: "\u2551"
     of bdcCornerTopLeft: "\u2554"
     of bdcCornerTopRight: "\u2557"
     of bdcCornerBottomLeft: "\u255A"
@@ -2192,6 +2157,16 @@ proc borderChar*(style: CSSBorderStyle; c: BoxDrawingChar): string =
     of bdcSideBarTop: "\u2566"
     of bdcSideBarBottom: "\u2569"
     of bdcSideBarCross: "\u256C"
+  of BorderStyleBracket: # proprietary extension
+    case c
+    of bdcVerticalBarLeft: "["
+    of bdcVerticalBarRight: "]"
+    else: " "
+  of BorderStyleParen: # likewise
+    case c
+    of bdcVerticalBarLeft: "("
+    of bdcVerticalBarRight: ")"
+    else: " "
 
 when defined(debug):
   proc serializeEmpty*(computed: CSSValues): string =
