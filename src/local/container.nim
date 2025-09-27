@@ -104,7 +104,7 @@ type
     lsLoading, lsCanceled, lsLoaded
 
   ContainerFlag* = enum
-    cfCloned, cfUserRequested, cfHasStart, cfCanReinterpret, cfSave, cfIsHTML,
+    cfUserRequested, cfHasStart, cfCanReinterpret, cfSave, cfIsHTML,
     cfHistory, cfHighlight, cfTailOnLoad
 
   CachedImageState* = enum
@@ -138,6 +138,10 @@ type
     prev*: Tab
     next*: Tab
     hidden*: bool # primarily for console
+
+  Mark = object
+    id: string
+    pos: PagePos
 
   Container* = ref object of RootObj
     # note: this is not the same as source.request.url (but should be synced
@@ -178,7 +182,6 @@ type
     replaceRef*: Container
     retry*: seq[URL]
     sourcepair*: Container # pointer to buffer with a source view (may be nil)
-    loadState*: LoadState
     event: ContainerEvent
     lastEvent: ContainerEvent
     startpos: Option[CursorPosition]
@@ -187,9 +190,10 @@ type
     currentSelection* {.jsget.}: Highlight
     tmpJumpMark: PagePos
     jumpMark: PagePos
-    marks: Table[string, PagePos]
+    marks: seq[Mark]
     filter*: BufferFilter
     bgcolor*: CellColor
+    loadState*: LoadState
     redraw*: bool
     needslines: bool
     lastPeek: HoverType
@@ -210,17 +214,17 @@ type
     ndPrevSibling = "prev-sibling"
     ndNextSibling = "next-sibling"
     ndParent = "parent"
-    ndFirstChild
     ndAny = "any"
 
 jsDestructor(Highlight)
 jsDestructor(Container)
 
 # Forward declarations
-proc onclick(container: Container; res: ClickResult; save: bool)
-proc updateCursor(container: Container)
 proc cursorLastLine*(container: Container)
+proc find*(container: Container; dir: NavDirection): Container
+proc onclick(container: Container; res: ClickResult; save: bool)
 proc triggerEvent(container: Container; t: ContainerEventType)
+proc updateCursor(container: Container)
 
 proc newContainer*(config: BufferConfig; loaderConfig: LoaderClientConfig;
     url: URL; request: Request; luctx: LUContext; attrs: WindowAttributes;
@@ -253,19 +257,19 @@ proc newContainer*(config: BufferConfig; loaderConfig: LoaderClientConfig;
   )
 
 proc clone*(container: Container; newurl: URL; loader: FileLoader):
-    Promise[tuple[c: Container; fd: cint]] =
+    tuple[p: Promise[cint], c: Container] =
   if container.iface == nil:
-    return nil
+    return (nil, nil)
   var sv {.noinit.}: array[2, cint]
   if socketpair(AF_UNIX, SOCK_STREAM, IPPROTO_IP, sv) != 0:
-    return nil
+    return (nil, nil)
   # Send a pipe for synchronization in the clone proc.
   # (Do it here, so buffers do not need pipe rights.)
   var pipefd {.noinit.}: array[2, cint]
   if pipe(pipefd) == -1:
     discard close(sv[0])
     discard close(sv[1])
-    return nil
+    return (nil, nil)
   let url = if newurl != nil:
     newurl
   else:
@@ -275,23 +279,68 @@ proc clone*(container: Container; newurl: URL; loader: FileLoader):
   discard close(pipefd[0])
   discard close(pipefd[1])
   if p == nil:
-    return nil
-  return p.then(proc(pid: int): tuple[c: Container; fd: cint] =
+    return (nil, nil)
+  let nc = Container()
+  nc[] = container[]
+  nc.url = url
+  nc.process = -1
+  nc.clonedFrom = container.process
+  nc.retry = @[]
+  nc.prev = nil
+  nc.next = nil
+  nc.select = nil
+  nc.cachedImages = @[]
+  nc.images = @[]
+  nc.needslines = true
+  let pp = p.then(proc(pid: int): cint =
     if pid == -1:
       discard close(sv[0])
-      return (nil, cint(-1))
-    let nc = Container()
-    nc[] = container[]
-    nc.url = url
+      return cint(-1)
     nc.process = pid
-    nc.clonedFrom = container.process
-    nc.flags.incl(cfCloned)
-    nc.retry = @[]
-    nc.prev = nil
-    nc.next = nil
-    nc.cachedImages = @[]
-    return (nc, sv[0])
+    return sv[0]
   )
+  (pp, nc)
+
+proc append*(this, other: Container) =
+  if other.prev != nil:
+    other.prev.next = other.next
+  if other.next != nil:
+    other.next.prev = other.prev
+  other.next = this.next
+  if this.next != nil:
+    this.next.prev = other
+  other.prev = this
+  this.next = other
+
+proc remove*(this: Container) =
+  if this.prev != nil:
+    this.prev.next = this.next
+  if this.next != nil:
+    this.next.prev = this.prev
+  if this.tab.current == this:
+    this.tab.current = this.find(ndAny)
+  if this.tab.head == this:
+    this.tab.head = this.next
+  this.tab = nil
+  this.next = nil
+  this.prev = nil
+
+# tab may be nil.
+# Returns the old tab if it has become empty.
+proc setTab*(container: Container; tab: Tab): Tab =
+  let oldTab = container.tab
+  if oldTab != nil:
+    container.remove()
+  container.tab = tab
+  if tab != nil:
+    if tab.current == nil:
+      tab.current = container
+      tab.head = container
+    else:
+      tab.current.append(container)
+  if oldTab != nil and oldTab.current == nil:
+    return oldTab
+  nil
 
 proc lineLoaded(container: Container; y: int): bool =
   return y - container.lineshift in 0..container.lines.high
@@ -1284,76 +1333,87 @@ proc cursorPrevParagraph(container: Container; n = 1) {.jsfunc.} =
       container.markPos()
     )
 
-proc setMark(container: Container; id: string; x = none(int); y = none(int)):
-    bool {.jsfunc.} =
-  let x = x.get(container.cursorx)
-  let y = y.get(container.cursory)
-  container.marks.withValue(id, p):
-    p[] = (x, y)
-    container.queueDraw()
-    return false
-  do:
-    container.marks[id] = (x, y)
-    container.queueDraw()
-    return true
+proc findMark(container: Container; id: string): int =
+  for i, it in container.marks.mypairs:
+    if it.id == id:
+      return i
+  -1
+
+proc setMark(container: Container; id: string; x = -1; y = -1): bool
+    {.jsfunc.} =
+  let x = if x == -1: container.cursorx else: x
+  let y = if y == -1: container.cursory else: y
+  let i = container.findMark(id)
+  if i != -1:
+    container.marks[i].pos = (x, y)
+  else:
+    container.marks.add(Mark(id: id, pos: (x, y)))
+  container.queueDraw()
+  i == -1
 
 proc clearMark(container: Container; id: string): bool {.jsfunc.} =
-  result = id in container.marks
-  container.marks.del(id)
-  container.queueDraw()
+  let i = container.findMark(id)
+  if i != -1:
+    container.marks.del(i)
+    container.queueDraw()
+  i != -1
 
-proc getMarkPos(container: Container; id: string): Opt[PagePos] {.jsfunc.} =
+proc getMarkPos(ctx: JSContext; container: Container; id: string): JSValue {.jsfunc.} =
   if id == "`" or id == "'":
-    return ok(container.jumpMark)
-  container.marks.withValue(id, p):
-    return ok(p[])
-  return err()
+    return ctx.toJS(container.jumpMark)
+  let i = container.findMark(id)
+  if i != -1:
+    return ctx.toJS(container.marks[i].pos)
+  return JS_NULL
 
 proc gotoMark(container: Container; id: string): bool {.jsfunc.} =
   container.markPos0()
-  if mark := container.getMarkPos(id):
+  let i = container.findMark(id)
+  if i != -1:
+    let mark = container.marks[i].pos
     container.setCursorXYCenter(mark.x, mark.y)
     container.markPos()
-    return true
-  return false
+  i != -1
 
 proc gotoMarkY(container: Container; id: string): bool {.jsfunc.} =
-  container.markPos0()
-  if mark := container.getMarkPos(id):
+  let i = container.findMark(id)
+  if i != -1:
+    let mark = container.marks[i].pos
     container.setCursorXYCenter(0, mark.y)
     container.markPos()
-    return true
-  return false
+  i != -1
 
-proc findNextMark(container: Container; x = none(int); y = none(int)):
-    Option[string] {.jsfunc.} =
-  #TODO optimize (maybe store marks in an OrderedTable and sort on insert?)
-  let x = x.get(container.cursorx)
-  let y = y.get(container.cursory)
-  var best: PagePos = (high(int), high(int))
-  var bestid = none(string)
-  for id, mark in container.marks:
-    if mark.y < y or mark.y == y and mark.x <= x:
+proc findNextMark(ctx: JSContext; container: Container; x = -1; y = -1): JSValue
+    {.jsfunc.} =
+  let x = if x < 0: container.cursorx else: x
+  let y = if y < 0: container.cursory else: y
+  var best: PagePos = (int.high, int.high)
+  var j = -1
+  for i, mark in container.marks.mypairs:
+    if mark.pos.y < y or mark.pos.y == y and mark.pos.x <= x:
       continue
-    if mark.y < best.y or mark.y == best.y and mark.x < best.x:
-      best = mark
-      bestid = some(id)
-  return bestid
+    if mark.pos.y < best.y or mark.pos.y == best.y and mark.pos.x < best.x:
+      best = mark.pos
+      j = i
+  if j != -1:
+    return ctx.toJS(container.marks[j].id)
+  return JS_NULL
 
-proc findPrevMark(container: Container; x = none(int); y = none(int)):
-    Option[string] {.jsfunc.} =
-  #TODO optimize (maybe store marks in an OrderedTable and sort on insert?)
-  let x = x.get(container.cursorx)
-  let y = y.get(container.cursory)
+proc findPrevMark(ctx: JSContext; container: Container; x = -1; y = -1):
+    JSValue {.jsfunc.} =
+  let x = if x < 0: container.cursorx else: x
+  let y = if y < 0: container.cursory else: y
   var best: PagePos = (-1, -1)
-  var bestid = none(string)
-  for id, mark in container.marks:
-    if mark.y > y or mark.y == y and mark.x >= x:
+  var j = -1
+  for i, mark in container.marks.mypairs:
+    if mark.pos.y > y or mark.pos.y == y and mark.pos.x >= x:
       continue
-    if mark.y > best.y or mark.y == best.y and mark.x > best.x:
-      best = mark
-      bestid = some(id)
-  return bestid
+    if mark.pos.y > best.y or mark.pos.y == best.y and mark.pos.x > best.x:
+      best = mark.pos
+      j = i
+  if j != -1:
+    return ctx.toJS(container.marks[j].id)
+  return JS_NULL
 
 proc cursorNthLink(container: Container; n = 1) {.jsfunc.} =
   if container.iface == nil:
@@ -1756,22 +1816,22 @@ proc peekCursor(container: Container) {.jsfunc.} =
     container.alert(container.hoverText[p])
   container.lastPeek = p
 
-proc hoverLink(container: Container): string {.jsfget.} =
+proc hoverLink(container: Container): lent string {.jsfget.} =
   return container.hoverText[htLink]
 
-proc hoverTitle(container: Container): string {.jsfget.} =
+proc hoverTitle(container: Container): lent string {.jsfget.} =
   return container.hoverText[htTitle]
 
-proc hoverImage(container: Container): string {.jsfget.} =
+proc hoverImage(container: Container): lent string {.jsfget.} =
   return container.hoverText[htImage]
 
-proc hoverCachedImage(container: Container): string {.jsfget.} =
+proc hoverCachedImage(container: Container): lent string {.jsfget.} =
   return container.hoverText[htCachedImage]
 
 proc find*(container: Container; dir: NavDirection): Container {.jsfunc.} =
   return case dir
   of ndPrev, ndPrevSibling, ndParent: container.prev
-  of ndNext, ndNextSibling, ndFirstChild: container.next
+  of ndNext, ndNextSibling: container.next
   of ndAny:
     if container.prev != nil: container.prev else: container.next
 
@@ -1797,16 +1857,8 @@ proc startLoad(container: Container) =
   )
 
 proc setStream*(container: Container; stream: BufStream) =
-  assert cfCloned notin container.flags
   container.iface = newBufferInterface(stream)
   container.startLoad()
-
-proc setCloneStream*(container: Container; stream: BufStream) =
-  assert cfCloned in container.flags
-  container.iface = newBufferInterface(stream)
-  if container.iface != nil: # if nil, the buffer is dead.
-    # Maybe we have to resume loading. Let's try.
-    container.startLoad()
 
 type HandleReadLine = proc(line: SimpleFlexibleLine): Opt[void]
 
@@ -1936,11 +1988,11 @@ proc drawLines*(container: Container; display: var FixedGrid;
 
 proc highlightMarks*(container: Container; display: var FixedGrid;
     hlcolor: CellColor) =
-  for mark in container.marks.values:
-    if mark.x in container.fromx ..< container.fromx + display.width and
-        mark.y in container.fromy ..< container.fromy + display.height:
-      let x = mark.x - container.fromx
-      let y = mark.y - container.fromy
+  for mark in container.marks:
+    if mark.pos.x in container.fromx ..< container.fromx + display.width and
+        mark.pos.y in container.fromy ..< container.fromy + display.height:
+      let x = mark.pos.x - container.fromx
+      let y = mark.pos.y - container.fromy
       let n = y * display.width + x
       if hlcolor != defaultColor:
         display[n].format.bgcolor = hlcolor

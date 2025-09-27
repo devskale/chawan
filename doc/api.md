@@ -235,7 +235,28 @@ pager.navDirection)`</td>
 
 <tr>
 <td>`discardTree()`</td>
-<td>Discard all child buffers of the current buffer.</td>
+<td>Discard all next siblings of the current buffer.  This function is
+deprecated, and may be removed in the future.</td>
+</tr>
+
+<tr>
+<td>`addTab(target)`</td>
+<td>Open a new tab.
+<p>
+If `target` is a buffer, it is removed from its current tab and added to the
+newly created tab.  Otherwise, `target` is interpreted as a URL to open with
+`gotoURL`.
+</td>
+</tr>
+
+<tr>
+<td>`prevTab()`, `nextTab()`</td>
+<td>Switch to the previous/next tab in the tab list.</td>
+</tr>
+
+<tr>
+<td>`discardTab()`</td>
+<td>Discard the current tab.</td>
 </tr>
 
 <tr>
@@ -391,7 +412,7 @@ below.</td>
 <td>`navDirection`</td>
 <td>The direction the user last moved in the buffer list using
 `traverse`.  Possible values are `prev`, `next`, `prev-sibling`,
-`next-sibling`, `parent`, `first-child`, `any`.</td>
+`next-sibling`, `parent`, `any`.</td>
 </tr>
 
 <tr>
@@ -414,9 +435,8 @@ Also, the following static function is defined on `Pager` itself:
 <td>`Pager.oppositeDir(dir)`</td>
 <td>Return a string representing the direction opposite to `dir`.
 <p>
-For "next", this is "prev"; for "parent", "first-child"; for
-"prev-sibling", "next-sibling"; for "any", it is the same; for the rest,
-vice versa.</td>
+For "next", this is "prev"; for "parent", "next"; for "prev-sibling",
+"next-sibling"; for "any", it is the same; for the rest, vice versa.</td>
 </tr>
 
 </table>
@@ -694,11 +714,12 @@ position if it is outside the screen.</td>
 <td>Find the next buffer in the list in a specific direction.
 <p>
 Possible values of `dir` are: `prev`, `next`, `prev-sibling`,
-`next-sibling`, `parent`, `first-child`, `any`.
+`next-sibling`, `parent`, `any`.
+<p>
 "next" and "prev" return the next/previous buffer respectively.
 <p>
 "prev-sibling", "parent" are deprecated aliases for "prev", while
-"next-sibling" and "first-child" are deprecated aliases for "next".
+"next-sibling" is a deprecated alias for "next".
 <p>
 Finally, "any" returns either "prev", or if it's null, "next".
 </td>
