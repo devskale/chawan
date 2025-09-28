@@ -104,8 +104,7 @@ type
     lsLoading, lsCanceled, lsLoaded
 
   ContainerFlag* = enum
-    cfUserRequested, cfHasStart, cfCanReinterpret, cfSave, cfIsHTML,
-    cfHistory, cfHighlight, cfTailOnLoad
+    cfHasStart, cfSave, cfIsHTML, cfHistory, cfHighlight, cfTailOnLoad
 
   CachedImageState* = enum
     cisLoading, cisCanceled, cisLoaded
@@ -137,7 +136,6 @@ type
     current*: Container
     prev*: Tab
     next*: Tab
-    hidden*: bool # primarily for console
 
   Mark = object
     id: string
@@ -1882,6 +1880,8 @@ proc onReadLine(container: Container; w: Slice[int]; handle: HandleReadLine;
 # Synchronously read all lines in the buffer.
 # Returns false on I/O error.
 proc readLines*(container: Container; handle: HandleReadLine): Opt[void] =
+  if container.iface == nil:
+    return err()
   # load succeeded
   let w = 0 .. 23
   container.iface.getLines(w).then(proc(res: GetLinesResult): EmptyPromise =
