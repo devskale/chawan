@@ -1603,13 +1603,13 @@ proc alert*(pager: Pager; msg: string) {.jsfunc.} =
   if msg != "":
     pager.alerts.add(msg)
 
-proc updatePinned(pager: Pager; container, target: Container) =
-  if pager.pinned.downloads == container:
-    pager.pinned.downloads = target
-  if pager.pinned.console == container:
-    pager.pinned.console = target
-  if pager.pinned.prev == container:
-    pager.pinned.prev = target
+proc updatePinned(pager: Pager; old, replacement: Container) =
+  if pager.pinned.downloads == old:
+    pager.pinned.downloads = replacement
+  if pager.pinned.console == old:
+    pager.pinned.console = replacement
+  if pager.pinned.prev == old:
+    pager.pinned.prev = replacement
 
 # replace target with container
 proc replace(pager: Pager; target, container: Container) =
@@ -1632,7 +1632,7 @@ proc replace(pager: Pager; target, container: Container) =
     container.prev.next = container
   if container.next != nil:
     container.next.prev = container
-  pager.updatePinned(container, target)
+  pager.updatePinned(target, container)
   if pager.container == target:
     pager.setContainer(container)
 
@@ -2053,8 +2053,8 @@ proc gotoURL(pager: Pager; request: Request; contentType = "";
 proc gotoURLHash(pager: Pager; request: Request; current: Container;
     save: bool): bool =
   let url = request.url
-  if current == nil or current.url.equals(url, excludeHash = true) or
-      url.hash == "" or request.httpMethod != hmGet or not save:
+  if current == nil or not current.url.equals(url, excludeHash = true) or
+      url.hash == "" or request.httpMethod != hmGet or save:
     return false
   let anchor = url.hash.substr(1)
   current.iface.gotoAnchor(anchor, false, false).then(
