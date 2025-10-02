@@ -1180,6 +1180,8 @@ proc redraw(pager: Pager) {.jsfunc.} =
     pager.container.redraw = true
     if pager.container.select != nil:
       pager.container.select.redraw = true
+  if pager.lineedit != nil:
+    pager.lineedit.redraw = true
 
 proc getTempFile(pager: Pager; ext = ""): string =
   result = pager.config.external.tmpdir / "chaptmp" &
@@ -2397,18 +2399,22 @@ proc updateReadLine(pager: Pager) =
           pager.command()
       of lmBuffer: pager.container.readSuccess(lineedit.news)
       of lmBufferFile:
-        let ps = newPosixStream(lineedit.news, O_RDONLY, 0)
-        if ps == nil:
-          pager.alert("File not found")
-          pager.container.readCanceled()
-        else:
-          var stats: Stat
-          if fstat(ps.fd, stats) < 0 or S_ISDIR(stats.st_mode):
-            pager.alert("Not a file: " & lineedit.news)
+        if path := ChaPath(lineedit.news).unquote(myposix.getcwd()):
+          let ps = newPosixStream(path, O_RDONLY, 0)
+          if ps == nil:
+            pager.alert("File not found")
+            pager.container.readCanceled()
           else:
-            let name = lineedit.news.afterLast('/')
-            pager.container.readSuccess(name, ps.fd)
-          ps.sclose()
+            var stats: Stat
+            if fstat(ps.fd, stats) < 0 or S_ISDIR(stats.st_mode):
+              pager.alert("Not a file: " & path)
+            else:
+              let name = path.afterLast('/')
+              pager.container.readSuccess(name, ps.fd)
+            ps.sclose()
+        else:
+          pager.alert("Invalid path: " & lineedit.news)
+          pager.container.readCanceled()
       of lmSearchF, lmSearchB:
         if lineedit.news != "":
           let regex = pager.compileSearchRegex(lineedit.news)
