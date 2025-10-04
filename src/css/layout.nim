@@ -50,25 +50,25 @@ proc opposite(dim: DimensionType): DimensionType =
   of dtHorizontal: return dtVertical
   of dtVertical: return dtHorizontal
 
-proc availableSpace(w, h: SizeConstraint): AvailableSpace =
+proc initSpace(w, h: SizeConstraint): Space =
   return [dtHorizontal: w, dtVertical: h]
 
-proc w(space: AvailableSpace): SizeConstraint {.inline.} =
+proc w(space: Space): SizeConstraint {.inline.} =
   return space[dtHorizontal]
 
-proc w(space: var AvailableSpace): var SizeConstraint {.inline.} =
+proc w(space: var Space): var SizeConstraint {.inline.} =
   return space[dtHorizontal]
 
-proc `w=`(space: var AvailableSpace; w: SizeConstraint) {.inline.} =
+proc `w=`(space: var Space; w: SizeConstraint) {.inline.} =
   space[dtHorizontal] = w
 
-proc h(space: var AvailableSpace): var SizeConstraint {.inline.} =
+proc h(space: var Space): var SizeConstraint {.inline.} =
   return space[dtVertical]
 
-proc h(space: AvailableSpace): SizeConstraint {.inline.} =
+proc h(space: Space): SizeConstraint {.inline.} =
   return space[dtVertical]
 
-proc `h=`(space: var AvailableSpace; h: SizeConstraint) {.inline.} =
+proc `h=`(space: var Space; h: SizeConstraint) {.inline.} =
   space[dtVertical] = h
 
 proc measure(): SizeConstraint =
@@ -109,11 +109,6 @@ proc px(l: CSSLength; p: SizeConstraint): LUnit {.inline.} =
   if p.t == scStretch:
     return (p.u.toFloat32() * l.perc + l.npx).toLUnit()
   return 0
-
-proc stretchOrMeasure(l: CSSLength; sc: SizeConstraint): SizeConstraint =
-  if l.canpx(sc):
-    return stretch(l.px(sc))
-  return measure()
 
 proc stretchOrMaxContent(l: CSSLength; sc: SizeConstraint): SizeConstraint =
   if l.canpx(sc):
@@ -172,15 +167,15 @@ proc minClamp(x: LUnit; span: Span): LUnit =
   return max(min(x, span.send), span.start)
 
 # Note: padding must still be applied after this.
-proc applySize(box: BlockBox; bounds: Bounds; maxChildSize: LUnit;
-    space: AvailableSpace; dim: DimensionType) =
+proc applySize(box: BlockBox; bounds: Bounds; maxChildSize: LUnit; space: Space;
+    dim: DimensionType) =
   # Make the box as small/large as the content's width or specified width.
   box.state.size[dim] = maxChildSize.applySizeConstraint(space[dim])
   # Then, clamp it to minWidth and maxWidth (if applicable).
   box.state.size[dim] = box.state.size[dim].minClamp(bounds.a[dim])
 
 proc applySize(box: BlockBox; sizes: ResolvedSizes; maxChildSize: Size;
-    space: AvailableSpace) =
+    space: Space) =
   for dim in DimensionType:
     box.applySize(sizes.bounds, maxChildSize[dim], space, dim)
 
@@ -320,7 +315,7 @@ const SizeMap = [dtHorizontal: cptWidth, dtVertical: cptHeight]
 const MinSizeMap = [dtHorizontal: cptMinWidth, dtVertical: cptMinHeight]
 const MaxSizeMap = [dtHorizontal: cptMaxWidth, dtVertical: cptMaxHeight]
 
-proc resolveBounds(lctx: LayoutContext; space: AvailableSpace; padding: Size;
+proc resolveBounds(lctx: LayoutContext; space: Space; padding: Size;
     computed: CSSValues; flexItem = false): Bounds =
   var res = DefaultBounds
   for dim in DimensionType:
@@ -387,8 +382,8 @@ proc resolveAbsoluteSizes(lctx: LayoutContext; size: Size;
   return sizes
 
 # Calculate and resolve available width & height for floating boxes.
-proc resolveFloatSizes(lctx: LayoutContext; space: AvailableSpace;
-    computed: CSSValues): ResolvedSizes =
+proc resolveFloatSizes(lctx: LayoutContext; space: Space; computed: CSSValues):
+    ResolvedSizes =
   var sizes = ResolvedSizes(
     margin: lctx.resolveMargins(space.w, computed),
     padding: lctx.resolvePadding(space.w, computed),
@@ -410,8 +405,8 @@ proc resolveFloatSizes(lctx: LayoutContext; space: AvailableSpace;
       sizes.space[dim] = fitContent(minClamp(u, sizes.bounds.a[dim]))
   return sizes
 
-proc resolveFlexItemSizes(lctx: LayoutContext; space: AvailableSpace;
-    dim: DimensionType; computed: CSSValues): ResolvedSizes =
+proc resolveFlexItemSizes(lctx: LayoutContext; space: Space; dim: DimensionType;
+    computed: CSSValues): ResolvedSizes =
   let padding = lctx.resolvePadding(space.w, computed)
   let paddingSum = padding.sum()
   var sizes = ResolvedSizes(
@@ -526,8 +521,8 @@ proc resolveBlockHeight(sizes: var ResolvedSizes; parentHeight: SizeConstraint;
     # same reasoning as for width.
     sizes.space.h = stretch(sizes.minHeight)
 
-proc resolveBlockSizes(lctx: LayoutContext; space: AvailableSpace;
-    computed: CSSValues): ResolvedSizes =
+proc resolveBlockSizes(lctx: LayoutContext; space: Space; computed: CSSValues):
+    ResolvedSizes =
   let padding = lctx.resolvePadding(space.w, computed)
   let paddingSum = padding.sum()
   var sizes = ResolvedSizes(
@@ -690,7 +685,7 @@ type
 
   UnpositionedFloat = object
     parentBps: BlockPositionState
-    space: AvailableSpace
+    space: Space
     box: BlockBox
     marginOffset: Offset
     outerSize: Size
@@ -768,7 +763,7 @@ type
     offset: Offset
     maxChildWidth: LUnit
     totalFloatWidth: LUnit # used for re-layouts
-    space: AvailableSpace
+    space: Space
     intr: Size
     prevParentBps: BlockPositionState
     # State kept for when a re-layout is necessary:
@@ -863,7 +858,7 @@ proc clearFloats(offsety: var LUnit; bctx: var BlockContext;
   offsety = y - bfcOffsety
 
 proc findNextFloatOffset(bctx: BlockContext; offset: Offset; size: Size;
-    space: AvailableSpace; float: CSSFloat; outw: var LUnit): Offset =
+    space: Space; float: CSSFloat; outw: var LUnit): Offset =
   # Algorithm originally from QEmacs.
   var y = offset.y
   let leftStart = offset.x
@@ -897,16 +892,16 @@ proc findNextFloatOffset(bctx: BlockContext; offset: Offset; size: Size;
   offset(-1, -1)
 
 proc findNextFloatOffset(bctx: BlockContext; offset: Offset; size: Size;
-    space: AvailableSpace; float: CSSFloat): Offset =
+    space: Space; float: CSSFloat): Offset =
   var dummy: LUnit
   return bctx.findNextFloatOffset(offset, size, space, float, dummy)
 
 proc findNextBlockOffset(bctx: BlockContext; offset: Offset; size: Size;
-    space: AvailableSpace; outw: var LUnit): Offset =
+    space: Space; outw: var LUnit): Offset =
   return bctx.findNextFloatOffset(offset, size, space, FloatLeft, outw)
 
-proc positionFloat(bctx: var BlockContext; child: BlockBox;
-    space: AvailableSpace; outerSize: Size; marginOffset, bfcOffset: Offset) =
+proc positionFloat(bctx: var BlockContext; child: BlockBox; space: Space;
+    outerSize: Size; marginOffset, bfcOffset: Offset) =
   assert space.w.t != scFitContent
   child.state.offset.y += bctx.marginTodo.sum()
   let clear = child.computed{"clear"}
@@ -1571,8 +1566,7 @@ proc popPositioned(lctx: LayoutContext; head: CSSAbsolute; size: Size) =
       child.state.offset.y += sizes.margin.top
     it = it.next
 
-proc positionRelative(lctx: LayoutContext; space: AvailableSpace;
-    box: BlockBox) =
+proc positionRelative(lctx: LayoutContext; space: Space; box: BlockBox) =
   # Interestingly, relative percentages don't actually work when the
   # parent's height is auto.
   if box.computed{"left"}.canpx(space.w):
@@ -1693,7 +1687,7 @@ proc layoutBlockChild(fstate: var FlowState; child: BlockBox) =
       let roffset = offset - pbfcOffset
       # skip relayout if we can
       if outw != fstate.space.w.u or roffset != child.state.offset:
-        space = availableSpace(w = stretch(outw), h = fstate.space.h)
+        space = initSpace(w = stretch(outw), h = fstate.space.h)
         sizes = lctx.resolveBlockSizes(space, child.computed)
         var bctx = initBlockContext(lctx)
         bctx.layout(child, roffset, sizes)
@@ -2140,8 +2134,7 @@ proc layoutFlowRoot(bctx: var BlockContext; box: BlockBox; offset: Offset;
   bctx.layoutFlow(box, sizes)
   bctx.layoutFlowRootPost(box)
 
-# Table layout.  This imitates what mainstream browsers do, and that
-# precludes a w3m-like single-pass algorithm.  Ours rather looks like:
+# Table layout.  This imitates what mainstream browsers do:
 # 1. Calculate minimum, maximum and preferred width of each column.
 # 2. If column width is not auto, set width to max(min_width, specified).
 # 3. Calculate the maximum preferred row width. If this is
@@ -2159,9 +2152,24 @@ proc layoutFlowRoot(bctx: var BlockContext; box: BlockBox; offset: Offset;
 # moved to the right by one column.  This means that a column only has one
 # multi-row cell at a given time.
 #
+# Percentage widths (width=n%):
+# 1. for each column, assign the largest percentage width among its cells
+#    as its weight (divided as appropriate by colspan).  at each step, keep
+#    track of the remaining weight (1 - assigned), and clamp the column's
+#    weight down if it exceeds this.
+# 2. count sum of min width of all columns with weight=0, this is "unassigned"
+# 3. if unassigned is 0, and the total assigned weight is < 1, then scale all
+#    assigned weight such that the sum is 1 (i.e. divide each column's weight
+#    by the total weight.)
+# 4. for each assigned column, compute the total width implied by its weight:
+#    (min width) / weight, as well as (unassigned) / (1 - weight).
+# 5. set the table's max width to the largest value computed in the previous
+#    step.
+# 6. in the second pass, first fix the width of columns with an author weight,
+#    *then* columns with an author width.  (not implemented yet)
+#
 #TODO:
-# * respect percentage width in redistribution - note this is a constraint,
-#   not just a percentage of the table's parent width...
+# * percentage width point 6
 # * <col>, <colgroup>
 # * distribute table height too
 type
@@ -2190,7 +2198,7 @@ type
   ColumnContext = object
     minwidth: LUnit
     width: LUnit
-    wspecified: bool
+    widthSpecified: bool
     weight: float32
     reflow: int # last row index that need not be reflowed
     grown: int # number of remaining rows
@@ -2200,17 +2208,18 @@ type
     lctx: LayoutContext
     rows: seq[RowContext]
     cols: seq[ColumnContext]
+    hasAuthorWeight: bool
     maxwidth: LUnit
     blockSpacing: LUnit
     inlineSpacing: LUnit
     borderWidth: LUnit
-    space: AvailableSpace # space we got from parent
+    space: Space # space we got from parent
 
-proc layoutTableCell(lctx: LayoutContext; box: BlockBox;
-    space: AvailableSpace; border: CSSBorder; merge: CSSBorderMerge) =
+proc layoutTableCell(lctx: LayoutContext; box: BlockBox; space: Space;
+    border: CSSBorder; merge: CSSBorderMerge) =
   box.sizes = ResolvedSizes(
     padding: lctx.resolvePadding(space.w, box.computed),
-    space: availableSpace(w = space.w, h = maxContent()),
+    space: initSpace(w = space.w, h = maxContent()),
     bounds: DefaultBounds,
     border: border
   )
@@ -2291,33 +2300,38 @@ proc resolveBorder(tctx: var TableContext; computed: CSSValues;
   border
 
 proc preLayoutTableColspan(tctx: var TableContext; cellw: CellWrapper;
-    space: AvailableSpace; rowi, n, nextn: int): LUnit =
+    space: Space; rowi, n, nextn: int; weight: float32): LUnit =
   var width = 0.toLUnit()
   let colspan = cellw.colspan
   let minw = cellw.box.state.intr.w div colspan
+  let weight = weight / float32(colspan)
   let w = cellw.box.state.size.w div colspan
   if tctx.cols.len < nextn:
     tctx.cols.setLen(nextn)
   for col in tctx.cols.toOpenArray(n, nextn - 1).mitems:
+    if col.weight < weight:
+      tctx.hasAuthorWeight = true
+      col.weight = weight
+      col.widthSpecified = false
     # Figure out this cell's effect on the column's width.
     # Four cases exist:
     # 1. colwidth already fixed, cell width is fixed: take maximum
     # 2. colwidth already fixed, cell width is auto: take colwidth
     # 3. colwidth is not fixed, cell width is fixed: take cell width
     # 4. neither of colwidth or cell width are fixed: take maximum
-    if col.wspecified:
-      if space.w.isDefinite():
+    if col.widthSpecified:
+      if space.w.isDefinite() and col.weight == 0:
         # A specified column already exists; we take the larger width.
         if w > col.width:
           col.width = w
           col.reflow = rowi
       if col.width != w:
         cellw.reflow = true
-    elif space.w.isDefinite():
+    elif space.w.isDefinite() and col.weight == 0:
       # This is the first specified column. Replace colwidth with whatever
       # we have.
       col.reflow = rowi
-      col.wspecified = true
+      col.widthSpecified = true
       col.width = w
     elif w > col.width:
       col.width = w
@@ -2335,6 +2349,11 @@ proc preLayoutTableColspan(tctx: var TableContext; cellw: CellWrapper;
     tctx.cols[n].grown = grown
     tctx.cols[n].growing = cellw
   width
+
+proc cellWidthPx(l: CSSLength): SizeConstraint =
+  if l.auto or l.perc != 0:
+    return measure()
+  return stretch(l.npx.toLUnit())
 
 proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
     rowi, numrows: int): RowContext =
@@ -2360,8 +2379,9 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
     let rowspan = min(box.computed{"-cha-rowspan"}, numrows - rowi)
     let cw = box.computed{"width"}
     let ch = box.computed{"height"}
-    let space = availableSpace(
-      w = cw.stretchOrMeasure(tctx.space.w),
+    let perc = if cw.auto: 0f32 else: cw.perc
+    let space = initSpace(
+      w = cw.cellWidthPx(),
       h = ch.stretchOrMaxContent(tctx.space.h)
     )
     var inlineBorder = Span(start: tctx.inlineSpacing, send: tctx.inlineSpacing)
@@ -2384,9 +2404,11 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
       cellHead = cellw
     cellTail = cellw
     let nextn = n + colspan
-    width += tctx.preLayoutTableColspan(cellw, space, rowi, n, nextn)
+    width += tctx.preLayoutTableColspan(cellw, space, rowi, n, nextn, perc)
     # add spacing for border inside colspan
-    width += tctx.inlineSpacing * (colspan - 1) * 2
+    let spacing = tctx.inlineSpacing * (colspan - 1) * 2
+    width += spacing
+    borderWidth += spacing
     n = nextn
     firstCell = false
   tctx.growRowspan(growi, n, tctx.cols.len, growlen, width, cellHead, cellTail)
@@ -2420,13 +2442,14 @@ proc layoutTableRow(tctx: TableContext; ctx: RowContext;
     var w: LUnit = 0
     var reflow = cellw.reflow
     let colspan1 = cellw.colspan - 1
-    for col in tctx.cols.toOpenArray(n, n + colspan1):
-      w += col.width
-      reflow = reflow or rowi < col.reflow
+    if n < tctx.cols.len:
+      for col in tctx.cols.toOpenArray(n, n + colspan1):
+        w += col.width
+        reflow = reflow or rowi < col.reflow
     # Add inline spacing for merged columns.
     w += tctx.inlineSpacing * colspan1 * 2
     if reflow and cellw.box != nil:
-      let space = availableSpace(w = stretch(w), h = maxContent())
+      let space = initSpace(w = stretch(w), h = maxContent())
       let border = cellw.box.sizes.border
       let merge = cellw.box.state.merge
       tctx.lctx.layoutTableCell(cellw.box, space, border, merge)
@@ -2501,40 +2524,51 @@ proc preLayoutTableRows(tctx: var TableContext; table: BlockBox) =
   tctx.preLayoutTableRows(tbody, table)
   tctx.preLayoutTableRows(tfoot, table)
 
-proc calcSpecifiedRatio(tctx: TableContext; W: LUnit): LUnit =
+proc calcSpecifiedRatio(tctx: var TableContext; wf: float32): float32 =
   var totalSpecified: LUnit = 0
   var hasUnspecified = false
-  for col in tctx.cols:
-    if col.wspecified:
+  for col in tctx.cols.mitems:
+    if col.weight > 0:
+      let width = max((col.weight * wf).toLUnit(), col.minwidth)
+      totalSpecified += width
+      col.width = width
+    elif col.widthSpecified:
       totalSpecified += col.width
     else:
       hasUnspecified = true
       totalSpecified += col.minwidth
   # Only grow specified columns if no unspecified column exists to take the
   # rest of the space.
-  if totalSpecified == 0 or W > totalSpecified and hasUnspecified:
+  if totalSpecified == 0:
     return 1
-  return W div totalSpecified
+  let ftotalSpecified = totalSpecified.toFloat32()
+  if hasUnspecified and wf > ftotalSpecified:
+    return 1
+  return wf / ftotalSpecified
 
 proc calcUnspecifiedColIndices(tctx: var TableContext; W: var LUnit;
     weight: var float32): seq[int] =
-  let specifiedRatio = tctx.calcSpecifiedRatio(W)
+  let wf = W.toFloat32()
+  let rwf = 1 / W.toFloat32()
+  let specifiedRatio = tctx.calcSpecifiedRatio(wf)
   # Spacing for each column:
   var avail = newSeqOfCap[int](tctx.cols.len)
   for i, col in tctx.cols.mpairs:
-    if not col.wspecified:
-      avail.add(i)
-      let w = if col.width < W:
-        toFloat32(col.width)
-      else:
-        toFloat32(W) * (ln(toFloat32(col.width) / toFloat32(W)) + 1)
-      col.weight = w
-      weight += w
-    else:
+    if col.weight != 0:
+      W -= col.width
+      col.width = (col.width.toFloat32() * specifiedRatio).toLUnit()
+      col.reflow = tctx.rows.len
+    elif col.widthSpecified:
       if specifiedRatio != 1:
-        col.width *= specifiedRatio
+        col.width = (col.width.toFloat32() * specifiedRatio).toLUnit()
         col.reflow = tctx.rows.len
       W -= col.width
+    else:
+      avail.add(i)
+      let width = col.width.toFloat32()
+      let w = if width < wf: width else: wf * (ln(width * rwf) + 1)
+      col.weight = w * specifiedRatio
+      weight += col.weight
   move(avail)
 
 proc needsRedistribution(tctx: TableContext; computed: CSSValues): bool =
@@ -2542,10 +2576,30 @@ proc needsRedistribution(tctx: TableContext; computed: CSSValues): bool =
   of scMinContent, scMaxContent, scMeasure:
     return false
   of scStretch:
-    return tctx.space.w.u != tctx.maxwidth
+    return tctx.hasAuthorWeight or tctx.space.w.u != tctx.maxwidth
   of scFitContent:
     return tctx.space.w.u > tctx.maxwidth and not computed{"width"}.auto or
         tctx.space.w.u < tctx.maxwidth
+
+proc expandToWeight(tctx: var TableContext) =
+  var maxwidth = tctx.maxwidth
+  var avail = 1f32
+  var unassigned = 0.toLUnit()
+  for col in tctx.cols.mitems:
+    let weight = min(col.weight, avail)
+    if weight == 0:
+      unassigned += col.width
+      continue
+    let colTarget = (1 / weight).toLUnit() * col.minwidth
+    maxwidth = max(maxwidth, colTarget)
+    col.weight = weight
+    avail -= weight
+  if avail > 0:
+    let restTarget = (1 / avail).toLUnit() * unassigned
+    maxwidth = max(maxwidth, restTarget)
+  elif unassigned > 0:
+    maxwidth = tctx.space.w.u
+  tctx.space.w = stretch(min(tctx.space.w.u, maxwidth))
 
 proc redistributeWidth(tctx: var TableContext) =
   # Remove inline spacing from distributable width.
@@ -2559,7 +2613,7 @@ proc redistributeWidth(tctx: var TableContext) =
       W = 0
     redo = false
     # divide delta width by sum of ln(width) for all elem in avail
-    let unit = toFloat32(W) / weight
+    let unit = W.toFloat32() / weight
     weight = 0
     for i in countdown(avail.high, 0):
       let j = avail[i]
@@ -2601,7 +2655,7 @@ proc layoutTableRows(tctx: TableContext; table: BlockBox;
     # min-height...
     table.state.size.h = y
 
-proc layoutCaption(lctx: LayoutContext; box: BlockBox; space: AvailableSpace;
+proc layoutCaption(lctx: LayoutContext; box: BlockBox; space: Space;
     sizes: var ResolvedSizes) =
   sizes = lctx.resolveBlockSizes(space, box.computed)
   var bctx = initBlockContext(lctx)
@@ -2609,21 +2663,23 @@ proc layoutCaption(lctx: LayoutContext; box: BlockBox; space: AvailableSpace;
 
 proc layoutInnerTable(tctx: var TableContext; table, parent: BlockBox;
     sizes: ResolvedSizes) =
-  if table.computed{"border-collapse"} != BorderCollapseCollapse:
-    tctx.inlineSpacing = table.computed{"-cha-border-spacing-inline"}.px(0)
-    tctx.blockSpacing = table.computed{"-cha-border-spacing-block"}.px(0)
-  tctx.preLayoutTableRows(table) # first pass
-  # Percentage sizes have been resolved; switch the table's space to
-  # fit-content if its width is auto.
-  # (Note that we call canpx on space, which might have been changed by
-  # specified width.  This isn't a problem however, because canpx will
-  # still return true after that.)
+  # Switch the table's space to fit-content if its width is auto.  (Note
+  # that we call canpx on space, which might have been changed by specified
+  # width.  This isn't a problem however, because canpx will still return
+  # true after that.) <-- TODO not sure if any of this still make sense (I
+  # think it does?)
   if tctx.space.w.t == scStretch:
     let width = parent.computed{"width"}
     if width.isPx():
       table.state.intr.w = tctx.space.w.u
     elif not width.canpx(tctx.space.w):
       tctx.space.w = fitContent(tctx.space.w.u)
+  if table.computed{"border-collapse"} != BorderCollapseCollapse:
+    tctx.inlineSpacing = table.computed{"-cha-border-spacing-inline"}.px(0)
+    tctx.blockSpacing = table.computed{"-cha-border-spacing-block"}.px(0)
+  tctx.preLayoutTableRows(table) # first pass
+  if tctx.hasAuthorWeight and tctx.space.w.t == scFitContent:
+    tctx.expandToWeight()
   if tctx.needsRedistribution(table.computed):
     tctx.redistributeWidth()
   for col in tctx.cols:
@@ -2656,7 +2712,7 @@ proc layoutTable(lctx: LayoutContext; box: BlockBox; offset: Offset;
   table.resetState()
   var tctx = TableContext(lctx: lctx, space: sizes.space)
   let caption = BlockBox(table.next)
-  var captionSpace = availableSpace(
+  var captionSpace = initSpace(
     w = fitContent(sizes.space.w),
     h = maxContent()
   )
@@ -2853,7 +2909,7 @@ proc flushMain(fctx: var FlexContext; mctx: var FlexMainContext;
         it.sizes.margin[odim].sum() - oborder
       if underflow > 0 and start.auto:
         # we don't really care about the end margin, because that is
-        # already taken into account by AvailableSpace
+        # already taken into account by Space
         if not send.auto:
           it.sizes.margin[odim].start = underflow
         else:
@@ -2996,10 +3052,7 @@ proc layout(bctx: var BlockContext; box: BlockBox; offset: Offset;
 
 proc layout*(box: BlockBox; attrs: WindowAttributes; fixedHead: CSSAbsolute;
     luctx: LUContext) =
-  let space = availableSpace(
-    w = stretch(attrs.widthPx),
-    h = stretch(attrs.heightPx)
-  )
+  let space = initSpace(w = stretch(attrs.widthPx), h = stretch(attrs.heightPx))
   let cellSize = size(w = attrs.ppc, h = attrs.ppl)
   let lctx = LayoutContext(cellSize: cellSize, luctx: luctx)
   let sizes = lctx.resolveBlockSizes(space, box.computed)
