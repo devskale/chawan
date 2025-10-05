@@ -565,7 +565,7 @@ proc cssEscape*(s: openArray[char]): string =
 
 #basically std join but with char
 proc join*(ss: openArray[string]; sep: char): string =
-  if ss.len == 0:
+  if ss.len <= 0:
     return ""
   result = ss[0]
   for i in 1 ..< ss.len:
@@ -594,7 +594,7 @@ proc isNameStartCharHigh(u: uint32): bool =
     u in 0x10000u32..0xEFFFFu32
 
 proc matchNameProduction*(s: openArray[char]): bool =
-  if s.len == 0:
+  if s.len <= 0:
     return false
   # NameStartChar
   var i = 0
@@ -616,7 +616,7 @@ proc matchNameProduction*(s: openArray[char]): bool =
   return true
 
 proc matchQNameProduction*(s: openArray[char]): bool =
-  if s.len == 0:
+  if s.len <= 0:
     return false
   if s[0] == ':':
     return false
@@ -950,8 +950,18 @@ iterator ritems*[T](a: openArray[T]): lent T {.inline.} =
 
 proc getFileExt*(path: string): string =
   let n = path.rfind({'/', '.'})
-  if n == -1 or path[n] != '.':
+  if n < 0 or path[n] != '.':
     return ""
   return path.substr(n + 1)
+
+iterator lineIndices*(s: openArray[char]): tuple[si, ei: int] {.inline.} =
+  var i = 0
+  let H = s.high
+  while i < s.len:
+    var j = i + s.toOpenArray(i, H).find('\n')
+    if j == -1:
+      j = H
+    yield (i, j - 1)
+    i = j + 1
 
 {.pop.} # raises: []

@@ -4,7 +4,6 @@ import std/algorithm
 import std/strutils
 
 import html/catom
-import html/domexception
 import types/opt
 import utils/twtstr
 
@@ -863,7 +862,7 @@ template iq(ctx: CSSParser): openArray[char] =
   ctx.iqp.toOpenArray(0, ctx.iqlen - 1)
 
 proc initCSSParser0(iq: openArray[char]): CSSParser =
-  if iq.len == 0:
+  if iq.len <= 0:
     return CSSParser()
   return CSSParser(
     iqp: cast[ptr UncheckedArray[char]](unsafeAddr iq[0]),
@@ -1138,29 +1137,9 @@ iterator parseListOfRules*(ctx: var CSSParser; topLevel: bool):
     if rule := ctx.consumeRule(topLevel):
       yield rule
 
-proc parseRule*(iq: openArray[char]): DOMResult[CSSRule] =
-  var ctx = initCSSParser(iq)
-  var x = ctx.consumeRule(topLevel = false)
-  if x.isErr:
-    return errDOMException("No qualified rule found", "SyntaxError")
-  if ctx.skipBlanksCheckDone().isErr:
-    return errDOMException("EOF not reached", "SyntaxError")
-  return ok(move(x.get))
-
 proc parseDeclarations*(iq: openArray[char]): seq[CSSDeclaration] =
   var ctx = initCSSParser(iq)
   return ctx.consumeDeclarations(nested = false)
-
-proc parseComponentValue*(iq: openArray[char]): DOMResult[CSSToken] =
-  var ctx = initCSSParser(iq)
-  ctx.skipBlanks()
-  if not ctx.has():
-    return errDOMException("Unexpected EOF", "SyntaxError")
-  let res = ctx.consume()
-  ctx.skipBlanks()
-  if ctx.has():
-    return errDOMException("EOF not reached", "SyntaxError")
-  return ok(res)
 
 proc parseComponentValues*(iq: openArray[char]): seq[CSSToken] =
   var ctx = initCSSParser(iq)
