@@ -138,6 +138,7 @@ type
 method decode*(td: TextDecoder; iq: openArray[uint8];
     oq: var openArray[uint8]; n: var int): TextDecoderResult {.base.} =
   assert false
+  tdrDone
 
 method finish*(td: TextDecoder): TextDecoderFinishResult {.base.} =
   tdfrDone
@@ -844,7 +845,6 @@ proc decode0(td: TextDecoderUTF16_BE|TextDecoderUTF16_LE; iq: openArray[uint8];
       inc td.i
       continue
     let cu = (uint16(td.lead) shl shiftLead) + uint16(iq[i]) shl shiftTrail
-    td.haslead = false
     if td.hassurr:
       if unlikely(cu notin 0xDC00u16 .. 0xDFFFu16):
         td.haslead = true # prepend the last two bytes
@@ -854,17 +854,21 @@ proc decode0(td: TextDecoderUTF16_BE|TextDecoderUTF16_LE; iq: openArray[uint8];
         (uint32(cu) - 0xDC00)
       oq.try_put_utf8 c, n
       td.hassurr = false
+      td.haslead = false
       inc td.i
       continue
     if cu in 0xD800u16 .. 0xDBFFu16:
       td.surr = cu
       td.hassurr = true
+      td.haslead = false
       inc td.i
       continue
     if unlikely(cu in 0xDC00u16 .. 0xDFFFu16):
       inc td.i
+      td.haslead = false
       return tdrError
     oq.try_put_utf8 uint32(cu), n
+    td.haslead = false
     inc td.i
   td.i = 0
   tdrDone

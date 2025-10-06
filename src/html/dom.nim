@@ -30,7 +30,6 @@ import io/promise
 import io/timeout
 import monoucha/fromjs
 import monoucha/javascript
-import monoucha/jserror
 import monoucha/jsopaque
 import monoucha/jspropenumlist
 import monoucha/jsutils
@@ -676,6 +675,7 @@ proc elIndex*(this: Element): int
 proc ensureStyle(element: Element)
 proc findAttr(element: Element; qualifiedName: CAtom): int
 proc findAttrNS(element: Element; namespace, localName: CAtom): int
+proc getCharset(element: Element): Charset
 proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues
 proc invalidate*(element: Element)
 proc invalidate*(element: Element; dep: DependencyType)
@@ -1190,7 +1190,7 @@ proc getWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
 
 proc corsFetch(window: Window; input: Request): FetchPromise =
   if not window.settings.images and input.url.scheme.startsWith("img-codec+"):
-    return newResolvedPromise(JSResult[Response].err(newFetchTypeError()))
+    return newResolvedPromise(FetchResult.err())
   return window.loader.fetch(input)
 
 proc parseStylesheet(window: Window; s: openArray[char]; baseURL: URL):
@@ -1199,16 +1199,17 @@ proc parseStylesheet(window: Window; s: openArray[char]; baseURL: URL):
 
 proc loadSheet(window: Window; link: HTMLLinkElement; url: URL):
     Promise[CSSStylesheet] =
+  let charset = link.getCharset()
   let p = window.corsFetch(
     newRequest(url)
-  ).then(proc(res: JSResult[Response]): Promise[JSResult[string]] =
+  ).then(proc(res: FetchResult): Promise[TextResult] =
     if res.isOk:
       let res = res.get
       if res.getContentType().equalsIgnoreCase("text/css"):
-        return res.text()
+        return res.cssText(charset)
       res.close()
-    return newResolvedPromise(JSResult[string].err(nil))
-  ).then(proc(s: JSResult[string]): Promise[CSSStylesheet] =
+    return newResolvedPromise(TextResult.err())
+  ).then(proc(s: TextResult): Promise[CSSStylesheet] =
     if s.isOk:
       let sheet = window.parseStylesheet(s.get, url)
       var promises: seq[EmptyPromise] = @[]
@@ -1306,7 +1307,7 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
     window.imageURLCache[surl] = cachedURL
     let headers = newHeaders(hgRequest, {"Accept": "*/*"})
     let p = window.corsFetch(newRequest(url, headers = headers)).then(
-      proc(res: JSResult[Response]): EmptyPromise =
+      proc(res: FetchResult): EmptyPromise =
         if res.isErr:
           return newResolvedPromise()
         let response = res.get
@@ -1349,7 +1350,7 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
             break
         cachedURL.loading = false
         cachedURL.expiry = expiry
-        return r.then(proc(res: JSResult[Response]) =
+        return r.then(proc(res: FetchResult) =
           if res.isErr:
             return
           let response = res.get
@@ -1419,7 +1420,7 @@ proc loadResource*(window: Window; svg: SVGSVGElement) =
     headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
     body = RequestBody(t: rbtOutput, outputId: svgres.outputId)
   )
-  let p = loader.fetch(request).then(proc(res: JSResult[Response]) =
+  let p = loader.fetch(request).then(proc(res: FetchResult) =
     svgres.close()
     if res.isErr: # no SVG module; give up
       return
@@ -4762,6 +4763,12 @@ proc setHint*(element: Element; hint: bool) =
     element.hint = hint
     element.invalidate()
 
+proc getCharset(element: Element): Charset =
+  let charset = getCharset(element.attr(satCharset))
+  if charset != CHARSET_UNKNOWN:
+    return charset
+  return element.document.charset
+
 # DOMRect
 proc left(rect: DOMRect): float64 {.jsfget.} =
   return min(rect.x, rect.x + rect.width)
@@ -4982,7 +4989,7 @@ proc setProperty(ctx: JSContext; this: CSSStyleDeclaration;
         return JS_UNDEFINED
     decl.value = move(toks)
     this.decls.add(move(decl))
-  this.element.attr(satStyle, $this.decls)
+  this.element.attr(satStyle, this.cssText)
   return JS_UNDEFINED
 
 proc setter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom;
@@ -4993,13 +5000,14 @@ proc setter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom;
   if ctx.fromJS(atom, u).isOk:
     var toks = parseComponentValues(value)
     if this.setValue(int(u), toks).isErr:
-      this.element.attr(satStyle, $this.decls)
+      this.element.attr(satStyle, this.cssText)
     return JS_UNDEFINED
   var name: string
   if ctx.fromJS(atom, name).isErr:
     return JS_EXCEPTION
   if name == "cssFloat":
     name = "float"
+  name = camelToKebabCase(name)
   return ctx.setProperty(this, name, value)
 
 proc style(element: Element): CSSStyleDeclaration {.jsfget.} =
@@ -5183,7 +5191,7 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
     "img-codec+x-cha-canvas:decode",
     httpMethod = hmPost,
     body = RequestBody(t: rbtCache, cacheId: this.bitmap.cacheId)
-  )).then(proc(res: JSResult[Response]): FetchPromise =
+  )).then(proc(res: FetchResult): FetchPromise =
     if res.isErr:
       return newResolvedPromise(res)
     let res = res.get
@@ -5195,7 +5203,7 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
     ))
     res.close()
     return p
-  ).then(proc(res: JSResult[Response]) =
+  ).then(proc(res: FetchResult) =
     if res.isErr:
       if contentType != "image/png":
         # redo as PNG.
@@ -5206,7 +5214,7 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
         window.console.error("missing/broken PNG encoder")
       JS_FreeValue(ctx, callback)
       return
-    res.get.blob().then(proc(blob: JSResult[Blob]) =
+    res.get.blob().then(proc(blob: BlobResult) =
       let jsBlob = ctx.toJS(blob)
       let res = JS_CallFree(ctx, callback, JS_UNDEFINED, 1,
         jsBlob.toJSValueArray())
@@ -5712,7 +5720,6 @@ proc fetchInlineModuleGraph(element: HTMLScriptElement; sourceText: string;
 
 proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
     destination: RequestDestination; onComplete: OnCompleteProc) =
-  #TODO ummm...
   let window = element.document.window
   let ctx = window.jsctx
   let record = script.record
@@ -5726,13 +5733,7 @@ proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
   let res = JS_EvalFunction(ctx, record) # consumes record
   if JS_IsException(res):
     window.logException(script.baseURL)
-    return
-  var p: Promise[JSValueConst]
-  if ctx.fromJSFree(res, p).isOk:
-    p.then(proc(res: JSValueConst) =
-      if JS_IsException(res):
-        window.logException(script.baseURL)
-    )
+  JS_FreeValue(ctx, res)
 
 #TODO settings object
 proc fetchSingleModule(element: HTMLScriptElement; url: URL;
@@ -5767,7 +5768,7 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
   #TODO set up module script request
   #TODO performFetch
   let p = window.fetchImpl(request)
-  p.then(proc(res: JSResult[Response]) =
+  p.then(proc(res: FetchResult) =
     let ctx = window.jsctx
     if res.isErr:
       let res = ScriptResult(t: srtNull)
@@ -5777,7 +5778,7 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
     let res = res.get
     let contentType = res.getContentType()
     let referrerPolicy = res.getReferrerPolicy()
-    res.text().then(proc(s: JSResult[string]) =
+    res.text().then(proc(s: TextResult) =
       if s.isErr:
         let res = ScriptResult(t: srtNull)
         settings.moduleMap.set(url, moduleType, res, ctx)
@@ -5893,8 +5894,7 @@ proc prepare*(element: HTMLScriptElement) =
         not event.equalsIgnoreCase("onload") and
         not event.equalsIgnoreCase("onload()"):
       return
-  let cs = getCharset(element.attr(satCharset))
-  let encoding = if cs != CHARSET_UNKNOWN: cs else: element.document.charset
+  let encoding = element.getCharset()
   let classicCORS = element.crossOrigin
   let parserMetadata = if element.parserDocument != nil:
     pmParserInserted
