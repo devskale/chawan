@@ -172,21 +172,22 @@ type
     weakMap*: array[WindowWeakMap, JSValue]
 
   # Navigator stuff
-  Navigator* = object
-    plugins: PluginArray
+  Navigator* = ref object
+    plugins* {.jsget.}: PluginArray
+    mimeTypes* {.jsget.}: MimeTypeArray
 
-  PluginArray* = object
+  PluginArray* = ref object
 
-  MimeTypeArray* = object
+  MimeTypeArray* = ref object
 
-  Screen* = object
+  Screen* = ref object
 
-  History* = object
+  History* = ref object
 
-  Storage* = object
+  Storage* = ref object
     map*: seq[tuple[key, value: string]]
 
-  Crypto* = object
+  Crypto* = ref object
     urandom*: PosixStream
 
   NamedNodeMap = ref object
@@ -222,6 +223,9 @@ type
     root: Node
     match: CollectionMatchFun
     snapshot: seq[Node]
+    # for some reason, refs disappear before I get to destroy the collection
+    # (in ORC only, refc works fine)
+    document: ptr DocumentObj
 
   NodeIterator = ref object of Collection
     ctx: JSContext
@@ -272,7 +276,7 @@ type
     prefix {.jsget.}: CAtom
     localName {.jsget.}: CAtom
 
-  DOMImplementation = object
+  DOMImplementation = ref object
     document: Document
 
   DOMRect* = ref object
@@ -287,8 +291,11 @@ type
   DocumentWriteBuffer* = ref object
     data*: string
     i*: int
+    prev*: DocumentWriteBuffer
 
-  Document* = ref object of ParentNode
+  Document* = ref DocumentObj
+
+  DocumentObj = object of ParentNode
     activeParserWasAborted: bool
     invalid*: bool # whether the document must be rendered again
     charset*: Charset
@@ -303,7 +310,7 @@ type
     # document.write
     ignoreDestructiveWrites: int
     throwOnDynamicMarkupInsertion*: int
-    writeBuffers*: seq[DocumentWriteBuffer]
+    writeBuffersTop*: DocumentWriteBuffer
     styleDependencies: array[DependencyType, DependencyMap]
     scriptsToExecSoon: HTMLScriptElement
     scriptsToExecInOrder: HTMLScriptElement
@@ -2380,9 +2387,10 @@ proc refreshCollection(collection: Collection) =
 
 proc finalize0(collection: Collection) =
   if collection.islive:
-    let i = collection.root.document.liveCollections.find(collection.id)
+    assert collection.document != nil
+    let i = collection.document.liveCollections.find(collection.id)
     assert i != -1
-    collection.root.document.liveCollections.del(i)
+    collection.document.liveCollections.del(i)
 
 proc finalize(collection: HTMLCollection) {.jsfin.} =
   collection.finalize0()
@@ -2410,15 +2418,17 @@ proc findNode(collection: Collection; node: Node): int =
 
 proc newCollection[T: Collection](root: Node; match: CollectionMatchFun;
     islive, childonly: bool; inclusive = false): T =
+  let document = root.document
   let collection = T(
     islive: islive,
     childonly: childonly,
     inclusive: inclusive,
     match: match,
-    root: root
+    root: root,
+    document: cast[ptr DocumentObj](document)
   )
   if islive:
-    root.document.liveCollections.add(collection.id)
+    document.liveCollections.add(collection.id)
     collection.invalid =  true
   else:
     collection.populateCollection()
@@ -2554,7 +2564,7 @@ proc adopt(document: Document; node: Node) =
           desc.internalNext = document
     for i in countdown(oldDocument.liveCollections.high, 0):
       let id = oldDocument.liveCollections[i]
-      if cast[Collection](id).root.document == document:
+      if cast[Collection](id).document == cast[ptr DocumentObj](document):
         node.document.liveCollections.add(id)
         oldDocument.liveCollections.del(i)
     #TODO custom elements
@@ -2839,13 +2849,13 @@ proc createElementNS(ctx: JSContext; document: Document; namespace: CAtom;
 proc createDocumentFragment(document: Document): DocumentFragment {.jsfunc.} =
   return newDocumentFragment(document)
 
-proc createDocumentType(ctx: JSContext; implementation: var DOMImplementation;
+proc createDocumentType(ctx: JSContext; implementation: DOMImplementation;
     qualifiedName, publicId, systemId: string): Opt[DocumentType] {.jsfunc.} =
   ?ctx.validateQName(qualifiedName)
   let document = implementation.document
   ok(document.newDocumentType(qualifiedName, publicId, systemId))
 
-proc createDocument(ctx: JSContext; implementation: var DOMImplementation;
+proc createDocument(ctx: JSContext; implementation: DOMImplementation;
     namespace: CAtom; qname0: JSValueConst = JS_NULL;
     doctype = none(DocumentType)): Opt[XMLDocument] {.jsfunc.} =
   let document = newXMLDocument()
@@ -2867,7 +2877,7 @@ proc createDocument(ctx: JSContext; implementation: var DOMImplementation;
   else: discard
   return ok(document)
 
-proc createHTMLDocument(implementation: var DOMImplementation;
+proc createHTMLDocument(implementation: DOMImplementation;
     title = none(string)): Document {.jsfunc.} =
   let doc = newDocument()
   doc.contentType = satTextHtml
@@ -2884,7 +2894,7 @@ proc createHTMLDocument(implementation: var DOMImplementation;
   doc.origin = implementation.document.origin
   return doc
 
-proc hasFeature(implementation: var DOMImplementation): bool {.jsfunc.} =
+proc hasFeature(implementation: DOMImplementation): bool {.jsfunc.} =
   return true
 
 proc createTextNode(document: Document; data: sink string): Text {.jsfunc.} =
@@ -3088,6 +3098,12 @@ proc findMetaRefresh*(document: Document): Element =
 # https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-write-steps
 proc write(ctx: JSContext; document: Document; args: varargs[JSValueConst]):
     JSValue {.jsfunc.} =
+  var text = ""
+  for arg in args:
+    var s: string
+    if ctx.fromJS(arg, s).isErr:
+      return JS_EXCEPTION
+    text &= s
   if document.isxml:
     return JS_ThrowDOMException(ctx, "InvalidStateError",
       "document.write not supported in XML documents")
@@ -3098,15 +3114,9 @@ proc write(ctx: JSContext; document: Document; args: varargs[JSValueConst]):
     return JS_UNDEFINED
   assert document.parser != nil
   #TODO if insertion point is undefined... (open document)
-  if document.writeBuffers.len == 0:
+  let buffer = document.writeBuffersTop
+  if buffer == nil:
     return JS_UNDEFINED #TODO (probably covered by open above)
-  let buffer = document.writeBuffers[^1]
-  var text = ""
-  for arg in args:
-    var s: string
-    if ctx.fromJS(arg, s).isErr:
-      return JS_UNDEFINED
-    text &= s
   buffer.data &= text
   if document.parserBlockingScript == nil:
     parseDocumentWriteChunkImpl(document.parser)

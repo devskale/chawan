@@ -41,6 +41,7 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var JSValueConst):
 proc isInstanceOf*(ctx: JSContext; val: JSValueConst; tclassid: JSClassID):
     bool =
   let ctxOpaque = ctx.getOpaque()
+  let rtOpaque = JS_GetRuntime(ctx).getOpaque()
   var classid = JS_GetClassID(val)
   if classid == JS_CLASS_OBJECT:
     let p0 = JS_VALUE_GET_PTR(ctxOpaque.global)
@@ -52,8 +53,8 @@ proc isInstanceOf*(ctx: JSContext; val: JSValueConst; tclassid: JSClassID):
     if classid == tclassid:
       found = true
       break
-    if int(classid) < ctxOpaque.classes.len:
-      classid = ctxOpaque.classes[int(classid)].parent
+    if int(classid) < rtOpaque.classes.len:
+      classid = rtOpaque.classes[int(classid)].parent
     else:
       classid = 0 # not defined by us; assume parent is Object.
     if classid == 0:
@@ -357,10 +358,6 @@ proc fromJS*[T: ref object](ctx: JSContext; val: JSValueConst; res: var T):
   ?ctx.fromJS(val, nimt, x)
   res = cast[T](x)
   return ok()
-
-proc fromJSThis*[T: ptr object](ctx: JSContext; val: JSValueConst; res: var T):
-    Opt[void] =
-  return ctx.fromJS(val, res)
 
 proc fromJSThis*[T: ref object](ctx: JSContext; val: JSValueConst; res: var T):
     Opt[void] =

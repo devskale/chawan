@@ -28,11 +28,6 @@
 # * Similarly, the Nim object is kept alive so long as the JS object is alive.
 # * The patched in can_destroy hook is used to synchronize reference counts
 #   of the two objects; this way, no memory leak occurs.
-#
-# There are also toJSP variants of object converters. These work identically
-# to ref object converters, except the reference count of the closest
-# `ref object' ancestor is incremented/decremented when synchronizing refcounts
-# with the JS object pair.
 
 {.push raises: [].}
 
@@ -72,36 +67,11 @@ proc toJS*(ctx: JSContext; u8a: JSUint8Array): JSValue
 proc toJS*(ctx: JSContext; ns: NarrowString): JSValue
 proc toJS*[T: JSDict](ctx: JSContext; dict: T): JSValue
 
-# Convert Nim types to the corresponding JavaScript type, with knowledge of
-# the parent object.
-# This supports conversion of var object types.
-#
-# The idea here is to allow conversion of var objects to quasi-reference types
-# by saving a pointer to their ancestor and incrementing/decrementing the
-# ancestor's reference count instead.
-proc toJSP*[T: object](ctx: JSContext; parent: ref object; child: var T):
-  JSValue
-proc toJSP*[T: object](ctx: JSContext; parent: ptr object; child: var T):
-  JSValue
-
 # Same as toJS, but used in constructors. ctor contains the target prototype,
 # used for subclassing from JS.
 proc toJSNew*(ctx: JSContext; obj: ref object; ctor: JSValueConst): JSValue
 proc toJSNew*[T, E](ctx: JSContext; opt: Result[T, E]; ctor: JSValueConst):
   JSValue
-
-# Avoid accidentally calling toJSP on objects that we have explicit toJS
-# converters for.
-template makeToJSP(typ: untyped) =
-  template toJSP*(ctx: JSContext; parent: ref object; child: var typ): JSValue =
-    toJS(ctx, child)
-  template toJSP*(ctx: JSContext; parent: ptr object; child: var typ): JSValue =
-    toJS(ctx, child)
-makeToJSP(Table)
-makeToJSP(Option)
-makeToJSP(Result)
-makeToJSP(JSValue)
-makeToJSP(JSDict)
 
 type DefinePropertyResult* = enum
   dprException, dprSuccess, dprFail
@@ -304,21 +274,27 @@ proc toJSP0(ctx: JSContext; p, tp, toRef: pointer; ctor: JSValueConst):
   # We are constructing a new JS object, so we must add unforgeable properties
   # here.
   let ctxOpaque = ctx.getOpaque()
-  if int(class) < ctxOpaque.classes.len and
-      ctxOpaque.classes[int(class)].unforgeable.len > 0:
-    let ufp0 = addr ctxOpaque.classes[int(class)].unforgeable[0]
+  let iclass = int(class)
+  if iclass < rtOpaque.classes.len and
+      rtOpaque.classes[iclass].unforgeable.len > 0:
+    let ufp0 = addr rtOpaque.classes[iclass].unforgeable[0]
     let ufp = cast[JSCFunctionListP](ufp0)
     JS_SetPropertyFunctionList(ctx, jsObj, ufp,
-      cint(ctxOpaque.classes[int(class)].unforgeable.len))
+      cint(rtOpaque.classes[iclass].unforgeable.len))
   GC_ref(cast[RootRef](toRef))
   return jsObj
 
 type NonInheritable = (object and not RootObj) or (ref object and not RootRef)
 
+when defined(gcDestructors):
+  proc getTypeInfo2[T](x: T): pointer {.magic: "GetTypeInfoV2".}
+else:
+  template getTypeInfo2[T](x: T): pointer = getTypeInfo(x)
+
 # Get a unique pointer for each type.
 template getTypePtr*[T: NonInheritable](x: T): pointer =
   # This only seems to work for non-inheritable objects.
-  getTypeInfo(x)
+  getTypeInfo2(x)
 
 template getTypePtr*[T: RootObj](x: T): pointer {.error:
     "Please make it var".} =
@@ -328,9 +304,14 @@ template getTypePtr*(x: RootRef): pointer =
   # Dereference the object's first member, m_type.
   cast[ptr pointer](x)[]
 
-template getTypePtr*[T: RootObj](x: var T): pointer =
-  # See above.
-  cast[ptr pointer](addr x)[]
+when defined(gcDestructors):
+  proc getTypePtr*[T: RootObj](x: var T): pointer {.nodestroy.} =
+    # ARC somehow doesn't return the same pointer without this...
+    getTypePtr(cast[ref T](addr x))
+else:
+  template getTypePtr*[T: RootObj](x: var T): pointer =
+    # See above.
+    cast[ptr pointer](addr x)[]
 
 # For some reason, getTypeInfo for ref object of RootObj returns a
 # different pointer from m_type.
@@ -338,15 +319,11 @@ template getTypePtr*[T: RootObj](x: var T): pointer =
 # object returns a different type than on the same non-ref object.
 template getTypePtr*[T: RootRef](t: typedesc[T]): pointer =
   var x: typeof(t()[])
-  getTypeInfo(x)
+  getTypeInfo2(x)
 
-template getTypePtr*[T: object](t: typedesc[ref T]): pointer =
-  var x: t
-  getTypeInfo(x)
-
-template getTypePtr*[T: object](t: typedesc[T]): pointer =
-  var x: t
-  getTypeInfo(x)
+template getTypePtr*[T: ref object](t: typedesc[T]): pointer =
+  var x: T
+  getTypeInfo2(x)
 
 proc toJSRefObj(ctx: JSContext; obj: ref object): JSValue =
   let p = cast[pointer](obj)
@@ -423,25 +400,5 @@ proc toJS*[T: JSDict](ctx: JSContext; dict: T): JSValue =
     return obj
   JS_FreeValue(ctx, obj)
   return JS_EXCEPTION
-
-proc toJSP1(ctx: JSContext; p, tp, toRef: pointer): JSValue =
-  JS_GetRuntime(ctx).getOpaque().parentMap[p] = toRef
-  return ctx.toJSP0(p, tp, toRef, JS_UNDEFINED)
-
-proc toJSP*[T: object](ctx: JSContext; parent: ref object; child: var T):
-    JSValue =
-  let p = addr child
-  # Save parent as the original ancestor for this tree.
-  let tp = getTypePtr(child)
-  return ctx.toJSP1(p, tp, cast[pointer](parent))
-
-proc toJSP*[T: object](ctx: JSContext; parent: ptr object; child: var T):
-    JSValue =
-  let p = addr child
-  # Increment the reference count of parent's root ancestor, and save the
-  # increment/decrement callbacks for the child as well.
-  let grandparent = JS_GetRuntime(ctx).getOpaque().refmap[parent]
-  let tp = getTypePtr(child)
-  return ctx.toJSP1(p, tp, grandparent)
 
 {.pop.} # raises: []
