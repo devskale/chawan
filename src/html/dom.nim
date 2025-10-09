@@ -5,6 +5,7 @@ import std/hashes
 import std/options
 import std/posix
 import std/sets
+import std/setutils
 import std/strutils
 import std/tables
 import std/times
@@ -216,15 +217,14 @@ type
   CollectionMatchFun = proc(node: Node): bool {.raises: [].}
 
   Collection = ref object of RootObj
-    islive: bool
     childonly: bool
     invalid: bool
     inclusive: bool
     root: Node
     match: CollectionMatchFun
     snapshot: seq[Node]
-    # for some reason, refs disappear before I get to destroy the collection
-    # (in ORC only, refc works fine)
+    # if not nil, this is a live collection.  (uses a ptr instead of a ref
+    # because ORC likes to set refs to nil before the destructor is called)
     document: ptr DocumentObj
 
   NodeIterator = ref object of Collection
@@ -358,22 +358,32 @@ type
     namespace*: CAtom
     value*: string
 
+  CustomElementState = enum
+    cesUndefined = "undefined"
+    cesFailed = "failed"
+    cesUncustomized = "uncustomized"
+    cesPrecustomized = "precustomized"
+    cesCustom = "custom"
+
+  ElementFlag = enum
+    efHint, efHover
+
   Element* = ref object of ParentNode
-    namespaceURI* {.jsget.}: CAtom
-    prefix {.jsget.}: CAtom
-    internalHover: bool
-    childElIndicesInvalid: bool
-    hint*: bool # mark for "hints" mode
-    selfDepends: set[DependencyType]
-    localName* {.jsget.}: CAtom
-    id* {.jsget.}: CAtom
-    name: CAtom
-    internalElIndex: int
-    classList* {.jsget.}: DOMTokenList
-    attrs*: seq[AttrData] # sorted by int(qualifiedName)
-    cachedStyle*: CSSStyleDeclaration
-    computed*: CSSValues
-    box*: RootRef # CSSBox
+    namespaceURI* {.jsget.}: CAtom # 4
+    prefix {.jsget.}: CAtom # 8
+    childElIndicesInvalid: bool # 9
+    flags: set[ElementFlag] # 10
+    selfDepends: set[DependencyType] # 11
+    custom: CustomElementState # 12
+    localName* {.jsget.}: CAtom # 16
+    id* {.jsget.}: CAtom # 20
+    name: CAtom # 24
+    internalElIndex: int # 32
+    classList* {.jsget.}: DOMTokenList # 40
+    attrs*: seq[AttrData] # 48, sorted by int(qualifiedName)
+    cachedStyle*: CSSStyleDeclaration # 56
+    computed*: CSSValues # 64
+    box*: RootRef # 72, CSSBox
 
   AttrDummyElement = ref object of Element
 
@@ -2380,14 +2390,13 @@ proc populateCollection(collection: Collection) =
 
 proc refreshCollection(collection: Collection) =
   if collection.invalid:
-    assert collection.islive
+    assert collection.document != nil
     collection.snapshot.setLen(0)
     collection.populateCollection()
     collection.invalid = false
 
 proc finalize0(collection: Collection) =
-  if collection.islive:
-    assert collection.document != nil
+  if collection.document != nil:
     let i = collection.document.liveCollections.find(collection.id)
     assert i != -1
     collection.document.liveCollections.del(i)
@@ -2408,6 +2417,10 @@ proc mark(rt: JSRuntime; this: NodeIterator; markFun: JS_MarkFunc) {.jsmark.} =
 proc finalize(collection: HTMLAllCollection) {.jsfin.} =
   collection.finalize0()
 
+proc finalize(document: Document) {.jsfin.} =
+  for it in document.liveCollections:
+    cast[Collection](it).document = nil
+
 proc getLength(collection: Collection): int =
   collection.refreshCollection()
   return collection.snapshot.len
@@ -2420,12 +2433,11 @@ proc newCollection[T: Collection](root: Node; match: CollectionMatchFun;
     islive, childonly: bool; inclusive = false): T =
   let document = root.document
   let collection = T(
-    islive: islive,
     childonly: childonly,
     inclusive: inclusive,
     match: match,
     root: root,
-    document: cast[ptr DocumentObj](document)
+    document: if islive: cast[ptr DocumentObj](document) else: nil
   )
   if islive:
     document.liveCollections.add(collection.id)
@@ -2798,6 +2810,24 @@ proc invalidateCollections(document: Document) =
   for id in document.liveCollections:
     cast[Collection](id).invalid = true
 
+proc isValidCustomElementName(atom: CAtom): bool =
+  const Disallowed = [
+    satAnnotationXml, satColorDashProfile, satFontDashFace,
+    satFontDashFaceDashSrc, satFontDashFaceDashUri, satFontDashFaceDashFormat,
+    satFontDashFaceDashName, satMissingDashGlyph
+  ]
+  if atom.toStaticAtom() in Disallowed:
+    return false
+  let s = $atom
+  if s.len <= 0 or s[0] notin AsciiLowerAlpha:
+    return false
+  var dash = false
+  for c in s:
+    if c in AsciiUpperAlpha:
+      return false
+    dash = dash or c == '-'
+  dash
+
 #TODO options/custom elements
 proc createElement(ctx: JSContext; document: Document; localName: string):
     Opt[Element] {.jsfunc.} =
@@ -2811,7 +2841,8 @@ proc createElement(ctx: JSContext; document: Document; localName: string):
     Namespace.HTML
   else:
     NO_NAMESPACE
-  ok(document.newElement(localName, namespace))
+  let element = document.newElement(localName, namespace)
+  ok(element)
 
 proc validateAndExtract(ctx: JSContext; document: Document; qname: string;
     namespace, prefixOut, localNameOut: var CAtom): Opt[void] =
@@ -4148,11 +4179,12 @@ proc insertAdjacentText(ctx: JSContext; this: Element; position, s: string):
   ctx.toUndefined(ctx.insertAdjacent(this, position, this.document.newText(s)))
 
 proc hover*(element: Element): bool =
-  return element.internalHover
+  return efHover in element.flags
 
 proc setHover*(element: Element; hover: bool) =
-  element.internalHover = hover
-  element.invalidate(dtHover)
+  if element.hover != hover:
+    element.flags.toggle({efHover})
+    element.invalidate(dtHover)
 
 proc parseColor(element: Element; s: string): ARGBColor =
   var ctx = initCSSParser(s)
@@ -4482,7 +4514,11 @@ proc newElement*(document: Document; localName, namespaceURI, prefix: CAtom):
   element.internalNext = document
   element.classList = element.newDOMTokenList(satClassList)
   element.internalElIndex = -1
-  return element
+  element.custom = if localName.isValidCustomElementName():
+    cesUndefined
+  else:
+    cesUncustomized
+  element
 
 proc newElement*(document: Document; localName: CAtom;
     namespace = Namespace.HTML; prefix = NO_PREFIX): Element =
@@ -4768,9 +4804,12 @@ proc blur(ctx: JSContext; element: Element) {.jsfunc.} =
     if element.document.focus == element:
       element.document.setFocus(nil)
 
+proc hint*(element: Element): bool =
+  efHint in element.flags
+
 proc setHint*(element: Element; hint: bool) =
   if element.hint != hint:
-    element.hint = hint
+    element.flags.toggle({efHint})
     element.invalidate()
 
 proc getCharset(element: Element): Charset =
@@ -4778,6 +4817,9 @@ proc getCharset(element: Element): Charset =
   if charset != CHARSET_UNKNOWN:
     return charset
   return element.document.charset
+
+proc isDefined*(element: Element): bool =
+  element.custom in {cesUncustomized, cesCustom}
 
 # DOMRect
 proc left(rect: DOMRect): float64 {.jsfget.} =
