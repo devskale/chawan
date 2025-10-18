@@ -1777,21 +1777,21 @@ proc onclick(container: Container; res: ClickResult; save: bool) =
   if res.readline.isSome:
     container.onReadLine(res.readline.get)
 
-proc click*(container: Container) {.jsfunc.} =
+proc click*(container: Container; n = 1) {.jsfunc.} =
   if container.iface == nil:
     return
-  container.iface.click(container.cursorx, container.cursory)
+  container.iface.click(container.cursorx, container.cursory, n)
     .then(proc(res: ClickResult) = container.onclick(res, save = false))
 
-proc contextMenu*(container: Container) {.jsfunc.} =
+proc contextMenu*(container: Container): Promise[bool] {.jsfunc.} =
   if container.iface == nil:
     return
-  container.iface.contextMenu(container.cursorx, container.cursory)
+  return container.iface.contextMenu(container.cursorx, container.cursory)
 
 proc saveLink*(container: Container) {.jsfunc.} =
   if container.iface == nil:
     return
-  container.iface.click(container.cursorx, container.cursory)
+  container.iface.click(container.cursorx, container.cursory, 1)
     .then(proc(res: ClickResult) = container.onclick(res, save = true))
 
 proc saveSource*(container: Container) {.jsfunc.} =

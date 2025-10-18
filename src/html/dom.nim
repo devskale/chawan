@@ -919,6 +919,7 @@ const ReflectTable0 = [
   makef(satOnfocus, satFocus),
   makef(satOnsubmit, satSubmit),
   makef(satOncontextmenu, satContextmenu),
+  makef(satOndblclick, satDblclick),
   makes(satSlot, AllTagTypes),
   makes(satTitle, AllTagTypes),
   makes(satLang, AllTagTypes),
@@ -1662,7 +1663,7 @@ proc nodeValue(ctx: JSContext; node: Node): JSValue {.jsfget.} =
 proc textContent*(node: Node): string =
   result = ""
   if node of CharacterData:
-    result = CharacterData(node).data
+    result = CharacterData(node).data.s
   elif node of ParentNode:
     let node = ParentNode(node)
     for child in node.childList:
@@ -1931,7 +1932,7 @@ proc clone(node: Node; document = none(Document); deep = false): Node =
     Node(dummy.newAttr(0))
   elif node of Text:
     let text = Text(node)
-    let x = document.newText(text.data)
+    let x = document.newText(text.data.s)
     Node(x)
   elif node of CDATASection:
     let x = document.newCDATASection("")
@@ -1940,11 +1941,11 @@ proc clone(node: Node; document = none(Document); deep = false): Node =
     Node(x)
   elif node of Comment:
     let comment = Comment(node)
-    let x = document.newComment(comment.data)
+    let x = document.newComment(comment.data.s)
     Node(x)
   elif node of ProcessingInstruction:
     let procinst = ProcessingInstruction(node)
-    let x = document.newProcessingInstruction(procinst.target, procinst.data)
+    let x = document.newProcessingInstruction(procinst.target, procinst.data.s)
     Node(x)
   elif node of Document:
     let document = Document(node)
@@ -2062,14 +2063,14 @@ proc serializeFragmentInner(res: var string; child: Node; parentType: TagType) =
       TAG_PLAINTEXT, TAG_NOSCRIPT
     }
     if parentType in LiteralTags:
-      res &= text.data
+      res &= text.data.s
     else:
-      res &= ($text.data).htmlEscape(mode = emText)
+      res &= text.data.s.htmlEscape(mode = emText)
   elif child of Comment:
-    res &= "<!--" & Comment(child).data & "-->"
+    res &= "<!--" & Comment(child).data.s & "-->"
   elif child of ProcessingInstruction:
     let inst = ProcessingInstruction(child)
-    res &= "<?" & inst.target & " " & inst.data & '>'
+    res &= "<?" & inst.target & " " & inst.data.s & '>'
   elif child of DocumentType:
     res &= "<!DOCTYPE " & DocumentType(child).name & '>'
 
@@ -2132,36 +2133,47 @@ proc setTextContent(ctx: JSContext; node: Node; data: JSValueConst): Opt[void]
   return ctx.setNodeValue(node, data)
 
 proc toNode(ctx: JSContext; nodes: openArray[JSValueConst]; document: Document):
-    Node =
-  var ns: seq[Node] = @[]
+    Opt[Node] =
+  var node: Node = nil
+  var fragment = false
   for it in nodes:
-    var node: Node
-    if ctx.fromJS(it, node).isOk:
-      ns.add(node)
-    else:
+    var node0: Node
+    if ctx.fromJS(it, node0).isErr:
       var s: string
-      if ctx.fromJS(it, s).isOk:
-        ns.add(ctx.newText(s))
-  if ns.len == 1:
-    return ns[0]
-  let fragment = document.newDocumentFragment()
-  for node in ns:
-    fragment.append(node)
-  return fragment
+      ?ctx.fromJS(it, s)
+      node0 = ctx.newText(s)
+    if node == nil:
+      node = node0
+    else:
+      if not fragment:
+        let fragment = document.newDocumentFragment()
+        fragment.append(node)
+        node = fragment
+      node.append(node0)
+  if node == nil:
+    node = document.newDocumentFragment()
+  ok(node)
 
 proc prependImpl(ctx: JSContext; parent: Node; nodes: openArray[JSValueConst]):
     JSValue =
   let node = ctx.toNode(nodes, parent.document)
-  return ctx.insertBeforeUndefined(parent, node, option(parent.firstChild))
+  if node.isErr:
+    return JS_EXCEPTION
+  return ctx.insertBeforeUndefined(parent, node.get, option(parent.firstChild))
 
 proc appendImpl(ctx: JSContext; parent: Node; nodes: openArray[JSValueConst]):
     JSValue =
   let node = ctx.toNode(nodes, parent.document)
-  return ctx.insertBeforeUndefined(parent, node, none(Node))
+  if node.isErr:
+    return JS_EXCEPTION
+  return ctx.insertBeforeUndefined(parent, node.get, none(Node))
 
 proc replaceChildrenImpl(ctx: JSContext; parent: Node;
     nodes: openArray[JSValueConst]): JSValue =
-  let node = ctx.toNode(nodes, parent.document)
+  let node0 = ctx.toNode(nodes, parent.document)
+  if node0.isErr:
+    return JS_EXCEPTION
+  let node = node0.get
   let x = parent.preInsertionValidity(node, nil)
   if x.isErr:
     return ctx.insertThrow(x.error)
@@ -2252,7 +2264,7 @@ proc childTextContent*(node: ParentNode): string =
   result = ""
   for child in node.childList:
     if child of Text:
-      result &= Text(child).data
+      result &= Text(child).data.s
 
 proc getElementsByTagNameImpl(root: ParentNode; tagName: string):
     HTMLCollection =
@@ -3850,7 +3862,7 @@ proc isFirstVisualNode*(element: Element): bool =
     for child in parent.childList:
       if child == element:
         return true
-      if child of Text and not Text(child).data.onlyWhitespace():
+      if child of Text and not Text(child).data.s.onlyWhitespace():
         break
   return false
 
@@ -3861,7 +3873,7 @@ proc isLastVisualNode*(element: Element): bool =
       return true
     if child of Element:
       break
-    if child of Text and not Text(child).data.onlyWhitespace():
+    if child of Text and not Text(child).data.s.onlyWhitespace():
       break
   return false
 
@@ -4269,10 +4281,11 @@ proc reflectScriptAttr(element: Element; name: StaticAtom;
     satOnchange: satChange,
     satOnload: satLoad,
     satOnerror: satError,
-    satOnfocus: satFocus,
     satOnblur: satBlur,
+    satOnfocus: satFocus,
     satOnsubmit: satSubmit,
-    satOncontextmenu: satContextmenu
+    satOncontextmenu: satContextmenu,
+    satOndblclick: satDblclick,
   }
   for (n, t) in ScriptEventMap:
     if n == name:
@@ -5399,7 +5412,7 @@ proc jsForm(this: HTMLInputElement): HTMLFormElement {.jsfget: "form".} =
 proc value*(this: HTMLInputElement): lent string {.jsfget.} =
   if this.internalValue == nil:
     this.internalValue = newRefString("")
-  return this.internalValue
+  return this.internalValue.s
 
 proc setValue*(this: HTMLInputElement; value: sink string) {.jsfset: "value".} =
   if this.internalValue == nil:
@@ -5480,7 +5493,7 @@ proc text(option: HTMLOptionElement): string {.jsfget.} =
     let parent = child.parentElement
     if child of Text and (parent.tagTypeNoNS != TAG_SCRIPT or
         parent.namespaceURI notin [satNamespaceHTML, satNamespaceSVG]):
-      s &= Text(child).data
+      s &= Text(child).data.s
   return s.stripAndCollapse()
 
 proc value*(option: HTMLOptionElement): string {.jsfget.} =

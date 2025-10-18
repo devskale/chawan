@@ -115,7 +115,7 @@ type
 
   # Mouse data
   MouseClickState = enum
-    mcsNormal, mcsDouble
+    mcsNormal, mcsDouble, mcsTriple
 
   MouseMoveType = enum
     mmtNone, mmtDrag, mmtSelect
@@ -536,14 +536,14 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
   pager.initLoader()
   block history:
     let hist = newHistory(pager.config.external.historySize, getTime().toUnix())
-    let ps = newPosixStream(pager.config.external.historyFile)
+    let ps = newPosixStream($pager.config.external.historyFile)
     if ps != nil:
       if hist.parse(ps).isErr:
         hist.transient = true
         pager.alert("failed to read history")
     pager.lineHist[lmLocation] = hist
   block cookie:
-    let ps = newPosixStream(pager.config.external.cookieFile)
+    let ps = newPosixStream($pager.config.external.cookieFile)
     if ps != nil:
       if pager.cookieJars.parse(ps, pager.alerts).isErr:
         pager.cookieJars.transient = true
@@ -561,8 +561,8 @@ proc cleanup(pager: Pager) =
         # Basedir case: data dir is not the same as config dir.
         # I'd try to make parent dirs but in all likelihood some other
         # program has already spammed this nonsense into $HOME so whatever.
-        discard mkdir(cstring(pager.config.external.tmpdir), 0o700)
-      if hist.write(pager.config.external.historyFile).isErr:
+        discard mkdir(cstring($pager.config.external.tmpdir), 0o700)
+      if hist.write($pager.config.external.historyFile).isErr:
         if not hasConfigDir:
           # History is enabled by default, so do not print the error
           # message if no config dir exists.
@@ -570,8 +570,8 @@ proc cleanup(pager: Pager) =
     if not pager.cookieJars.transient:
       if hasConfigDir and not dirExists(pager.config.dataDir):
         # see above
-        discard mkdir(cstring(pager.config.external.tmpdir), 0o700)
-      if pager.cookieJars.write(pager.config.external.cookieFile).isErr:
+        discard mkdir(cstring($pager.config.external.tmpdir), 0o700)
+      if pager.cookieJars.write($pager.config.external.cookieFile).isErr:
         pager.alert("failed to save cookies")
     for msg in pager.alerts:
       discard cast[ChaFile](stderr).write("cha: " & msg & '\n')
@@ -728,6 +728,8 @@ proc handleMouseInputGeneric(pager: Pager; input: MouseInput) =
     if input.pos == pager.mouse.lastPressed[input.button]:
       if pager.mouse.click[button] < MouseClickState.high:
         inc pager.mouse.click[button]
+    else:
+      pager.mouse.click[button] = mcsNormal
   of mitMove: discard
   of mitRelease:
     if pressed != input.pos:
@@ -749,13 +751,13 @@ proc handleMouseInput(pager: Pager; input: MouseInput; container: Container) =
         let prevy = container.cursory
         container.setAbsoluteCursorXY(input.pos.x, input.pos.y)
         if prevx == container.cursorx and prevy == container.cursory:
-          discard pager.evalAction("click", 0)
+          discard pager.evalAction("click", int32(pager.mouse.click[button]))
       pager.mouse.moveType = mmtNone
     of mitPress:
       if pager.hasMouseSelection():
         pager.container.clearSelection()
     of mitMove:
-      if pager.mouse.click[button] == mcsDouble:
+      if pager.mouse.click[button] >= mcsDouble:
         case pager.mouse.moveType
         of mmtNone:
           # if mouse moved downwards, grab.
@@ -777,10 +779,16 @@ proc handleMouseInput(pager: Pager; input: MouseInput; container: Container) =
   of mibRight:
     if input.t == mitPress and input.pos.y < pager.attrs.height - 1:
       # w3m uses release, but I like press better
-      if container.currentSelection == nil:
+      if container.currentSelection == nil and mimMeta notin input.mods:
         container.setAbsoluteCursorXY(input.pos.x, input.pos.y)
-      pager.openMenu(input.pos.x, input.pos.y)
-      pager.menu.unselect()
+        container.contextMenu().then(proc(canceled: bool) =
+          if not canceled:
+            pager.openMenu(input.pos.x, input.pos.y)
+            pager.menu.unselect()
+        )
+      else:
+        pager.openMenu(input.pos.x, input.pos.y)
+        pager.menu.unselect()
   of mibThumbInner:
     if input.t == mitPress:
       discard pager.evalAction("prevBuffer", 0)
@@ -1166,7 +1174,7 @@ proc redraw(pager: Pager) {.jsfunc.} =
     pager.lineedit.redraw = true
 
 proc getTempFile(pager: Pager; ext = ""): string =
-  result = pager.config.external.tmpdir / "chaptmp" &
+  result = $pager.config.external.tmpdir / "chaptmp" &
     $pager.loader.clientPid & "-" & $pager.tmpfSeq
   if ext != "":
     result &= "."
@@ -1828,7 +1836,7 @@ proc getEditorCommand(pager: Pager; file: string; line = 1): string {.jsfunc.} =
 
 proc openInEditor(pager: Pager; input: var string): bool =
   let tmpf = pager.getTempFile()
-  discard mkdir(cstring(pager.config.external.tmpdir), 0o700)
+  discard mkdir(cstring($pager.config.external.tmpdir), 0o700)
   input &= '\n'
   if chafile.writeFile(tmpf, input, 0o600).isErr:
     pager.alert("failed to write temporary file")
@@ -2318,6 +2326,7 @@ proc updateReadLineISearch(pager: Pager; linemode: LineMode) =
     of lesEdit:
       if lineedit.news != "":
         pager.iregex = pager.compileSearchRegex(lineedit.news)
+        pager.regex = none(Regex)
       pager.container.popCursorPos(true)
       pager.container.pushCursorPos()
       if pager.iregex.isOk:
@@ -2328,14 +2337,17 @@ proc updateReadLineISearch(pager: Pager; linemode: LineMode) =
         else:
           pager.container.cursorPrevMatch(pager.iregex.get, wrap, false, 1)
     of lesFinish:
-      if lineedit.news != "":
-        pager.regex = pager.checkRegex(pager.iregex)
+      if lineedit.news == "" and pager.regex.isNone:
+        pager.container.popCursorPos()
       else:
-        pager.searchNext()
-      pager.reverseSearch = linemode == lmISearchB
-      pager.container.markPos()
+        if lineedit.news != "":
+          pager.regex = pager.checkRegex(pager.iregex)
+        else:
+          pager.searchNext()
+        pager.reverseSearch = linemode == lmISearchB
+        pager.container.markPos()
+        pager.container.sendCursorPosition()
       pager.container.clearSearchHighlights()
-      pager.container.sendCursorPosition()
       pager.container.redraw = true
       pager.isearchpromise = newResolvedPromise()
     return nil
@@ -2349,11 +2361,14 @@ proc saveTo(pager: Pager; data: LineDataDownload; path: string) =
     pager.lineData = nil
     if pager.config.external.showDownloadPanel:
       let request = newRequest("about:downloads")
-      let downloads = pager.pinned.downloads
-      if downloads != nil:
+      let old = pager.pinned.downloads
+      let downloads = pager.gotoURL(request, history = false,
+        replace = old)
+      if old == nil:
+        pager.addContainer(downloads)
+      else:
         pager.setContainer(downloads)
-      pager.pinned.downloads = pager.gotoURL(request, history = false,
-        replace = downloads)
+      pager.pinned.downloads = downloads
   else:
     pager.ask("Failed to save to " & path & ". Retry?").then(
       proc(x: bool) =
@@ -2505,10 +2520,12 @@ proc jsGotoURL(ctx: JSContext; pager: Pager; v: JSValueConst;
   pager.initGotoURL(request, CHARSET_UNKNOWN, referrer = nil, t.cookie,
     loaderConfig, bufferConfig, filterCmd)
   bufferConfig.scripting = t.scripting.get(bufferConfig.scripting)
+  let replace = t.replace.get(nil)
   let container = pager.gotoURL0(request, t.save, t.history, bufferConfig,
     loaderConfig, title = "", t.contentType.get(""), redirectDepth = 0,
-    url = nil, t.replace.get(nil), filterCmd)
-  pager.addContainer(container)
+    url = nil, replace, filterCmd)
+  if replace == nil:
+    pager.addContainer(container)
   ok(container)
 
 # Reload the page in a new buffer, then kill the previous buffer.
@@ -2718,7 +2735,7 @@ proc runMailcapReadFile(pager: Pager; stream: PosixStream;
 # If needsterminal, leave stderr and stdout open and wait for the process.
 proc runMailcapWriteFile(pager: Pager; stream: PosixStream;
     needsterminal: bool; cmd, outpath: string) =
-  discard mkdir(cstring(pager.config.external.tmpdir), 0o700)
+  discard mkdir(cstring($pager.config.external.tmpdir), 0o700)
   if needsterminal:
     discard pager.term.quit() #TODO
     let os = newPosixStream(dup(pager.term.ostream.fd))

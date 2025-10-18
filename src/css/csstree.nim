@@ -72,12 +72,11 @@ type
     name: CAtom
     n: int32
 
-  TreeContext = object
+  TreeContext = ref object
     markLinks: bool
     quoteLevel: int
     linkHintChars: ref seq[uint32]
     counters: seq[CSSCounter]
-    rootProperties: CSSValues
     stackItem: StackItem
     absoluteHead: CSSAbsolute
     absoluteTail: CSSAbsolute
@@ -92,20 +91,17 @@ type
     captionSeen: bool
     anonComputed: CSSValues
     anonInlineComputed: CSSValues
-    pctx: ptr TreeContext
+    ctx: TreeContext
 
 # Forward declarations
-proc build(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
+proc build(ctx: TreeContext; cached: CSSBox; styledNode: StyledNode;
   forceZ: bool): CSSBox
-
-template ctx(frame: TreeFrame): var TreeContext =
-  frame.pctx[]
 
 when defined(debug):
   proc `$`*(node: StyledNode): string =
     case node.t
     of stText:
-      return node.text
+      return node.text.s
     of stElement:
       if node.pseudo != peNone:
         return $node.element.tagType & "::" & $node.pseudo
@@ -121,7 +117,7 @@ iterator mritems(counters: var seq[CSSCounter]): var CSSCounter =
   for i in countdown(counters.high, 0):
     yield counters[i]
 
-proc incCounter(ctx: var TreeContext; name: CAtom; n: int32; element: Element) =
+proc incCounter(ctx: TreeContext; name: CAtom; n: int32; element: Element) =
   var found = false
   for counter in ctx.counters.mritems:
     if counter.name == name:
@@ -132,7 +128,7 @@ proc incCounter(ctx: var TreeContext; name: CAtom; n: int32; element: Element) =
   if not found: # instantiate a new counter
     ctx.counters.add(CSSCounter(name: name, n: n, element: element))
 
-proc setCounter(ctx: var TreeContext; name: CAtom; n: int32; element: Element) =
+proc setCounter(ctx: TreeContext; name: CAtom; n: int32; element: Element) =
   var found = false
   for counter in ctx.counters.mritems:
     if counter.name == name:
@@ -142,7 +138,7 @@ proc setCounter(ctx: var TreeContext; name: CAtom; n: int32; element: Element) =
   if not found: # instantiate a new counter
     ctx.counters.add(CSSCounter(name: name, n: n, element: element))
 
-proc resetCounter(ctx: var TreeContext; name: CAtom; n: int32;
+proc resetCounter(ctx: TreeContext; name: CAtom; n: int32;
     element: Element) =
   var found = false
   for counter in ctx.counters.mritems:
@@ -157,7 +153,7 @@ proc resetCounter(ctx: var TreeContext; name: CAtom; n: int32;
   if not found:
     ctx.counters.add(CSSCounter(name: name, n: n, element: element))
 
-proc counter(ctx: var TreeContext; name: CAtom): int32 =
+proc counter(ctx: TreeContext; name: CAtom): int32 =
   for counter in ctx.counters.mritems:
     if counter.name == name:
       return counter.n
@@ -167,9 +163,9 @@ proc inheritFor(frame: TreeFrame; display: CSSDisplay): CSSValues =
   result = frame.computed.inheritProperties()
   result{"display"} = display
 
-proc initTreeFrame(ctx: var TreeContext; parent: Element; computed: CSSValues):
+proc initTreeFrame(ctx: TreeContext; parent: Element; computed: CSSValues):
     TreeFrame =
-  result = TreeFrame(parent: parent, computed: computed, pctx: addr ctx)
+  result = TreeFrame(parent: parent, computed: computed, ctx: ctx)
 
 proc getAnonInlineComputed(frame: var TreeFrame): CSSValues =
   if frame.anonInlineComputed == nil:
@@ -185,7 +181,7 @@ proc displayed(frame: TreeFrame; text: RefString): bool =
   return frame.computed{"display"} == DisplayInline or
     frame.lastChildWasInline or
     frame.computed{"white-space"} in WhiteSpacePreserve or
-    not text.onlyWhitespace()
+    not text.s.onlyWhitespace()
 
 #TODO implement table columns
 const DisplayNoneLike = {
@@ -253,8 +249,9 @@ proc madd(s: var seq[StyledNode]; node: StyledNode): var StyledNode =
 proc getParent(frame: var TreeFrame; display: CSSDisplay): var seq[StyledNode] =
   let parentDisplay = frame.computed{"display"}
   if display in DisplayInlineBlockLike and parentDisplay != DisplayInline:
+    let computed = frame.getAnonInlineComputed()
     return frame.getParent(DisplayInline)
-      .madd(initStyledAnon(frame.parent, frame.ctx.rootProperties)).anonChildren
+      .madd(initStyledAnon(frame.parent, computed)).anonChildren
   case parentDisplay
   of DisplayInnerFlex, DisplayInnerGrid:
     if display in DisplayOuterInline:
@@ -459,6 +456,17 @@ proc addAnchorChildren(frame: var TreeFrame; anchor: HTMLAnchorElement) =
     frame.addPseudo(peLinkMarker)
   frame.addElementChildren()
 
+proc addProgress(frame: var TreeFrame; element: Element) =
+  if element.attr(satValue) != "":
+    let computed = frame.computed.inheritProperties()
+    computed{"display"} = DisplayBlock
+    let n = frame.computed{"-cha-input-intrinsic-size"}
+    computed{"width"} = cssLengthFrac(clamp(n, 0, 1))
+    computed{"border-bottom-style"} = BorderStyleHash
+    frame.addAnon(computed, @[])
+  else:
+    frame.addElementChildren()
+
 proc addChildren(frame: var TreeFrame) =
   case frame.parent.tagType
   of TAG_INPUT: frame.addInputChildren(HTMLInputElement(frame.parent))
@@ -472,6 +480,7 @@ proc addChildren(frame: var TreeFrame) =
   of TAG_BR: frame.addBr()
   of TAG_IFRAME: frame.addText("[iframe]")
   of TAG_FRAME: frame.addText("[frame]")
+  of TAG_PROGRESS: frame.addProgress(frame.parent)
   of TAG_OPTION:
     let option = HTMLOptionElement(frame.parent)
     frame.addOptionChildren(option)
@@ -575,9 +584,9 @@ proc matchCache(node: StyledNode; box: CSSBox): bool =
         # parent so it would be pointless.
         # (That does bring up the question why we have a computed field for
         # text boxes at at all.  I really don't know...)
-        box.keepLayout = box.len == node.text.s.len and
+        box.keepLayout = box.len == node.text.len and
           (box.text == node.text or box.text.s == node.text.s)
-        box.len = node.text.s.len
+        box.len = node.text.len
         box.computed = node.computed
         box.text = node.text
         return true
@@ -619,7 +628,7 @@ proc takeCache(node: StyledNode; box: CSSBox): CSSBox =
     return box
   nil
 
-proc buildInnerBox(ctx: var TreeContext; frame: TreeFrame; cached: CSSBox;
+proc buildInnerBox(ctx: TreeContext; frame: TreeFrame; cached: CSSBox;
     node: StyledNode): CSSBox =
   let display = frame.computed{"display"}
   var cachedIt = if cached != nil: cached.firstChild else: nil
@@ -645,7 +654,7 @@ proc buildInnerBox(ctx: var TreeContext; frame: TreeFrame; cached: CSSBox;
   box.keepLayout = box.keepLayout and keepLayout and cachedIt == nil
   box
 
-proc applyCounters(ctx: var TreeContext; styledNode: StyledNode;
+proc applyCounters(ctx: TreeContext; styledNode: StyledNode;
     firstSetCounterIdx: var int) =
   for counter in styledNode.computed{"counter-reset"}:
     ctx.resetCounter(counter.name, counter.num, styledNode.element)
@@ -659,7 +668,7 @@ proc applyCounters(ctx: var TreeContext; styledNode: StyledNode;
   for counter in styledNode.computed{"counter-set"}:
     ctx.setCounter(counter.name, counter.num, styledNode.element)
 
-proc resetCounters(ctx: var TreeContext; element: Element;
+proc resetCounters(ctx: TreeContext; element: Element;
     countersLen, firstElementIdx, firstSetCounterIdx: int) =
   ctx.counters.setLen(countersLen)
   # Special case list-item, because the spec is broken.
@@ -674,8 +683,7 @@ proc resetCounters(ctx: var TreeContext; element: Element;
       ctx.counters.delete(i)
       break
 
-proc pushStackItem(ctx: var TreeContext; styledNode: StyledNode):
-    StackItem =
+proc pushStackItem(ctx: TreeContext; styledNode: StyledNode): StackItem =
   let index = styledNode.computed{"z-index"}
   let stack = StackItem(index: index.num)
   ctx.stackItem.children.add(stack)
@@ -683,13 +691,13 @@ proc pushStackItem(ctx: var TreeContext; styledNode: StyledNode):
     ctx.stackItem = stack
   return stack
 
-proc popStackItem(ctx: var TreeContext; old: StackItem) =
+proc popStackItem(ctx: TreeContext; old: StackItem) =
   let stackItem = ctx.stackItem
   if stackItem != old:
     stackItem.children.sort(proc(x, y: StackItem): int = cmp(x.index, y.index))
   ctx.stackItem = old
 
-proc addAbsolute(ctx: var TreeContext; box: CSSBox) =
+proc addAbsolute(ctx: TreeContext; box: CSSBox) =
   let absolute = CSSAbsolute(box: BlockBox(box))
   if ctx.absoluteHead == nil:
     ctx.absoluteHead = absolute
@@ -697,7 +705,7 @@ proc addAbsolute(ctx: var TreeContext; box: CSSBox) =
     ctx.absoluteTail.next = absolute
   ctx.absoluteTail = absolute
 
-proc addFixed(ctx: var TreeContext; box: CSSBox) =
+proc addFixed(ctx: TreeContext; box: CSSBox) =
   let absolute = CSSAbsolute(box: BlockBox(box))
   if ctx.fixedHead == nil:
     ctx.fixedHead = absolute
@@ -705,7 +713,7 @@ proc addFixed(ctx: var TreeContext; box: CSSBox) =
     ctx.fixedTail.next = absolute
   ctx.fixedTail = absolute
 
-proc buildOuterBox(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
+proc buildOuterBox(ctx: TreeContext; cached: CSSBox; styledNode: StyledNode;
     forceZ: bool): CSSBox =
   let oldCountersLen = ctx.counters.len
   var firstSetCounterIdx: int
@@ -742,7 +750,7 @@ proc buildOuterBox(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
     else: discard
   return box
 
-proc build(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
+proc build(ctx: TreeContext; cached: CSSBox; styledNode: StyledNode;
     forceZ: bool): CSSBox =
   case styledNode.t
   of stElement:
@@ -755,7 +763,7 @@ proc build(ctx: var TreeContext; cached: CSSBox; styledNode: StyledNode;
       computed: styledNode.computed,
       element: styledNode.element,
       text: styledNode.text,
-      len: styledNode.text.s.len
+      len: styledNode.text.len
     )
   of stBr:
     if cached != nil:
@@ -803,8 +811,7 @@ proc buildTree*(element: Element; cached: CSSBox; markLinks: bool; nhints: int;
     computed: element.computed
   )
   let stack = StackItem()
-  var ctx = TreeContext(
-    rootProperties: rootProperties(),
+  let ctx = TreeContext(
     markLinks: markLinks,
     stackItem: stack,
     linkHintChars: linkHintChars
@@ -820,14 +827,6 @@ proc buildTree*(element: Element; cached: CSSBox; markLinks: bool; nhints: int;
   stack.box = root
   root.absolute = ctx.absoluteHead
   ctx.popStackItem(nil)
-  # fixed boxes are appended in the wrong order, so invert it
-  var it = ctx.fixedHead
-  var prev: CSSAbsolute = nil
-  while it != nil:
-    let next = it.next
-    it.next = prev
-    prev = it
-    it = next
-  return (stack, ctx.fixedTail)
+  return (stack, ctx.fixedHead)
 
 {.pop.} # raises: []

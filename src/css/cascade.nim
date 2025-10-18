@@ -120,7 +120,7 @@ proc addItems(ctx: var ApplyValueContext; toks: var seq[CSSToken];
     toks.add(item.toks)
   ok()
 
-proc resolveVariable(ctx: var ApplyValueContext; p: CSSAnyPropertyType;
+proc resolveVariable(ctx: var ApplyValueContext; p: CSSWidePropertyType;
     cvar: CSSVarEntry; revertType: RevertType): Opt[void] =
   let vars = ctx.vals.vars
   for it in cvar.resolved:
@@ -267,6 +267,16 @@ proc applyPresHints(ctx: var ApplyValueContext; element: Element) =
       let n = float32(element.attrulgz(satSize).get(20))
       let length = resolveLength(cuCh, n, ctx.window.settings.attrsp[])
       ctx.applyPresHint(makeEntry(cptInputIntrinsicSize, length.npx))
+  of TAG_PROGRESS:
+    let value = element.attr(satValue)
+    if value != "":
+      #TODO why can't parseFloat32 handle errors anyway
+      let n = parseFloat32(value)
+      let maxs = element.attr(satMax)
+      var max = parseFloat32(maxs)
+      if not (max > 0): # catches NaN
+        max = 1
+      ctx.applyPresHint(makeEntry(cptInputIntrinsicSize, n / max))
   of TAG_SELECT:
     if element.attrb(satMultiple):
       let size = element.attrulgz(satSize).get(4)
