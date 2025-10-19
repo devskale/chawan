@@ -518,10 +518,6 @@ const LayoutProperties* = {
   cptBorderBottomStyle,
   cptBorderLeftWidth, cptBorderRightWidth, cptBorderTopWidth,
   cptBorderBottomWidth,
-  #TODO right now, transparent is interpreted as width=0; it probably
-  # shouldn't be
-  cptBorderLeftColor, cptBorderRightColor, cptBorderTopColor,
-  cptBorderBottomColor,
   cptLeft, cptRight, cptTop, cptBottom, cptWidth, cptHeight,
   cptFlexShrink, cptFlexGrow,  cptFlexBasis, cptOverflowX, cptOverflowY,
   cptWhiteSpace, cptVerticalAlign, cptTextAlign, cptVerticalAlignLength,
@@ -732,6 +728,12 @@ when defined(debug):
 
 proc getLength*(vals: CSSValues; p: CSSPropertyType): CSSLength =
   return vals.words[p].length
+
+proc getLineWidth*(vals: CSSValues; p: CSSPropertyType): float32 =
+  return vals.hwords[p].lineWidth
+
+proc getBorderStyle*(vals: CSSValues; p: CSSPropertyType): CSSBorderStyle =
+  return vals.bits[p].borderStyle
 
 macro `{}`*(vals: CSSValues; s: static string): untyped =
   let t = propertyType(s).get
@@ -1326,6 +1328,8 @@ proc parseColor*(ctx: var CSSParser): Opt[CSSColor] =
   of cttIdent:
     if tok.s.equalsIgnoreCase("transparent"):
       return ok(rgba(0, 0, 0, 0).cssColor())
+    if tok.s.equalsIgnoreCase("currentcolor"):
+      return ok(cssCurrentColor())
     if x := namedRGBColor(tok.s):
       return ok(x.cssColor())
     elif tok.s.equalsIgnoreCase("canvas") or
@@ -1737,9 +1741,12 @@ proc parseValue(ctx: var CSSParser; t: CSSPropertyType;
   ok()
 
 proc getInitialColor(t: CSSPropertyType): CSSColor =
-  if t == cptBackgroundColor:
-    return rgba(0, 0, 0, 0).cssColor()
-  return defaultColor.cssColor()
+  case t
+  of cptBackgroundColor: return rgba(0, 0, 0, 0).cssColor()
+  of cptBorderLeftColor, cptBorderRightColor, cptBorderTopColor,
+      cptBorderBottomColor:
+    return cssCurrentColor()
+  else: return defaultColor.cssColor()
 
 proc getInitialLength(t: CSSPropertyType): CSSLength =
   case t
