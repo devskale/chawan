@@ -129,6 +129,7 @@ type
 
   CSSAtRule* = ref object
     name*: CSSAtRuleType
+    hasBlock*: bool
     prelude*: seq[CSSToken]
     oblock*: seq[CSSToken]
 
@@ -393,6 +394,13 @@ type
     csels: seq[CompoundSelector]
 
   SelectorList* = seq[ComplexSelector]
+
+when defined(gcDestructors):
+  proc `=destroy`*(a: var CSSTokenUnion) =
+    discard
+
+  proc `=copy`*(a: var CSSTokenUnion; b: CSSTokenUnion) =
+    copyMem(addr a, unsafeAddr b, sizeof(a))
 
 # Forward declarations
 proc consumeDeclarations(ctx: var CSSParser; nested: bool): seq[CSSDeclaration]
@@ -1080,16 +1088,13 @@ proc consumeAtRule(ctx: var CSSParser): CSSAtRule =
   result = CSSAtRule(name: name)
   if found := ctx.addUntil({cttSemicolon, cttLbrace}, result.prelude):
     if found.t == cttLbrace:
-      var valid = false
+      result.hasBlock = true
       while ctx.has():
         let t = ctx.peekTokenType()
         if t == cttRbrace:
-          valid = true
           ctx.seek()
           break
         ctx.addComponentValue(result.oblock)
-      if not valid:
-        result.oblock.setLen(0)
 
 proc consumeDeclarations(ctx: var CSSParser; nested: bool):
     seq[CSSDeclaration] =
