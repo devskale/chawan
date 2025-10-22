@@ -104,7 +104,8 @@ type
     lsLoading, lsCanceled, lsLoaded
 
   ContainerFlag* = enum
-    cfHasStart, cfSave, cfIsHTML, cfHistory, cfHighlight, cfTailOnLoad
+    cfHasStart, cfSave, cfIsHTML, cfHistory, cfHighlight, cfTailOnLoad,
+    cfCrashed
 
   CachedImageState* = enum
     cisLoading, cisCanceled, cisLoaded
@@ -1543,6 +1544,8 @@ proc getSelectionText(container: Container; hl = none(Highlight)):
   let endy = hl.endy
   let nw = starty .. endy
   return container.iface.getLines(nw).then(proc(res: GetLinesResult): string =
+    if res.lines.len <= 0:
+      return ""
     var s = ""
     case hl.selectionType
     of stNormal:
