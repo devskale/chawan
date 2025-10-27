@@ -41,12 +41,11 @@ import utils/twtstr
 import utils/wordbreak
 
 type
-  CursorPosition* = object
-    cursorx*: int
-    cursory*: int
-    xend*: int
-    fromx*: int
-    fromy*: int
+  CursorState = object
+    cursor: CursorXY
+    xend: int
+    fromx: int
+    fromy: int
     setx: int
     setxrefresh: bool
     setxsave: bool
@@ -105,7 +104,7 @@ type
 
   ContainerFlag* = enum
     cfHasStart, cfSave, cfIsHTML, cfHistory, cfHighlight, cfTailOnLoad,
-    cfCrashed, cfShowLoading
+    cfCrashed, cfShowLoading, cfDeferLoad, cfGotLines
 
   CachedImageState* = enum
     cisLoading, cisCanceled, cisLoaded
@@ -164,8 +163,8 @@ type
     # if set, this *overrides* any content type received from the network. (this
     # is because it stores the content type from the -T flag.)
     contentType* {.jsget.}: string
-    pos: CursorPosition
-    bpos: seq[CursorPosition]
+    pos: CursorState
+    bpos: seq[CursorState]
     highlights: seq[Highlight]
     process* {.jsget.}: int
     clonedFrom*: int
@@ -181,7 +180,7 @@ type
     sourcepair*: Container # pointer to buffer with a source view (may be nil)
     event: ContainerEvent
     lastEvent: ContainerEvent
-    startpos: Option[CursorPosition]
+    startpos: Option[CursorState]
     redirectDepth*: int
     select* {.jsget.}: Select
     currentSelection* {.jsget.}: Highlight
@@ -222,6 +221,8 @@ proc find*(container: Container; dir: NavDirection): Container
 proc onclick(container: Container; res: ClickResult; save: bool)
 proc triggerEvent(container: Container; t: ContainerEventType)
 proc updateCursor(container: Container)
+proc sendCursorPosition*(container: Container): EmptyPromise {.discardable.}
+proc loaded(container: Container)
 
 proc newContainer*(config: BufferConfig; loaderConfig: LoaderClientConfig;
     url: URL; request: Request; luctx: LUContext; attrs: WindowAttributes;
@@ -238,9 +239,7 @@ proc newContainer*(config: BufferConfig; loaderConfig: LoaderClientConfig;
     config: config,
     loaderConfig: loaderConfig,
     redirectDepth: redirectDepth,
-    pos: CursorPosition(
-      setx: -1
-    ),
+    pos: CursorState(setx: -1),
     loadinfo: "Connecting to " & request.url.host & "...",
     cacheId: cacheId,
     process: -1,
@@ -369,10 +368,10 @@ proc cookie(ctx: JSContext; container: Container): CookieMode {.jsfget.} =
   return container.loaderConfig.cookieMode
 
 proc cursorx*(container: Container): int {.jsfget.} =
-  container.pos.cursorx
+  container.pos.cursor.x
 
 proc cursory*(container: Container): int {.jsfget.} =
-  container.pos.cursory
+  container.pos.cursor.y
 
 proc fromx*(container: Container): int {.jsfget.} =
   container.pos.fromx
@@ -605,6 +604,7 @@ proc requestLines(container: Container): EmptyPromise {.discardable.} =
   return container.iface.getLines(w).then(proc(res: GetLinesResult) =
     container.lines.setLen(w.len)
     container.lineshift = w.a
+    container.flags.incl(cfGotLines)
     for y in 0 ..< min(res.lines.len, w.len):
       container.lines[y] = res.lines[y]
     let isBgNew = container.bgcolor != res.bgcolor
@@ -614,10 +614,11 @@ proc requestLines(container: Container): EmptyPromise {.discardable.} =
       container.numLines = res.numLines
       container.updateCursor()
       if container.startpos.isSome and
-          res.numLines >= container.startpos.get.cursory:
+          res.numLines >= container.startpos.get.cursor.y:
         container.pos = container.startpos.get
         container.needslines = true
-        container.startpos = none(CursorPosition)
+        container.startpos = none(CursorState)
+        container.sendCursorPosition()
       if container.loadState != lsLoading:
         container.triggerEvent(cetStatus)
     if res.numLines > 0:
@@ -633,6 +634,9 @@ proc requestLines(container: Container): EmptyPromise {.discardable.} =
       if image.width > 0 and image.height > 0 and
           image.bmp.width > 0 and image.bmp.height > 0:
         container.images.add(image)
+    if cfDeferLoad in container.flags:
+      container.flags.excl(cfDeferLoad)
+      container.loaded()
   )
 
 proc repaintLoop(container: Container) =
@@ -666,7 +670,7 @@ proc setFromX(container: Container; x: int; refresh = true) {.jsfunc.} =
   if container.pos.fromx != x:
     container.pos.fromx = max(min(x, container.maxfromx), 0)
     if container.pos.fromx > container.cursorx:
-      container.pos.cursorx = min(container.pos.fromx,
+      container.pos.cursor.x = min(container.pos.fromx,
         container.currentLineWidth())
       if refresh:
         container.sendCursorPosition()
@@ -697,7 +701,7 @@ proc setCursorX(container: Container; x: int; refresh = true; save = true)
   # we check for save here, because it is only set by restoreCursorX where
   # we do not want to move the cursor just because it is outside the window.
   if not save or container.fromx <= x and x < container.fromx + container.width:
-    container.pos.cursorx = x
+    container.pos.cursor.x = x
   elif save and container.fromx > x:
     # target x is before the screen start
     if x2 < container.cursorx:
@@ -709,12 +713,12 @@ proc setCursorX(container: Container; x: int; refresh = true; save = true)
       else:
         container.setFromX(cw - 1, false)
     # take whatever position the jump has resulted in.
-    container.pos.cursorx = container.fromx
+    container.pos.cursor.x = container.fromx
   elif x > container.cursorx:
     # target x is greater than current x; a simple case, just shift fromx too
     # accordingly
     container.setFromX(max(x - container.width + 1, container.fromx), false)
-    container.pos.cursorx = x
+    container.pos.cursor.x = x
   if container.cursorx == x and container.currentSelection != nil and
       container.currentSelection.x2 != x:
     container.currentSelection.x2 = x
@@ -732,15 +736,15 @@ proc setCursorY(container: Container; y: int; refresh = true) {.jsfunc.} =
   if refresh:
     container.flags.incl(cfShowLoading)
   let y = max(min(y, container.numLines - 1), 0)
-  if container.cursory == y:
-    return
   if y >= container.fromy and y - container.height < container.fromy:
     discard
   elif y > container.cursory:
     container.setFromY(y - container.height + 1)
   else:
     container.setFromY(y)
-  container.pos.cursory = y
+  if container.cursory == y:
+    return
+  container.pos.cursor.y = y
   if container.currentSelection != nil and container.currentSelection.y2 != y:
     container.queueDraw()
     container.currentSelection.y2 = y
@@ -1610,7 +1614,7 @@ proc hideLinkHints(container: Container) {.jsfunc.} =
     return
   container.iface.hideHints()
 
-proc setLoadInfo(container: Container; msg: string) =
+proc setLoadInfo*(container: Container; msg: string) =
   container.loadinfo = msg
   container.triggerEvent(cetSetLoadInfo)
 
@@ -1631,45 +1635,59 @@ proc onReadLine(container: Container; rl: ReadLineResult) =
   of rltFile:
     container.triggerEvent(ContainerEvent(t: cetReadFile))
 
+proc loaded(container: Container) =
+  container.loadinfo = ""
+  container.loadState = lsLoaded
+  container.triggerEvent(cetLoaded)
+  if cfHasStart notin container.flags:
+    if container.config.headless == hmFalse:
+      container.sendCursorPosition()
+    let anchor = container.url.hash.substr(1)
+    if anchor != "" or container.config.autofocus:
+      container.iface.gotoAnchor(anchor, container.config.autofocus,
+          true).then(proc(res: GotoAnchorResult) =
+        if res.found:
+          container.setCursorXYCenter(res.x, res.y)
+          if res.focus != nil:
+            container.onReadLine(res.focus)
+      )
+  if container.config.metaRefresh != mrNever:
+    let res = parseRefresh(container.refreshHeader, container.url)
+    container.refreshHeader = ""
+    if res.n != -1:
+      container.triggerEvent(ContainerEvent(
+        t: cetMetaRefresh,
+        refreshIn: res.n,
+        refreshURL: if res.url != nil: res.url else: container.url
+      ))
+    else:
+      container.iface.checkRefresh().then(proc(res: CheckRefreshResult) =
+        if res.n >= 0:
+          container.triggerEvent(ContainerEvent(
+            t: cetMetaRefresh,
+            refreshIn: res.n,
+            refreshURL: if res.url != nil: res.url else: container.url
+          ))
+      )
+
 #TODO this should be called with a timeout.
 proc onload(container: Container; res: LoadResult) =
   if container.loadState == lsCanceled:
     return
   case res.bs
   of bsLoaded:
-    container.loadState = lsLoaded
-    container.setLoadInfo("")
-    container.triggerEvent(cetLoaded)
-    if cfHasStart notin container.flags:
-      let anchor = container.url.hash.substr(1)
-      if anchor != "" or container.config.autofocus:
-        container.requestLines().then(proc(): Promise[GotoAnchorResult] =
-          return container.iface.gotoAnchor(anchor, container.config.autofocus,
-            true)
-        ).then(proc(res: GotoAnchorResult) =
-          if res.found:
-            container.setCursorXYCenter(res.x, res.y)
-            if res.focus != nil:
-              container.onReadLine(res.focus)
-        )
-    if container.config.metaRefresh != mrNever:
-      let res = parseRefresh(container.refreshHeader, container.url)
-      container.refreshHeader = ""
-      if res.n != -1:
-        container.triggerEvent(ContainerEvent(
-          t: cetMetaRefresh,
-          refreshIn: res.n,
-          refreshURL: if res.url != nil: res.url else: container.url
-        ))
-      else:
-        container.iface.checkRefresh().then(proc(res: CheckRefreshResult) =
-          if res.n >= 0:
-            container.triggerEvent(ContainerEvent(
-              t: cetMetaRefresh,
-              refreshIn: res.n,
-              refreshURL: if res.url != nil: res.url else: container.url
-            ))
-        )
+    if cfGotLines notin container.flags:
+      # We cannot call loaded here because of a subtle phase ordering issue
+      # on reload:
+      # * load sends a cetLoad event to pager
+      # * pager deletes the buffer we are replacing
+      # * now, if lines haven't been requested yet, then we'll necessarily
+      #   see an empty screen flash because the reloaded buffer is already
+      #   deleted
+      container.flags.incl(cfDeferLoad)
+      container.needslines = true
+    else:
+      container.loaded()
     return # skip next load
   of bsLoadingResources:
     container.setLoadInfo($res.n & "/" & $res.len & " stylesheets loaded")
@@ -1783,10 +1801,10 @@ proc onclick(container: Container; res: ClickResult; save: bool) =
       save: save,
       contentType: res.contentType
     ))
-  if res.select.isSome and not save and res.select.get.options.len > 0:
-    container.displaySelect(res.select.get)
-  if res.readline.isSome:
-    container.onReadLine(res.readline.get)
+  if res.select != nil and not save and res.select.options.len > 0:
+    container.displaySelect(res.select)
+  if res.readline != nil:
+    container.onReadLine(res.readline)
 
 proc click*(container: Container; n = 1) {.jsfunc.} =
   container.flags.incl(cfShowLoading)
@@ -1824,7 +1842,11 @@ proc windowChange*(container: Container; attrs: WindowAttributes) =
     # subtract status line height
     attrs.height -= 1
     attrs.heightPx -= attrs.ppl
-    container.iface.windowChange(attrs)
+    let x = container.cursorx
+    let y = container.cursory
+    container.iface.windowChange(attrs, x, y).then(proc(pos: CursorXY) =
+      container.setCursorXYCenter(pos.x, pos.y)
+    )
   if container.select != nil:
     container.select.windowChange(container.width, container.height)
 
