@@ -32,7 +32,8 @@ import local/lineedit
 import local/select
 import local/term
 import monoucha/fromjs
-import monoucha/javascript
+import monoucha/jsbind
+import monoucha/jsnull
 import monoucha/jsregex
 import monoucha/jstypes
 import monoucha/jsutils
@@ -50,6 +51,7 @@ import types/bitmap
 import types/blob
 import types/cell
 import types/color
+import types/jsopt
 import types/opt
 import types/url
 import types/winattrs
@@ -208,7 +210,7 @@ type
 jsDestructor(Pager)
 
 # Forward declarations
-proc addConsole(pager: Pager; interactive: bool): Console
+proc addConsole(pager: Pager; interactive: bool)
 proc alert*(pager: Pager; msg: string)
 proc askMailcap(pager: Pager; container: Container; ostream: PosixStream;
   contentType: string; i: int; response: Response; sx: int)
@@ -375,10 +377,10 @@ proc setSearchRegex(ctx: JSContext; pager: Pager; s: string; flags0 = "";
     let x = strictParseEnum[LREFlag]($c)
     if x.isErr:
       return JS_ThrowTypeError(ctx, "invalid flag %c", c)
-  let re = compileRegex(s, flags)
-  if re.isErr:
-    return JS_ThrowTypeError(ctx, cstring(re.error))
-  pager.regex = Opt[Regex].ok(re.get)
+  var regex: Regex
+  if not compileRegex(s, flags, regex):
+    return JS_ThrowTypeError(ctx, cstring(regex.bytecode))
+  pager.regex = Opt[Regex].ok(move(regex))
   pager.reverseSearch = reverse
   return JS_UNDEFINED
 
@@ -550,7 +552,8 @@ proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
   return js_strdup(ctx, name)
 
 proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
-    alerts: seq[string]; loader: FileLoader; loaderPid: int): Pager =
+    alerts: seq[string]; loader: FileLoader; loaderPid: int;
+    console: Console): Pager =
   let tab = Tab()
   let pager = Pager(
     alive: true,
@@ -567,7 +570,8 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
     cookieJars: newCookieJarMap(),
     tabHead: tab,
     tab: tab,
-    consoleCacheId: -1
+    consoleCacheId: -1,
+    console: console
   )
   pager.timeouts = newTimeoutState(pager.jsctx, evalJSFree, pager)
   JS_SetModuleLoaderFunc(pager.jsrt, normalizeModuleName, loadJSModule, nil)
@@ -617,7 +621,7 @@ proc cleanup(pager: Pager) =
     for val in pager.config.cmd.map.values:
       JS_FreeValue(pager.jsctx, val)
     for fn in pager.config.jsvfns:
-      JS_FreeValue(pager.jsctx, fn)
+      JS_FreeValue(pager.jsctx, fn.val)
     pager.timeouts.clearAll()
     assert not pager.inEval
     pager.jsctx.free()
@@ -636,10 +640,9 @@ proc quit(pager: Pager; code: int) =
 
 proc runJSJobs(pager: Pager) =
   while true:
-    let r = pager.jsrt.runJSJobs()
-    if r.isOk:
+    let ctx = pager.jsrt.runJSJobs()
+    if ctx == nil:
       break
-    let ctx = r.error
     pager.console.writeException(ctx)
   if pager.exitCode != -1:
     pager.quit(pager.exitCode)
@@ -677,12 +680,12 @@ proc evalAction(pager: Pager; action: string; arg0: int32): EmptyPromise =
   var p: EmptyPromise = nil
   if JS_IsFunction(ctx, ret):
     if arg0 != 0:
-      let arg0 = toJS(ctx, arg0)
-      let ret2 = JS_CallFree(ctx, ret, JS_UNDEFINED, 1, arg0.toJSValueArray())
+      let arg0 = ctx.toJS(arg0)
+      let ret2 = ctx.callFree(ret, JS_UNDEFINED, arg0)
       JS_FreeValue(ctx, arg0)
       ret = ret2
     else: # no precnum
-      ret = JS_CallFree(ctx, ret, JS_UNDEFINED, 0, nil)
+      ret = ctx.callFree(ret, JS_UNDEFINED)
     if pager.exitCode != -1:
       assert not pager.inEval
       pager.quit(pager.exitCode)
@@ -1011,7 +1014,7 @@ proc run*(pager: Pager; pages: openArray[string]; contentType: string;
     pager.alert("Failed to query DA1, please set display.query-da1 = false")
   for st in SurfaceType:
     pager.clear(st)
-  pager.console = pager.addConsole(istream != nil)
+  pager.addConsole(istream != nil)
   if pager.config.start.startupScript != "":
     let ps = newPosixStream(pager.config.start.startupScript)
     let s = if ps != nil:
@@ -1977,8 +1980,8 @@ proc applySiteconf(pager: Pager; url: URL; charsetOverride: Charset;
     if sc.rewriteUrl.isSome:
       let fun = sc.rewriteUrl.get
       var tmpUrl = newURL(url)
-      var arg0 = ctx.toJS(tmpUrl)
-      let ret = JS_Call(ctx, fun, JS_UNDEFINED, 1, arg0.toJSValueArray())
+      let arg0 = ctx.toJS(tmpUrl)
+      let ret = ctx.call(fun.val, JS_UNDEFINED, arg0)
       if not JS_IsException(ret):
         # Warning: we must only print exceptions if the *call* returned one.
         # Conversion may simply error out because the function didn't return a
@@ -2135,8 +2138,8 @@ proc omniRewrite(pager: Pager; s: string): string =
     if rule.match.get.match(s):
       let fun = rule.substituteUrl.get
       let ctx = pager.jsctx
-      var arg0 = ctx.toJS(s)
-      let jsRet = JS_Call(ctx, fun, JS_UNDEFINED, 1, arg0.toJSValueArray())
+      let arg0 = ctx.toJS(s)
+      let jsRet = ctx.call(fun.val, JS_UNDEFINED, arg0)
       JS_FreeValue(ctx, arg0)
       var res: string
       if ctx.fromJSFree(jsRet, res).isOk:
@@ -2343,20 +2346,21 @@ proc clearConsole(pager: Pager) =
     pager.pinned.console = console
     pager.addTab(console)
 
-proc addConsole(pager: Pager; interactive: bool): Console =
+proc addConsole(pager: Pager; interactive: bool) =
   if interactive and pager.config.start.consoleBuffer:
     if f := pager.addConsoleFile():
       discard f.writeLine("Type (M-c) console.hide() to return to buffer mode.")
       discard f.flush()
-      let clearFun = proc() =
+      pager.console.clearFun = proc() =
         pager.clearConsole()
-      let showFun = proc() =
+      pager.console.showFun = proc() =
         pager.showConsole()
-      let hideFun = proc() =
+      pager.console.hideFun = proc() =
         pager.hideConsole()
-      return newConsole(f, clearFun, showFun, hideFun)
+      pager.console.err = f
+      return
     pager.alert("Failed to open temp file for console")
-  return newConsole(cast[ChaFile](stderr))
+  pager.console.err = cast[ChaFile](stderr)
 
 proc command(pager: Pager) {.jsfunc.} =
   pager.setLineEdit(lmCommand)
@@ -2646,9 +2650,8 @@ proc externInto(pager: Pager; cmd, ins: string): bool {.jsfunc.} =
 proc jsQuit*(ctx: JSContext; pager: Pager; code = 0): JSValue =
   pager.exitCode = int(code)
   JS_ThrowInternalError(ctx, "interrupted")
-  let ex = JS_GetException(ctx)
-  JS_SetUncatchableError(ctx, ex)
-  return JS_Throw(ctx, ex)
+  JS_SetUncatchableException(ctx, true)
+  return JS_EXCEPTION
 
 proc clipboardWrite(ctx: JSContext; pager: Pager; s: string): JSValue
     {.jsfunc.} =

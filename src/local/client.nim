@@ -23,8 +23,9 @@ import local/pager
 import local/select
 import local/term
 import monoucha/fromjs
-import monoucha/javascript
+import monoucha/jsbind
 import monoucha/jsopaque
+import monoucha/jsutils
 import monoucha/quickjs
 import monoucha/tojs
 import server/forkserver
@@ -33,6 +34,7 @@ import server/loaderiface
 import server/request
 import server/response
 import types/blob
+import types/jsopt
 import types/opt
 import types/url
 import utils/twtstr
@@ -43,9 +45,6 @@ type
 
 proc config(client: Client): Config {.jsfget.} =
   return client.pager.config
-
-proc console(client: Client): Console {.jsrfget.} =
-  return client.pager.console
 
 proc suspend(ctx: JSContext; client: Client): JSValue {.jsfunc.} =
   if client.pager.term.quit().isErr:
@@ -100,11 +99,9 @@ proc setenv(ctx: JSContext; client: Client; s: string; val: JSValueConst):
     twtstr.unsetEnv(s)
   else:
     var vals: string
-    if ctx.fromJS(val, vals).isOk:
-      if twtstr.setEnv(s, vals).isErr:
-        return JS_ThrowTypeError(ctx, "Failed to set environment variable")
-    else:
-      return JS_EXCEPTION
+    ?ctx.fromJS(val, vals)
+    if twtstr.setEnv(s, vals).isErr:
+      return JS_ThrowTypeError(ctx, "Failed to set environment variable")
   return JS_UNDEFINED
 
 proc nimGCStats(client: Client): string {.jsfunc.} =
@@ -161,7 +158,9 @@ proc newClient*(config: Config; forkserver: ForkServer; loaderPid: int;
   let jsrt = JS_GetRuntime(jsctx)
   let clientPid = getCurrentProcessId()
   let loader = newFileLoader(clientPid, loaderStream)
-  let pager = newPager(config, forkserver, jsctx, warnings, loader, loaderPid)
+  let console = newConsole(cast[ChaFile](stderr))
+  let pager = newPager(config, forkserver, jsctx, warnings, loader, loaderPid,
+    console)
   let client = Client(
     jsrt: jsrt,
     jsctx: jsctx,
@@ -169,6 +168,7 @@ proc newClient*(config: Config; forkserver: ForkServer; loaderPid: int;
     crypto: Crypto(urandom: urandom),
     pager: pager,
     timeouts: pager.timeouts,
+    console: console,
     settings: EnvironmentSettings(
       scripting: smApp,
       attrsp: addr pager.term.attrs,

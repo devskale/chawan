@@ -117,7 +117,7 @@ type
   JSSetterMagicFunction* = proc(ctx: JSContext; this_val, val: JSValueConst;
     magic: cint): JSValue {.cdecl, raises: [].}
   JSClassID* = uint32
-  JSAtom* = distinct uint32
+  JSAtom* {.importc: "JSAtom".} = distinct uint32
   JSClassFinalizer* = proc(rt: JSRuntime; val: JSValueConst) {.
     cdecl, raises: [].}
   JSClassCheckDestroy* = proc(rt: JSRuntime; val: JSValueConst): JS_BOOL
@@ -247,7 +247,7 @@ type
     getset: JSCFunctionListEntryGetSet
     alias: JSCFunctionListEntryAlias
     prop_list: JSCFunctionListEntryPropList
-    str: cstring # pure ASCII or UTF-8 encoded
+    str: cstring
     i32: int32
     i64: int64
     f64: cdouble
@@ -268,11 +268,18 @@ type
     JS_CLASS_ARRAY
     JS_CLASS_ERROR
 
+  JSMallocState* {.importc.} = object
+    malloc_count: csize_t
+    malloc_size: csize_t
+    malloc_limit: csize_t
+    opaque: pointer
+
+  JSMallocStateP* = ptr JSMallocState
+
   JSMallocFunctions* {.importc.} = object
-    js_calloc*: proc(opaque: pointer; count, size: csize_t): pointer {.cdecl.}
-    js_malloc*: proc(opaque: pointer; size: csize_t): pointer {.cdecl.}
-    js_free*: proc(opaque, p: pointer) {.cdecl.}
-    js_realloc*: proc(opaque, p: pointer; size: csize_t): pointer
+    js_malloc*: proc(s: JSMallocStateP; size: csize_t): pointer {.cdecl.}
+    js_free*: proc(s: JSMallocStateP; p: pointer) {.cdecl.}
+    js_realloc*: proc(s: JSMallocStateP; p: pointer; size: csize_t): pointer
       {.cdecl.}
     js_malloc_usable_size*: proc(p: pointer) {.cdecl.}
 
@@ -407,9 +414,9 @@ template JS_CGETSET_DEF_NOCONF*(n: string; fgetter: JSGetterFunction;
                            get: JSCFunctionType(getter: fgetter),
                            set: JSCFunctionType(setter: fsetter))))
 
-template JS_CGETSET_MAGIC_DEF*(n: string; fgetter, fsetter: typed;
+template JS_CGETSET_MAGIC_DEF*(n: cstring; fgetter, fsetter: typed;
     m: int16): JSCFunctionListEntry =
-  JSCFunctionListEntry(name: cstring(n),
+  JSCFunctionListEntry(name: n,
                        prop_flags: JS_PROP_CONFIGURABLE,
                        def_type: JS_DEF_CGETSET_MAGIC,
                        magic: m,
@@ -417,6 +424,14 @@ template JS_CGETSET_MAGIC_DEF*(n: string; fgetter, fsetter: typed;
                          getset: JSCFunctionListEntryGetSet(
                            get: JSCFunctionType(getter_magic: fgetter),
                            set: JSCFunctionType(setter_magic: fsetter))))
+
+template JS_PROP_STRING_DEF*(n, cstr: cstring; f: cint):
+    JSCFunctionListEntry =
+  JSCFunctionListEntry(name: n,
+                       prop_flags: f,
+                       def_type: JS_DEF_PROP_STRING,
+                       magic: 0,
+                       u: JSCFunctionListEntryU(str: cstr))
 
 {.push header: qjsheader, importc.}
 
@@ -468,8 +483,7 @@ proc JS_AddPerformance*(ctx: JSContext)
 proc JS_AddIntrinsicDOMException*(ctx: JSContext)
 
 # for equality comparisons and sameness
-proc JS_IsEqual*(ctx: JSContext; op1, op2: JSValueConst): cint
-proc JS_IsStrictEqual*(ctx: JSContext; op1, op2: JSValueConst): JS_BOOL
+proc JS_StrictEq*(ctx: JSContext; op1, op2: JSValueConst): JS_BOOL
 proc JS_IsSameValue*(ctx: JSContext; op1, op2: JSValueConst): JS_BOOL
 # Similar to same-value equality, but +0 and -0 are considered equal.
 proc JS_IsSameValueZero*(ctx: JSContext; op1, op2: JSValueConst): JS_BOOL
@@ -515,7 +529,7 @@ proc JS_ValueToAtom*(ctx: JSContext; val: JSValueConst): JSAtom
 # object class support
 const JS_INVALID_CLASS_ID* = JSClassID(0)
 
-proc JS_NewClassID*(rt: JSRuntime; pclass_id: var JSClassID): JSClassID
+proc JS_NewClassID*(pclass_id: var JSClassID): JSClassID
 proc JS_GetClassID*(obj: JSValueConst): JSClassID
 proc JS_NewClass*(rt: JSRuntime; class_id: JSClassID;
   class_def: ptr JSClassDef): cint
@@ -546,7 +560,7 @@ proc JS_Throw*(ctx: JSContext; obj: JSValue): JSValue
 proc JS_GetException*(ctx: JSContext): JSValue
 proc JS_IsError*(v: JSValueConst): JS_BOOL
 proc JS_IsUncatchableError*(val: JSValueConst): JS_BOOL
-proc JS_SetUncatchableError*(ctx: JSContext; val: JSValueConst)
+proc JS_SetUncatchableException*(ctx: JSContext; flag: JS_BOOL)
 proc JS_ClearUncatchableError*(ctx: JSContext; val: JSValueConst)
 proc JS_ResetUncatchableError*(ctx: JSContext)
 proc JS_NewError*(ctx: JSContext): JSValue
@@ -624,14 +638,6 @@ proc JS_IsConstructor*(ctx: JSContext; val: JSValueConst): JS_BOOL
 proc JS_SetConstructorBit*(ctx: JSContext; func_obj: JSValueConst;
   val: JS_BOOL): JS_BOOL
 
-proc JS_IsRegExp*(val: JSValueConst): JS_BOOL
-proc JS_IsMap*(val: JSValueConst): JS_BOOL
-proc JS_IsSet*(val: JSValueConst): JS_BOOL
-proc JS_IsWeakRef*(val: JSValueConst): JS_BOOL
-proc JS_IsWeakSet*(val: JSValueConst): JS_BOOL
-proc JS_IsWeakMap*(val: JSValueConst): JS_BOOL
-proc JS_IsDataView*(val: JSValueConst): JS_BOOL
-
 proc JS_NewArray*(ctx: JSContext): JSValue
 # takes ownership of the values
 proc JS_NewArrayFrom*(ctx: JSContext; count: cint; values: JSValueArray):
@@ -703,8 +709,7 @@ proc JS_DefinePropertyValueStr*(ctx: JSContext; this_obj: JSValueConst;
   prop: cstring; val: JSValue; flags: cint): cint
 proc JS_DefinePropertyGetSet*(ctx: JSContext; this_obj: JSValueConst;
   prop: JSAtom; getter, setter: JSValue; flags: cint): cint
-# Always returns 1.
-proc JS_SetOpaque*(obj: JSValueConst; opaque: pointer): cint {.discardable.}
+proc JS_SetOpaque*(obj: JSValueConst; opaque: pointer)
 proc JS_GetOpaque*(obj: JSValueConst; class_id: JSClassID): pointer
 proc JS_GetOpaque2*(ctx: JSContext; obj: JSValueConst; class_id: JSClassID):
   pointer
@@ -842,8 +847,8 @@ proc JS_LoadModule*(ctx: JSContext; basename, filename: cstringConst): JSValue
 proc JS_NewCFunction2*(ctx: JSContext; cfunc: JSCFunction; name: cstring;
   length: cint; proto: JSCFunctionEnum; magic: cint): JSValue
 proc JS_NewCFunction3*(ctx: JSContext; cfunc: JSCFunction; name: cstring;
-  length: cint; proto: JSCFunctionEnum; magic: cint; proto_val: JSValueConst):
-  JSValue
+  length: cint; proto: JSCFunctionEnum; magic: cint; proto_val: JSValueConst;
+  n_fields: cint): JSValue
 proc JS_NewCFunctionData*(ctx: JSContext; cfunc: JSCFunctionData;
   length, magic, data_len: cint; data: JSValueConstArray): JSValue
 proc JS_NewCFunctionData2*(ctx: JSContext; cfunc: JSCFunctionData;
