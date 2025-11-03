@@ -7,6 +7,7 @@ import html/catom
 import html/script
 import types/opt
 import types/winattrs
+import utils/dtoawrap
 import utils/twtstr
 
 type
@@ -92,13 +93,14 @@ proc `$`(mf: MediaFeature): string =
   of mftPrefersColorScheme:
     return "prefers-color-scheme: " & [false: "light", true: "dark"][mf.b]
   of mftWidth, mftHeight:
-    result = $mf.lengthrange.s.a & " <"
+    result = dtoa(mf.lengthrange.s.a) & " <"
     if mf.lengthrange.aeq:
       result &= '='
     result &= ' ' & $mf.t & " <"
     if mf.lengthrange.beq:
       result &= '='
-    result &= ' ' & $mf.lengthrange.s.b
+    result &= ' '
+    result.addDouble(mf.lengthrange.s.b)
   of mftScripting:
     return "scripting: " & $mf.ms
   of mftContentType:
@@ -153,7 +155,7 @@ proc getBoolFeature(feature: MediaFeatureType): Opt[MediaQuery] =
   else:
     return err()
 
-proc skipBlanksCheckHas(parser: var MediaQueryParser): Err[void] =
+proc skipBlanksCheckHas(parser: var MediaQueryParser): Opt[void] =
   parser.skipBlanks()
   if parser.has():
     return ok()
