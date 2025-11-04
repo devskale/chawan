@@ -375,17 +375,17 @@ proc getComputedStyle(ctx: JSContext; window: Window; element: Element;
   return ctx.getComputedStyle0(window, element, pseudoElt)
 
 type MediaQueryList = ref object of EventTarget
-  media: string
-  matches: bool
+  media {.jsget.}: string
+  matches {.jsget.}: bool
   #TODO onchange
 
 jsDestructor(MediaQueryList)
 
 proc matchMedia(window: Window; s: string): MediaQueryList {.jsfunc.} =
-  let cvals = parseComponentValues(s)
-  let mqlist = parseMediaQueryList(cvals, window.settings.scriptAttrsp)
+  var ctx = initCSSParser(s)
+  let mqlist = ctx.parseMediaQueryList(window.settings.scriptAttrsp)
   return MediaQueryList(
-    matches: mqlist.applies(addr window.settings),
+    matches: mqlist.appliesScript(addr window.settings),
     media: $mqlist
   )
 
@@ -499,16 +499,13 @@ proc addScripting*(window: Window) =
   window.importMapsAllowed = true
   window.timeouts = newTimeoutState(ctx, evalJSFree, window)
   JS_SetHostPromiseRejectionTracker(rt, rejectionHandler, nil)
-  let performance = JS_NewAtom(ctx, cstringConst("performance"))
   let jsWindow = JS_GetGlobalObject(ctx)
   let weakMap = JS_GetPropertyStr(ctx, jsWindow, "WeakMap")
   for it in window.weakMap.mitems:
     it = JS_CallConstructor(ctx, weakMap, 0, nil)
     doAssert not JS_IsException(it)
   JS_FreeValue(ctx, weakMap)
-  doAssert JS_DeleteProperty(ctx, jsWindow, performance, 0) == 1
   JS_FreeValue(ctx, jsWindow)
-  JS_FreeAtom(ctx, performance)
   JS_SetModuleLoaderFunc(rt, normalizeModuleName, loadJSModule, nil)
   window.performance = newPerformance(window.settings.scripting)
   if window.settings.scripting == smApp:
