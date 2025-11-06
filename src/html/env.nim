@@ -238,7 +238,7 @@ proc fetch0(window: Window; input: JSRequest): FetchPromise =
   return window.loader.fetch(input.request)
 
 proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
-    init = RequestInit(window: JS_UNDEFINED)): Opt[FetchPromise] {.jsfunc.} =
+    init: JSValueConst = JS_UNDEFINED): Opt[FetchPromise] {.jsfunc.} =
   let input = ?newRequest(ctx, input, init)
   ok(window.fetch0(input))
 
@@ -437,22 +437,13 @@ proc loadJSModule(ctx: JSContext; moduleName: cstringConst; opaque: pointer):
   response.close()
   return ctx.finishLoadModule(source, name)
 
-proc collectWindowGetSet(): seq[TabGetSet] =
-  result = @[]
-  for it in WindowEvents:
-    result.add(TabGetSet(
-      name: "on" & $it,
-      get: eventReflectGet,
-      set: eventReflectSet,
-      magic: int16(EventReflectMap.find(it))
-    ))
-
 proc addWindowModule*(ctx: JSContext):
     tuple[eventCID, eventTargetCID: JSClassID] =
   let (eventCID, eventTargetCID) = ctx.addEventModule()
-  const getset = collectWindowGetSet()
-  ctx.registerType(Window, parent = eventTargetCID, asglobal = true,
-    hasExtraGetSet = true, extraGetSet = getset)
+  ctx.registerType(Window, parent = eventTargetCID, asglobal = true)
+  let global = JS_GetGlobalObject(ctx)
+  discard ctx.addEventGetSet(global, WindowEvents)
+  JS_FreeValue(ctx, global)
   ctx.registerType(MediaQueryList, parent = eventTargetCID)
   return (eventCID, eventTargetCID)
 
