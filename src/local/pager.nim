@@ -2142,11 +2142,10 @@ proc omniRewrite(pager: Pager; s: string): string =
       let jsRet = ctx.call(fun.val, JS_UNDEFINED, arg0)
       JS_FreeValue(ctx, arg0)
       var res: string
-      if ctx.fromJSFree(jsRet, res).isOk:
+      if not JS_IsException(jsRet) and ctx.fromJSFree(jsRet, res).isOk:
         pager.lineHist[lmLocation].add(s)
         return move(res)
-      pager.alert("Error in substitution of " & $rule.match & " for " & s &
-        ": " & ctx.getExceptionMsg())
+      pager.alert("Exception in omni-rule: " & ctx.getExceptionMsg())
   return s
 
 # When the user has passed a partial URL as an argument, they might've meant
@@ -3049,7 +3048,7 @@ proc connected2(pager: Pager; container: Container; res: MailcapResult;
       attrs,
       cmfHTML in res.flags,
       container.charsetStack,
-      container.contentType
+      container.contentType.untilLower(';')
     )
     if pid == -1:
       res.ostream.sclose()
@@ -3249,7 +3248,7 @@ proc connected(pager: Pager; container: Container; response: Response) =
   if cfHistory in container.flags:
     pager.lineHist[lmLocation].add($container.url)
   # contentType must have been set by applyResponse.
-  let shortContentType = container.contentType.until(';')
+  let shortContentType = container.contentType.untilLower(';')
   var contentType = container.contentType
   if shortContentType.startsWithIgnoreCase("text/"):
     # prepare content type for %{charset}
