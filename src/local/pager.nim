@@ -2725,7 +2725,8 @@ proc execPipeWait(pager: Pager; cmd: string; ps, os: PosixStream): int =
 # Pipe output of an x-ansioutput mailcap command to the text/x-ansi handler.
 proc ansiDecode(pager: Pager; url: URL; ishtml: bool; istream: PosixStream):
     PosixStream =
-  let i = pager.config.external.mailcap.findMailcapEntry("text/x-ansi", "", url)
+  let i = pager.config.external.autoMailcap.entries
+    .findMailcapEntry("text/x-ansi", "", url)
   if i == -1:
     pager.alert("No text/x-ansi entry found")
     return nil
@@ -2905,7 +2906,11 @@ proc runMailcap(pager: Pager; url: URL; stream: PosixStream;
     if pid == -1:
       break needsConnect
     if not ishtml and mfAnsioutput in entry.flags:
-      pins = pager.ansiDecode(url, ishtml, pins)
+      let pins2 = pager.ansiDecode(url, ishtml, pins)
+      if pins2 == nil:
+        pins.sclose()
+        break needsConnect
+      pins = pins2
     twtstr.unsetEnv("MAILCAP_URL")
     let url = parseURL0("stream:" & $pid)
     pager.loader.passFd(url.pathname, pins.fd)
@@ -3543,6 +3548,8 @@ proc handleRead(pager: Pager; fd: int): Opt[void] =
     ?pager.handleUserInput()
   elif fd == pager.forkserver.estream.fd:
     pager.handleStderr()
+  elif fd in pager.loader.unregistered:
+    discard # ignore (see handleError)
   elif (let data = pager.loader.get(fd); data != nil):
     if data of ConnectingContainer:
       pager.handleRead(ConnectingContainer(data))
@@ -3553,8 +3560,6 @@ proc handleRead(pager: Pager; fd: int): Opt[void] =
       pager.loader.onRead(fd)
       if data of ConnectData:
         pager.runJSJobs()
-  elif fd in pager.loader.unregistered:
-    discard # ignore
   else:
     assert false
   ok()
@@ -3563,6 +3568,8 @@ proc handleWrite(pager: Pager; fd: int): Opt[void] =
   if pager.term.ostream != nil and pager.term.ostream.fd == fd:
     if ?pager.term.flush():
       pager.pollData.unregister(pager.term.ostream.fd)
+  elif fd in pager.loader.unregistered:
+    discard # ignore (see handleError)
   else:
     let container = ContainerData(pager.loader.get(fd)).container
     if container.iface.stream.flushWrite():
@@ -3577,6 +3584,12 @@ proc handleError(pager: Pager; fd: int): Opt[void] =
   elif fd == pager.forkserver.estream.fd:
     pager.alert("fork server crashed")
     return err()
+  elif fd in pager.loader.unregistered:
+    # this fd is already unregistered in this cycle.
+    # it is possible that another handle has taken the same fd number, in
+    # that case we must suppress the error in this cycle and wait for the
+    # next one.
+    discard
   elif (let data = pager.loader.get(fd); data != nil):
     if data of ConnectingContainer:
       pager.handleError(ConnectingContainer(data))
@@ -3598,8 +3611,6 @@ proc handleError(pager: Pager; fd: int): Opt[void] =
       dec pager.numload
     else:
       discard pager.loader.onError(fd) #TODO handle connection error?
-  elif fd in pager.loader.unregistered:
-    discard # already unregistered...
   else:
     pager.showConsole()
   ok()
