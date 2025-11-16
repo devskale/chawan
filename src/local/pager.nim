@@ -591,27 +591,40 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
         pager.alert("failed to read cookies")
   return pager
 
+proc makeDataDir(pager: Pager) =
+  # Try to ensure that we have a data directory.
+  if mkdir(cstring(pager.config.dataDir), 0o700) < 0 and errno == ENOENT:
+    # try creating parent dirs
+    var s = pager.config.dataDir
+    var i = 1
+    while (i = s.find('/', i); i > 0):
+      s[i] = '\0'
+      if mkdir(cstring(s), 0o755) < 0 and errno != EEXIST:
+        return # something went very wrong; bail
+      s[i] = '/'
+      inc i
+    # maybe it works now?
+    discard mkdir(cstring(pager.config.dataDir), 0o700)
+
 proc cleanup(pager: Pager) =
   if pager.alive:
     pager.alive = false
     discard pager.term.quit() # maybe stdout is closed, but we don't mind here
     let hist = pager.lineHist[lmLocation]
-    let hasConfigDir = dirExists(pager.config.dir)
+    var needDataDir = true
     if not hist.transient:
-      if hasConfigDir and not dirExists(pager.config.dataDir):
-        # Basedir case: data dir is not the same as config dir.
-        # I'd try to make parent dirs but in all likelihood some other
-        # program has already spammed this nonsense into $HOME so whatever.
-        discard mkdir(cstring($pager.config.external.tmpdir), 0o700)
+      let hasConfigDir = dirExists(pager.config.dir)
+      if hasConfigDir:
+        needDataDir = false
+        pager.makeDataDir()
       if hist.write($pager.config.external.historyFile).isErr:
         if hasConfigDir:
           # History is enabled by default, so do not print the error
           # message if no config dir exists.
           pager.alert("failed to save history")
-    if not pager.cookieJars.transient:
-      if hasConfigDir and not dirExists(pager.config.dataDir):
-        # see above
-        discard mkdir(cstring($pager.config.external.tmpdir), 0o700)
+    if pager.cookieJars.needsWrite():
+      if needDataDir:
+        pager.makeDataDir()
       if pager.cookieJars.write($pager.config.external.cookieFile).isErr:
         pager.alert("failed to save cookies")
     for msg in pager.alerts:
@@ -2731,8 +2744,8 @@ proc ansiDecode(pager: Pager; url: URL; ishtml: bool; istream: PosixStream):
     pager.alert("No text/x-ansi entry found")
     return nil
   var canpipe = true
-  let cmd = unquoteCommand(pager.config.external.mailcap[i].cmd, "text/x-ansi",
-    "", url, canpipe)
+  let cmd = unquoteCommand(pager.config.external.autoMailcap.entries[i].cmd,
+    "text/x-ansi", "", url, canpipe)
   if not canpipe:
     pager.alert("Error: could not pipe to text/x-ansi, decoding as text/plain")
     return nil
@@ -2905,7 +2918,8 @@ proc runMailcap(pager: Pager; url: URL; stream: PosixStream;
     stream.sclose()
     if pid == -1:
       break needsConnect
-    if not ishtml and mfAnsioutput in entry.flags:
+    let isansi = mfAnsioutput in entry.flags
+    if not ishtml and isansi:
       let pins2 = pager.ansiDecode(url, ishtml, pins)
       if pins2 == nil:
         pins.sclose()
@@ -2917,14 +2931,16 @@ proc runMailcap(pager: Pager; url: URL; stream: PosixStream;
     pins.sclose()
     let response = pager.loader.doRequest(newRequest(url))
     var flags = {cmfConnect, cmfFound, cmfRedirected}
-    if mfNeedsstyle in entry.flags or mfAnsioutput in entry.flags:
+    if mfNeedsstyle in entry.flags or isansi:
       # ansi always needs styles
+      #TOOD ideally, x-ansioutput should also switch the content type so
+      # that the UA style applies
       flags.incl(cmfNeedsstyle)
     if mfNeedsimage in entry.flags:
       flags.incl(cmfNeedsimage)
     if mfSaveoutput in entry.flags:
       flags.incl(cmfSaveoutput)
-    if ishtml:
+    if ishtml or isansi:
       flags.incl(cmfHTML)
     return MailcapResult(
       flags: flags,
