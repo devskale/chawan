@@ -152,6 +152,7 @@ type
     defaultBackgroundColor* {.jsgetset.}: Option[RGBColor]
     defaultForegroundColor* {.jsgetset.}: Option[RGBColor]
     asciiColor* {.jsgetset.}: Option[RGBColor]
+    asciiColorMode* {.jsgetset.}: Option[AsciiColorMode]
     queryDa1* {.jsgetset.}: bool
     columns* {.jsgetset.}: int32
     lines* {.jsgetset.}: int32

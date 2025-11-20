@@ -131,6 +131,7 @@ type
     defaultBackground: RGBColor
     defaultForeground: RGBColor
     asciiColor: RGBColor
+    asciiColorMode: AsciiColorMode
     ibuf: array[256, char] # buffer for chars when we can't process them
     ibufLen: int # len of ibuf
     ibufn: int # position in ibuf
@@ -954,6 +955,8 @@ proc applyConfig(term: Terminal) =
     term.defaultForeground = term.config.display.defaultForegroundColor.get
   if term.config.display.asciiColor.isSome:
     term.asciiColor = term.config.display.asciiColor.get
+  if term.config.display.asciiColorMode.isSome:
+    term.asciiColorMode = term.config.display.asciiColorMode.get
   term.attrs.prefersDark = term.defaultBackground.Y < 125
   if term.config.input.osc52Copy.isSome:
     term.osc52Copy = term.config.input.osc52Copy.get
@@ -1920,6 +1923,7 @@ proc newTerminal*(ostream: PosixStream; config: Config): Terminal =
     defaultBackground: DefaultBackground,
     defaultForeground: DefaultForeground,
     asciiColor: namedRGBColor("gray").get,
+    asciiColorMode: acmTone,
     colorMap: ANSIColorMap,
     termType: ttXterm
   )
@@ -1937,21 +1941,96 @@ proc outputAsciiImage(term: Terminal; x, y: int; image: CanvasImage): Opt[void] 
   let ch = (realhpx + term.attrs.ppl - 1) div term.attrs.ppl
   if cw <= 0 or ch <= 0:
     return ok()
+  let p = cast[ptr UncheckedArray[char]](image.data.buffer)
+  let dlen = image.data.size
+  if p == nil or dlen == 0:
+    return ok()
+  var prelude = 0
+  var i = 0
+  while i + 1 < dlen:
+    if p[i] == '\n' and p[i + 1] == '\n':
+      prelude = i + 2
+      break
+    inc i
+  let imgw = image.width
+  let imgh = image.height
+  if prelude + imgw * imgh * 4 > dlen:
+    return ok()
   var s = term.resetFormat()
-  var fg = cellColor(term.asciiColor)
-  s.addColorSGR(fg, bgmod = 0)
-  let horiz = if cw >= 2: repeat('-', cw - 2) else: ""
-  let fillc = '#'
-  let fill = if cw >= 2: repeat(fillc, cw - 2) else: ""
+  if term.asciiColorMode == acmTone:
+    var fg = cellColor(term.asciiColor)
+    s.addColorSGR(fg, bgmod = 0)
+  const ramp = " .:-=+*#%@"
+  let rlen = ramp.len
+  let ppc = term.attrs.ppc
+  let ppl = term.attrs.ppl
   for row in 0 ..< ch:
     s &= term.cursorGoto(x, y + row)
-    if cw == 1:
-      s &= "|"
-    else:
-      if row == 0 or row == ch - 1:
-        s &= "+" & horiz & "+"
+    let py0 = offy + row * ppl
+    let py1 = min(py0 + ppl, offy + realhpx)
+    var line = newString(cw)
+    var lastCC = defaultColor
+    for col in 0 ..< cw:
+      let px0 = offx + col * ppc
+      let px1 = min(px0 + ppc, offx + realwpx)
+      var acc = 0.0
+      var cnt = 0
+      var yy = py0
+      while yy < py1:
+        var xx = px0
+        let rowBase = prelude + (yy * imgw * 4)
+        while xx < px1:
+          let idx = rowBase + (xx * 4)
+          let r = uint8(p[idx])
+          let g = uint8(p[idx + 1])
+          let b = uint8(p[idx + 2])
+          acc += 0.299 * float(r) + 0.587 * float(g) + 0.114 * float(b)
+          inc cnt
+          inc xx
+        inc yy
+      if cnt == 0:
+        line[col] = ' '
       else:
-        s &= "|" & fill & "|"
+        let lum = acc / float(cnt)
+        let ri = int(lum * float(rlen - 1) / 255.0)
+        line[col] = ramp[ri]
+        if term.asciiColorMode == acmSource:
+          let rsum = acc # placeholder reuse; recompute properly below
+          discard rsum
+    if term.asciiColorMode == acmTone:
+      s &= line
+    else:
+      # write with per-character color based on averaged RGB
+      for col in 0 ..< cw:
+        let px0 = offx + col * ppc
+        let px1 = min(px0 + ppc, offx + realwpx)
+        var rtot = 0
+        var gtot = 0
+        var btot = 0
+        var ccnt = 0
+        var yy = py0
+        while yy < py1:
+          var xx = px0
+          let rowBase = prelude + (yy * imgw * 4)
+          while xx < px1:
+            let idx = rowBase + (xx * 4)
+            rtot += int(uint8(p[idx]))
+            gtot += int(uint8(p[idx + 1]))
+            btot += int(uint8(p[idx + 2]))
+            inc ccnt
+            inc xx
+          inc yy
+        var cc = defaultColor
+        if ccnt > 0:
+          let r8 = uint8(rtot div ccnt)
+          let g8 = uint8(gtot div ccnt)
+          let b8 = uint8(btot div ccnt)
+          let rc = rgb(rgba(r8, g8, b8, 255))
+          cc = cellColor(rc)
+        if cc != lastCC:
+          s.addColorSGR(cc, bgmod = 0)
+          lastCC = cc
+        s &= $line[col]
   s &= term.resetFormat()
   ?term.write(s)
   ok()

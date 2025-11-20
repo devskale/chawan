@@ -1385,11 +1385,69 @@ proc initImages(pager: Pager; container: Container) =
       if dispw <= offx:
         continue
     elif pager.term.imageMode == imAscii:
-      # No caching or encoding for ASCII; create a logical image box only.
-      let canvasImage = pager.term.loadAsciiImage(container.process,
-        image.bmp.imageId, image.x - container.fromx, image.y - container.fromy,
-        image.width, image.height, image.x, image.y, pager.bufWidth, pager.bufHeight,
-        image.offx, image.offy, redrawNext)
+      # Decode to RGBA for ASCII rendering, then place a logical image.
+      let cached = container.findCachedImage(image, 0, 0, image.width)
+      let imageId = image.bmp.imageId
+      if cached == nil:
+        # Create a cached image entry and trigger decode
+        let bmp = image.bmp
+        let cachedImage = CachedImage(
+          state: cisLoading,
+          bmp: bmp,
+          width: image.width,
+          height: image.height,
+          offx: 0,
+          erry: 0,
+          dispw: image.width,
+          preludeLen: 0,
+          transparent: false
+        )
+        if not pager.loader.shareCachedItem(bmp.cacheId, pager.loader.clientPid,
+            container.process):
+          pager.alert("Error: received incorrect cache ID from buffer")
+          continue
+        container.cachedImages.add(cachedImage)
+        pager.loader.fetch(newRequest(
+          "img-codec+" & bmp.contentType.after('/') & ":decode",
+          httpMethod = hmPost,
+          body = RequestBody(t: rbtCache, cacheId: bmp.cacheId),
+          tocache = true
+        )).then(proc(res: FetchResult) =
+          if res.isErr:
+            return
+          let response = res.get
+          let cacheId = response.outputId
+          response.close()
+          if cachedImage.state == cisCanceled:
+            pager.loader.removeCachedItem(cacheId)
+            return
+          let ps = pager.loader.openCachedItem(cacheId)
+          if ps == nil:
+            pager.loader.removeCachedItem(cacheId)
+            return
+          let mem = ps.mmap()
+          ps.sclose()
+          if mem == nil:
+            pager.loader.removeCachedItem(cacheId)
+            return
+          let blob = newBlob(mem.p, mem.len, "application/octet-stream",
+            (proc(opaque, p: pointer) =
+              deallocMem(cast[MaybeMappedMemory](opaque))
+            ), mem
+          )
+          container.redraw = true
+          cachedImage.data = blob
+          cachedImage.state = cisLoaded
+          cachedImage.cacheId = cacheId
+        )
+        continue
+      if cached.state != cisLoaded:
+        continue # loading
+      let canvasImage = pager.term.loadImage(cached.data, container.process,
+        imageId, image.x - container.fromx, image.y - container.fromy,
+        image.width, image.height, image.x, image.y, pager.bufWidth,
+        pager.bufHeight, 0, 0, image.width, 0, 0,
+        cached.preludeLen, cached.transparent, redrawNext)
       if canvasImage != nil:
         newImages.add(canvasImage)
       continue

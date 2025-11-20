@@ -30,3 +30,7 @@ type
     imSixel = "sixel"
     imKitty = "kitty"
     imAscii = "ascii"
+
+  AsciiColorMode* = enum
+    acmTone = "tone"
+    acmSource = "source"
