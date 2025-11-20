@@ -1319,6 +1319,8 @@ proc loadCachedImage(pager: Pager; container: Container; image: PosBitmap;
       headers.add("Cha-Image-Crop-Width", $dispw)
     of imKitty:
       url = parseURL0("img-codec+png:encode")
+    of imAscii:
+      assert false
     of imNone: assert false
     let request = newRequest(
       url,
@@ -1382,6 +1384,15 @@ proc initImages(pager: Pager; container: Container) =
       erry = -min(ypx, 0) mod 6
       if dispw <= offx:
         continue
+    elif pager.term.imageMode == imAscii:
+      # No caching or encoding for ASCII; create a logical image box only.
+      let canvasImage = pager.term.loadAsciiImage(container.process,
+        image.bmp.imageId, image.x - container.fromx, image.y - container.fromy,
+        image.width, image.height, image.x, image.y, pager.bufWidth, pager.bufHeight,
+        image.offx, image.offy, redrawNext)
+      if canvasImage != nil:
+        newImages.add(canvasImage)
+      continue
     let cached = container.findCachedImage(image, offx, erry, dispw)
     let imageId = image.bmp.imageId
     if cached == nil:

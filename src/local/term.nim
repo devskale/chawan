@@ -130,6 +130,7 @@ type
     newTermios: Termios
     defaultBackground: RGBColor
     defaultForeground: RGBColor
+    asciiColor: RGBColor
     ibuf: array[256, char] # buffer for chars when we can't process them
     ibufLen: int # len of ibuf
     ibufn: int # position in ibuf
@@ -951,6 +952,8 @@ proc applyConfig(term: Terminal) =
     term.defaultBackground = term.config.display.defaultBackgroundColor.get
   if term.config.display.defaultForegroundColor.isSome:
     term.defaultForeground = term.config.display.defaultForegroundColor.get
+  if term.config.display.asciiColor.isSome:
+    term.asciiColor = term.config.display.asciiColor.get
   term.attrs.prefersDark = term.defaultBackground.Y < 125
   if term.config.input.osc52Copy.isSome:
     term.osc52Copy = term.config.input.osc52Copy.get
@@ -1043,6 +1046,8 @@ proc clearImage(term: Terminal; image: CanvasImage; maxh: int) =
       term.lineDamage[y] = min(term.lineDamage[y], x)
   of imKitty:
     term.imagesToClear.add(image)
+  of imAscii:
+    discard
 
 proc clearImages*(term: Terminal; maxh: int) =
   for image in term.canvasImages:
@@ -1122,6 +1127,34 @@ proc loadImage*(term: Terminal; data: Blob; pid, imageId, x, y, width, height,
     redrawNext = true
     return image
   # no longer on screen
+  return nil
+
+# Create (or reuse) a CanvasImage entry used for ASCII box rendering
+proc loadAsciiImage*(term: Terminal; pid, imageId, x, y, width, height,
+    rx, ry, maxw, maxh, offx2, offy2: int; redrawNext: var bool): CanvasImage =
+  if (let image = term.findImage(pid, imageId, rx, ry, width, height, 0, 0, 0); image != nil):
+    if image.x != x or image.y != y or redrawNext:
+      if not term.positionImage(image, x, y, maxw, maxh, offx2, offy2):
+        image.dead = true
+        return nil
+    image.marked = true
+    return image
+  let image = CanvasImage(
+    pid: pid,
+    imageId: imageId,
+    rx: rx,
+    ry: ry,
+    offx2: offx2,
+    offy2: offy2,
+    width: width,
+    height: height,
+    erry: 0,
+    transparent: false,
+    preludeLen: 0
+  )
+  if term.positionImage(image, x, y, maxw, maxh, offx2, offy2):
+    redrawNext = true
+    return image
   return nil
 
 proc getU32BE(data: openArray[char]; i: int): uint32 =
@@ -1239,6 +1272,9 @@ proc outputKittyImage(term: Terminal; x, y: int; image: CanvasImage):
     ?term.write(outs)
   ok()
 
+# Render a logical image as an ASCII art box at the given cell position
+proc outputAsciiImage(term: Terminal; x, y: int; image: CanvasImage): Opt[void]
+
 proc outputImages*(term: Terminal): Opt[void] =
   if term.imageMode == imKitty:
     # clean up unused kitty images
@@ -1258,6 +1294,8 @@ proc outputImages*(term: Terminal): Opt[void] =
       of imNone: assert false
       of imSixel: ?term.outputSixelImage(x, y, image)
       of imKitty: ?term.outputKittyImage(x, y, image)
+      of imAscii:
+        var _ = term.outputAsciiImage(x, y, image)
       image.damaged = false
   ok()
 
@@ -1881,8 +1919,41 @@ proc newTerminal*(ostream: PosixStream; config: Config): Terminal =
     config: config,
     defaultBackground: DefaultBackground,
     defaultForeground: DefaultForeground,
+    asciiColor: namedRGBColor("gray").get,
     colorMap: ANSIColorMap,
     termType: ttXterm
   )
+
+proc outputAsciiImage(term: Terminal; x, y: int; image: CanvasImage): Opt[void] =
+  let offx = image.offx
+  let offy = image.offy
+  let dispw = image.dispw
+  let disph = image.disph
+  let realwpx = dispw - offx
+  let realhpx = disph - offy
+  if realwpx <= 0 or realhpx <= 0:
+    return ok()
+  let cw = (realwpx + term.attrs.ppc - 1) div term.attrs.ppc
+  let ch = (realhpx + term.attrs.ppl - 1) div term.attrs.ppl
+  if cw <= 0 or ch <= 0:
+    return ok()
+  var s = term.resetFormat()
+  var fg = cellColor(term.asciiColor)
+  s.addColorSGR(fg, bgmod = 0)
+  let horiz = if cw >= 2: repeat('-', cw - 2) else: ""
+  let fillc = '#'
+  let fill = if cw >= 2: repeat(fillc, cw - 2) else: ""
+  for row in 0 ..< ch:
+    s &= term.cursorGoto(x, y + row)
+    if cw == 1:
+      s &= "|"
+    else:
+      if row == 0 or row == ch - 1:
+        s &= "+" & horiz & "+"
+      else:
+        s &= "|" & fill & "|"
+  s &= term.resetFormat()
+  ?term.write(s)
+  ok()
 
 {.pop.} # raises: []

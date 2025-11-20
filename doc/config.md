@@ -731,15 +731,24 @@ completely.</td>
 
 <tr>
 <td>image-mode</td>
-<td>"auto" / "none" / "sixel" / "kitty"</td>
+<td>"auto" / "none" / "sixel" / "kitty" / "ascii"</td>
 <td>"auto"</td>
-<td>Specifies the image output mode. "sixel" uses sixels for output, "kitty"
-uses the Kitty image display protocol, "none" disables image display
+<td>Specifies the inline image display method.
+<p>
+"sixel" uses sixels for output, "kitty" uses the Kitty image display protocol,
+"ascii" renders images as ASCII art boxes, and "none" disables image display
 completely.
 <p>
 "auto" tries to detect sixel or kitty support, and falls back to "none" when
 neither are available.  This is the default setting, but you must also
 enable `buffer.images` for images to work.</td>
+</tr>
+<tr>
+<td>ascii-color</td>
+<td>color</td>
+<td>"gray"</td>
+<td>Sets the foreground color used to draw ASCII art boxes when
+`display.image-mode = "ascii"`.</td>
 </tr>
 
 <tr>

@@ -151,6 +151,7 @@ type
     setTitle* {.jsgetset.}: Option[bool]
     defaultBackgroundColor* {.jsgetset.}: Option[RGBColor]
     defaultForegroundColor* {.jsgetset.}: Option[RGBColor]
+    asciiColor* {.jsgetset.}: Option[RGBColor]
     queryDa1* {.jsgetset.}: bool
     columns* {.jsgetset.}: int32
     lines* {.jsgetset.}: int32
