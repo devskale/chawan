@@ -132,6 +132,7 @@ type
     defaultForeground: RGBColor
     asciiColor: RGBColor
     asciiColorMode: AsciiColorMode
+    asciiRamp: string
     ibuf: array[256, char] # buffer for chars when we can't process them
     ibufLen: int # len of ibuf
     ibufn: int # position in ibuf
@@ -957,6 +958,8 @@ proc applyConfig(term: Terminal) =
     term.asciiColor = term.config.display.asciiColor.get
   if term.config.display.asciiColorMode.isSome:
     term.asciiColorMode = term.config.display.asciiColorMode.get
+  if term.config.display.asciiRamp.isSome:
+    term.asciiRamp = term.config.display.asciiRamp.get
   term.attrs.prefersDark = term.defaultBackground.Y < 125
   if term.config.input.osc52Copy.isSome:
     term.osc52Copy = term.config.input.osc52Copy.get
@@ -1924,6 +1927,7 @@ proc newTerminal*(ostream: PosixStream; config: Config): Terminal =
     defaultForeground: DefaultForeground,
     asciiColor: namedRGBColor("gray").get,
     asciiColorMode: acmTone,
+    asciiRamp: " .:-=+*#%@",
     colorMap: ANSIColorMap,
     termType: ttXterm
   )
@@ -1960,7 +1964,7 @@ proc outputAsciiImage(term: Terminal; x, y: int; image: CanvasImage): Opt[void] 
   if term.asciiColorMode == acmTone:
     var fg = cellColor(term.asciiColor)
     s.addColorSGR(fg, bgmod = 0)
-  const ramp = " .:-=+*#%@"
+  let ramp = term.asciiRamp
   let rlen = ramp.len
   let ppc = term.attrs.ppc
   let ppl = term.attrs.ppl

@@ -750,6 +750,21 @@ enable `buffer.images` for images to work.</td>
 <td>Sets the foreground color used to draw ASCII art boxes when
 `display.image-mode = "ascii"`.</td>
 </tr>
+<tr>
+<td>ascii-color-mode</td>
+<td>"tone" / "source"</td>
+<td>"tone"</td>
+<td>When set to "tone", a single configured color is used for ASCII output.
+When set to "source", per-character ANSI colors are approximated from the
+source image pixels (subject to terminal color-mode). </td>
+</tr>
+<tr>
+<td>ascii-ramp</td>
+<td>string</td>
+<td>" .:-=+*#%@"</td>
+<td>Character ramp used to map luminance to ASCII. Customize to tune density
+and aesthetics, e.g. " .oO@".</td>
+</tr>
 
 <tr>
 <td>sixel-colors</td>
