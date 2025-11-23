@@ -9,6 +9,7 @@ import html/catom
 import html/chadombuilder
 import html/dom
 import html/domcanvas
+import html/domexception
 import html/event
 import html/formdata
 import html/jsencoding
@@ -227,7 +228,9 @@ proc mark(rt: JSRuntime; window: Window; markFunc: JS_MarkFunc) {.jsmark.} =
   for it in window.jsStore:
     JS_MarkValue(rt, it, markFunc)
 
-method isSameOrigin*(window: Window; origin: Origin): bool {.base.} =
+proc isSameOrigin(window: Window; origin: Origin): bool =
+  if window.dangerAlwaysSameOrigin: # for client
+    return true
   return window.settings.origin.isSameOrigin(origin)
 
 proc fetch0(window: Window; input: JSRequest): FetchPromise =
@@ -512,6 +515,7 @@ proc addScripting*(window: Window) =
   ctx.setGlobal(window)
   ctx.addConsoleModule()
   ctx.addNavigatorModule()
+  ctx.addDOMExceptionModule()
   ctx.addDOMModule(eventTargetCID)
   ctx.addCanvasModule()
   ctx.addURLModule()
