@@ -108,6 +108,7 @@ type
     tasks: array[BufferCommand, int]
     reportedLoad: LoadResult
     onReshapeImmediately: bool
+    prevHover: Element
     next: PagerHandle
 
   BufferContext = ref object
@@ -135,7 +136,6 @@ type
     navigateUrl: URL # stored when JS tries to navigate
     outputId: int
     pollData: PollData
-    prevHover: Element
     clickResult: ClickResult
     rootBox: BlockBox
     window: Window
@@ -898,9 +898,10 @@ proc updateHover*(bc: BufferContext; handle: PagerHandle;
   let thisNode = bc.getCursorElement(cursorx, cursory)
   var hover = newSeq[tuple[t: HoverType, s: string]]()
   var repaint = false
-  if thisNode != bc.prevHover:
+  let prevHover = handle.prevHover
+  if thisNode != prevHover:
     var oldHover = newSeq[Element]()
-    for element in bc.prevHover.branchElems:
+    for element in prevHover.branchElems:
       if element.hover:
         oldHover.add(element)
     for ht in HoverType:
@@ -921,7 +922,7 @@ proc updateHover*(bc: BufferContext; handle: PagerHandle;
       repaint = true
   if repaint:
     bc.maybeReshape()
-  bc.prevHover = thisNode
+  handle.prevHover = thisNode
   move(hover)
 
 proc loadResources(bc: BufferContext): EmptyPromise =
@@ -1030,7 +1031,7 @@ proc cloneCmd(bc: BufferContext; handle: PagerHandle; r: var PacketReader;
 
 proc clone*(iface: BufferInterface; newurl: URL; pstreamFd: cint):
     Promise[int] =
-  if not iface.stream.flush():
+  if iface.stream.flush().isErr:
     return nil
   iface.stream.source.withPacketWriter w:
     w.swrite(bcClone)
@@ -1125,7 +1126,7 @@ proc onload(bc: BufferContext; data: InputData) =
   var n = 0
   while true:
     if not reprocess:
-      n = data.stream.readData(iq)
+      n = data.stream.read(iq)
       if n < 0:
         break
       bc.bytesRead += uint64(n)
@@ -1462,7 +1463,7 @@ proc readSuccessCmd(bc: BufferContext; handle: PagerHandle; r: var PacketReader;
 
 proc readSuccess*(iface: BufferInterface; s: string; fd: cint):
     Promise[Request] =
-  if not iface.stream.flush():
+  if iface.stream.flush().isErr:
     return newResolvedPromise[Request](nil)
   iface.stream.withPacketWriterFire w:
     w.swrite(bcReadSuccess)
