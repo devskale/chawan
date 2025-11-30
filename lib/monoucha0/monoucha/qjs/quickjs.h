@@ -753,7 +753,6 @@ static inline const char *JS_ToCString(JSContext *ctx, JSValueConst val1)
 void JS_FreeCString(JSContext *ctx, const char *ptr);
 
 JSValue JS_NewNarrowStringLen(JSContext *ctx, const char *str, size_t len);
-JS_BOOL JS_IsStringWideChar(JSValueConst value);
 uint8_t *JS_GetNarrowStringBuffer(JSValueConst value);
 uint32_t JS_GetStringLength(JSValueConst value);
 void JS_BuildBacktrace(JSContext *ctx, JSValueConst obj, int skip_first_level);
@@ -767,7 +766,6 @@ JS_BOOL JS_IsFunction(JSContext* ctx, JSValueConst val);
 JS_BOOL JS_IsConstructor(JSContext* ctx, JSValueConst val);
 JS_BOOL JS_SetConstructorBit(JSContext *ctx, JSValueConst func_obj, JS_BOOL val);
 
-JSValue JS_NewArrayFrom(JSContext *ctx, int count, const JSValue *values);
 JSValue JS_NewArray(JSContext *ctx);
 int JS_IsArray(JSContext *ctx, JSValueConst val);
 

@@ -1315,7 +1315,6 @@ static JSValue *build_arg_list(JSContext *ctx, uint32_t *plen,
                                JSValueConst array_arg);
 static BOOL js_get_fast_array(JSContext *ctx, JSValueConst obj,
                               JSValue **arrpp, uint32_t *countp);
-static int expand_fast_array(JSContext *ctx, JSObject *p, uint32_t new_len);
 static JSValue JS_CreateAsyncFromSyncIterator(JSContext *ctx,
                                               JSValueConst sync_iter);
 static void js_c_function_data_finalizer(JSRuntime *rt, JSValue val);
@@ -4151,16 +4150,10 @@ JSValue JS_NewNarrowStringLen(JSContext *ctx, const char *buf, size_t buf_len)
     return js_new_string8_len(ctx, buf, buf_len);
 }
 
-JS_BOOL JS_IsStringWideChar(JSValueConst value)
-{
-    if (unlikely(JS_VALUE_GET_TAG(value) != JS_TAG_STRING))
-        return FALSE;
-    return JS_VALUE_GET_STRING(value)->is_wide_char;
-}
-
 uint8_t *JS_GetNarrowStringBuffer(JSValueConst value)
 {
-    if (unlikely(JS_VALUE_GET_TAG(value) != JS_TAG_STRING))
+    if (JS_VALUE_GET_TAG(value) != JS_TAG_STRING ||
+        JS_VALUE_GET_STRING(value)->is_wide_char)
         return NULL;
     return JS_VALUE_GET_STRING(value)->u.str8;
 }
@@ -5459,32 +5452,6 @@ JSValue JS_NewObjectClass(JSContext *ctx, int class_id)
 JSValue JS_NewObjectProto(JSContext *ctx, JSValueConst proto)
 {
     return JS_NewObjectProtoClass(ctx, proto, JS_CLASS_OBJECT);
-}
-
-JSValue JS_NewArrayFrom(JSContext *ctx, int count, const JSValue *values)
-{
-    JSObject *p;
-    JSValue obj;
-    int i;
-
-    obj = JS_NewArray(ctx);
-    if (JS_IsException(obj))
-        goto exception;
-    if (count > 0) {
-        p = JS_VALUE_GET_OBJ(obj);
-        if (expand_fast_array(ctx, p, count)) {
-            JS_FreeValue(ctx, obj);
-            goto exception;
-        }
-        p->u.array.count = count;
-        p->prop[0].u.value = JS_NewInt32(ctx, count);
-        memcpy(p->u.array.u.values, values, count * sizeof(*values));
-    }
-    return obj;
-exception:
-    for (i = 0; i < count; i++)
-        JS_FreeValue(ctx, values[i]);
-    return JS_EXCEPTION;
 }
 
 JSValue JS_NewArray(JSContext *ctx)

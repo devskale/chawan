@@ -191,6 +191,7 @@ type
     tmpfSeq: uint
     unreg: seq[Container]
     attrs: WindowAttributes
+    pidMap: Table[int, string] # pid -> command
 
   ContainerData* = ref object of MapData
     container*: Container
@@ -229,6 +230,7 @@ proc handleRead(pager: Pager; fd: int): Opt[void]
 proc inputLoop(pager: Pager): Opt[void]
 proc loadURL(pager: Pager; url: string; contentType = "";
   charset = CHARSET_UNKNOWN; history = true)
+proc onSetLoadInfo(pager: Pager; container: Container)
 proc openMenu(pager: Pager; x = -1; y = -1)
 proc readPipe(pager: Pager; contentType: string; cs: Charset; ps: PosixStream;
   title: string)
@@ -295,6 +297,7 @@ proc setContainer(pager: Pager; c: Container) =
       pager.tab = c.tab
     c.tab.current = c
     c.queueDraw()
+    pager.onSetLoadInfo(c)
     pager.updateTitle = true
   else:
     pager.tab.current = nil
@@ -1563,7 +1566,8 @@ proc setTab(pager: Pager; container: Container; tab: Tab) =
       pager.tab = pager.tabHead
 
 proc onSetLoadInfo(pager: Pager; container: Container) =
-  if pager.alertState != pasAlertOn and pager.askPromise == nil:
+  if container.loadinfo != "" and pager.alertState != pasAlertOn and
+      pager.askPromise == nil:
     discard pager.status.writeStatusMessage(container.loadinfo)
     pager.alertState = pasLoadInfo
     pager.updateStatus = ussSkip
@@ -1571,7 +1575,6 @@ proc onSetLoadInfo(pager: Pager; container: Container) =
 proc addContainer(pager: Pager; container: Container) =
   pager.setTab(container, pager.tab)
   pager.setContainer(container)
-  pager.onSetLoadInfo(container)
 
 proc newContainer(pager: Pager; bufferConfig: BufferConfig;
     loaderConfig: LoaderClientConfig; request: Request; url: URL; title = "";
@@ -1723,7 +1726,6 @@ proc replace(pager: Pager; target, container: Container) =
   pager.updatePinned(target, container)
   if pager.container == target:
     pager.setContainer(container)
-    pager.onSetLoadInfo(container)
 
 proc unregisterContainer(pager: Pager; container: Container) =
   if container.iface != nil: # fully connected
@@ -1862,6 +1864,8 @@ proc runCommand(pager: Pager; cmd: string; suspend, wait: bool;
         if errno != EINTR:
           discard pager.term.restart()
           return err()
+    else:
+      pager.pidMap[int(pid)] = cmd
     discard sigaction(SIGINT, oldint, act)
     discard sigaction(SIGQUIT, oldquit, act)
     discard sigprocmask(SIG_SETMASK, oldmask, dummy);
@@ -2806,7 +2810,9 @@ proc runMailcapWritePipe(pager: Pager; stream: PosixStream;
     stream.sclose()
     if needsterminal:
       var x: cint
-      discard waitpid(pid, x, 0)
+      while waitpid(pid, x, 0) == -1:
+        if errno != EINTR:
+          break
       discard pager.term.restart() #TODO
 
 proc writeToFile(istream: PosixStream; outpath: string): bool =
@@ -3663,7 +3669,7 @@ proc handleError(pager: Pager; fd: int): Opt[void] =
 
 let SIGWINCH {.importc, header: "<signal.h>", nodecl.}: cint
 
-proc setupSigwinch(pager: Pager): PosixStream =
+proc setupSignals(pager: Pager): PosixStream =
   var pipefd {.noinit.}: array[2, cint]
   doAssert pipe(pipefd) != -1
   let writer = newPosixStream(pipefd[1])
@@ -3671,18 +3677,37 @@ proc setupSigwinch(pager: Pager): PosixStream =
   writer.setBlocking(false)
   var gwriter {.global.}: PosixStream = nil
   gwriter = writer
-  onSignal SIGWINCH:
-    discard sig
-    discard gwriter.write([0u8])
+  onSignal SIGWINCH, SIGCHLD:
+    let n = if sig == SIGCHLD: 1u8 else: 0u8
+    discard gwriter.write([n])
   let reader = newPosixStream(pipefd[0])
   reader.setCloseOnExec()
   reader.setBlocking(false)
   return reader
 
+proc handleSigchld(pager: Pager): Opt[void] =
+  var wstatus: cint
+  var pid: int
+  while (pid = int(waitpid(Pid(-1), wstatus, WNOHANG)); pid == -1):
+    if errno != EINTR:
+      return err() # ECHILD, stop looking
+  var cmd: string
+  if pager.pidMap.pop(pid, cmd):
+    if WIFEXITED(wstatus):
+      let n = WEXITSTATUS(wstatus)
+      if n != 0:
+        pager.alert("Command " & cmd & " exited with code " & $n)
+    elif WIFSIGNALED(wstatus):
+      let sig = WTERMSIG(wstatus)
+      # following were likely sent by the user, so don't bother alerting
+      if sig != SIGINT and sig != SIGTERM and sig != SIGKILL:
+        pager.alert("Command " & cmd & " crashed")
+  ok()
+
 proc inputLoop(pager: Pager): Opt[void] =
   pager.pollData.register(pager.term.istream.fd, POLLIN)
-  let sigwinch = pager.setupSigwinch()
-  pager.pollData.register(sigwinch.fd, POLLIN)
+  let signals = pager.setupSignals()
+  pager.pollData.register(signals.fd, POLLIN)
   while true:
     let timeout = pager.timeouts.sortAndGetTimeout()
     pager.pollData.poll(timeout)
@@ -3690,10 +3715,22 @@ proc inputLoop(pager: Pager): Opt[void] =
     for event in pager.pollData.events:
       let efd = int(event.fd)
       if (event.revents and POLLIN) != 0:
-        if event.fd == sigwinch.fd:
-          sigwinch.drain()
-          ?pager.term.queryWindowSize()
-          pager.windowChange()
+        if event.fd == signals.fd:
+          var sigwinch = false
+          var sigchld = 0u
+          var buffer {.noinit.}: array[256, uint8]
+          while (let n = signals.read(buffer); n > 0):
+            for c in buffer.toOpenArray(0, n - 1):
+              if c == 1: # SIGCHLD
+                inc sigchld
+              else: # 0, SIGWINCH
+                sigwinch = true
+          for u in 0 ..< sigchld:
+            if pager.handleSigchld().isErr:
+              break
+          if sigwinch:
+            ?pager.term.queryWindowSize()
+            pager.windowChange()
         else:
           ?pager.handleRead(efd)
       if (event.revents and POLLOUT) != 0:
