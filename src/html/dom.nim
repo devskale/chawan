@@ -2,6 +2,7 @@
 
 import std/algorithm
 import std/hashes
+import std/math
 import std/options
 import std/posix
 import std/sets
@@ -34,6 +35,7 @@ import monoucha/jsbind
 import monoucha/jsnull
 import monoucha/jsopaque
 import monoucha/jspropenumlist
+import monoucha/jstypes
 import monoucha/jsutils
 import monoucha/quickjs
 import monoucha/tojs
@@ -183,6 +185,7 @@ type
     jsStore*: seq[JSValue]
     jsStoreFree*: int
     weakMap*: array[WindowWeakMap, JSValue]
+    customElements* {.jsget.}: CustomElementRegistry
 
   # Navigator stuff
   Navigator* = ref object
@@ -202,6 +205,39 @@ type
 
   Crypto* = ref object
     urandom*: PosixStream
+
+  CECallbackType = enum
+    cctConnected = "connectedCallback"
+    cctDisconnected = "disconnectedCallback"
+    cctAdopted = "adoptedCallback"
+    cctConnectedMove = "connectedMoveCallback"
+    cctAttributeChanged = "attributeChangedCallback"
+    # note: if you add more, update define0 too
+    cctFormAssociated = "formAssociatedCallback"
+    cctFormReset = "formResetCallback"
+    cctFormDisabled = "formDisabledCallback"
+    cctFormStateRestore = "formStateRestoreCallback"
+
+  CECallbackMap = array[CECallbackType, JSValue]
+
+  CustomElementFlag = enum
+    cefFormAssociated, cefInternals, cefShadow
+
+  CustomElementDef = ref object
+    name: CAtom
+    localName: CAtom
+    ctor: JSValue
+    observedAttrs: seq[string] #TODO CAtom?
+    callbacks: CECallbackMap
+    flags: set[CustomElementFlag]
+    next: CustomElementDef
+
+  CustomElementRegistry* = ref object
+    rt*: JSRuntime
+    defsHead: CustomElementDef
+    defsTail: CustomElementDef
+    inDefine: bool
+    scoped: bool
 
   NamedNodeMap = ref object
     element: Element
@@ -557,6 +593,8 @@ type
 
   HTMLModElement = ref object of HTMLElement
 
+  HTMLProgressElement = ref object of HTMLElement
+
   HTMLUnknownElement = ref object of HTMLElement
 
 jsDestructor(Navigator)
@@ -612,6 +650,7 @@ jsDestructor(HTMLTitleElement)
 jsDestructor(HTMLObjectElement)
 jsDestructor(HTMLSourceElement)
 jsDestructor(HTMLModElement)
+jsDestructor(HTMLProgressElement)
 jsDestructor(SVGElement)
 jsDestructor(SVGSVGElement)
 jsDestructor(Node)
@@ -640,6 +679,7 @@ jsDestructor(NamedNodeMap)
 jsDestructor(CSSStyleDeclaration)
 jsDestructor(DOMRect)
 jsDestructor(DOMRectList)
+jsDestructor(CustomElementRegistry)
 
 # Forward declarations
 proc loadSheet(window: Window; url: URL; charset: Charset; layer: CAtom):
@@ -707,9 +747,12 @@ proc attrb*(element: Element; at: StaticAtom): bool
 proc attrl*(element: Element; s: StaticAtom): Opt[int32]
 proc attrul*(element: Element; s: StaticAtom): Opt[uint32]
 proc attrulgz*(element: Element; s: StaticAtom): Opt[uint32]
+proc attrd*(element: Element; s: StaticAtom): Opt[float64]
+proc attrdgz*(element: Element; s: StaticAtom): Opt[float64]
 proc attrl(element: Element; name: StaticAtom; value: int32)
 proc attrul(element: Element; name: StaticAtom; value: uint32)
 proc attrulgz(element: Element; name: StaticAtom; value: uint32)
+proc attrd(element: Element; name: StaticAtom; value: float64)
 proc delAttr(ctx: JSContext; element: Element; i: int)
 proc elementInsertionSteps(element: Element): bool
 proc elIndex*(this: Element): int
@@ -770,7 +813,7 @@ var getClientRectsImpl*: proc(element: Element; firstOnly, blockOnly: bool):
 # Reflected attributes.
 type
   ReflectType = enum
-    rtStr, rtUrl, rtBool, rtLong, rtUlongGz, rtUlong, rtFunction,
+    rtStr, rtUrl, rtBool, rtLong, rtUlongGz, rtUlong, rtDoubleGz, rtFunction,
     rtReferrerPolicy, rtCrossOrigin, rtMethod
 
   ReflectEntry = object
@@ -782,6 +825,8 @@ type
       i: int32
     of rtUlong, rtUlongGz:
       u: uint32
+    of rtDoubleGz:
+      f: float32
     of rtFunction:
       ctype: StaticAtom
     else: discard
@@ -888,6 +933,9 @@ proc makem(attrname, funcname: StaticAtom; ts: varargs[TagType]): ReflectEntry =
     tags: toset(ts)
   )
 
+proc makedgz(name: StaticAtom; t: TagType; f: float32): ReflectEntry =
+  ReflectEntry(attrname: name, funcname: name, t: rtDoubleGz, f: f, tags: {t})
+
 proc makem(name: StaticAtom; ts: varargs[TagType]): ReflectEntry =
   makem(name, name, ts)
 
@@ -932,6 +980,8 @@ const ReflectTable0 = [
   makeurl(satCite, TAG_BLOCKQUOTE, TAG_Q, TAG_INS, TAG_DEL),
   makeurl(satHref, TAG_LINK),
   makeurl(satData, TAG_OBJECT),
+  makedgz(satValue, TAG_PROGRESS, 0),
+  makedgz(satMax, TAG_PROGRESS, 1),
   # super-global attributes
   makes(satClass, satClassName, AllTagTypes),
   makef(satOnclick, satClick),
@@ -1257,8 +1307,8 @@ proc parseStylesheet(window: Window; s: string; baseURL: URL; charset: Charset;
     layer: CAtom): Promise[LoadSheetResult] =
   let sheet = s.parseStylesheet(baseURL, addr window.settings, coAuthor, layer)
   var promises: seq[EmptyPromise] = @[]
-  var sheets = newSeq[LoadSheetResult](sheet.importList.len)
-  for i, it in sheet.importList.mypairs:
+  var sheets = newSeq[LoadSheetResult](sheet.s.importList.len)
+  for i, it in sheet.s.importList.mypairs:
     let url = it.url
     let layer = it.layer
     (proc(i: int) =
@@ -1327,11 +1377,13 @@ proc loadResource(window: Window; link: HTMLLinkElement) =
       # Note: we intentionally load all sheets first and *then* check
       # whether media applies, to prevent media query based tracking.
       #TODO should we really keep the current sheet if the result is nil?
-      if res.head != nil and applies:
+      if res.head != nil:
         link.updateSheet(res.head, res.tail)
         let disabled = link.isDisabled()
         for sheet in link.sheets:
           sheet.disabled = disabled
+          sheet.applies = applies
+          sheet.media = media
       inc window.loadedSheetNum
     )
     window.pendingResources.add(p)
@@ -1559,6 +1611,159 @@ proc getComputedStyle0*(ctx: JSContext; window: Window; element: Element;
   # the best.
   ok(newCSSStyleDeclaration(element, element.attr(satStyle), computed = true,
     readonly = true))
+
+proc addCustomElementRegistry*(window: Window; rt: JSRuntime) =
+  window.customElements = CustomElementRegistry(rt: rt)
+
+# CustomElementRegistry
+iterator defs(this: CustomElementRegistry): CustomElementDef =
+  var def = this.defsHead
+  while def != nil:
+    yield def
+    def = def.next
+
+proc newCustomElementRegistry(ctx: JSContext): CustomElementRegistry
+    {.jsctor.} =
+  return CustomElementRegistry(rt: JS_GetRuntime(ctx), scoped: true)
+
+proc mark(rt: JSRuntime; this: CustomElementRegistry; markFunc: JS_MarkFunc)
+    {.jsmark.} =
+  for def in this.defs:
+    JS_MarkValue(rt, def.ctor, markFunc)
+    for val in def.callbacks:
+      JS_MarkValue(rt, val, markFunc)
+
+proc finalize(this: CustomElementRegistry) {.jsfin.} =
+  for def in this.defs:
+    JS_FreeValueRT(this.rt, def.ctor)
+    for val in def.callbacks:
+      JS_FreeValueRT(this.rt, val)
+
+type CustomElementDefinitionOptions = object of JSDict
+  extends {.jsdefault.}: Option[string]
+
+proc find(this: CustomElementRegistry; name: CAtom): CustomElementDef =
+  for it in this.defs:
+    if it.name == name:
+      return it
+  return nil
+
+proc find(this: CustomElementRegistry; ctx: JSContext; ctor: JSValueConst):
+    CustomElementDef =
+  for it in this.defs:
+    if ctx.strictEquals(it.ctor, ctor):
+      return it
+  return nil
+
+proc tryGetStrSeq(ctx: JSContext; ctor: JSValueConst; name: cstring;
+    res: var seq[string]): Opt[void] =
+  let val = JS_GetPropertyStr(ctx, ctor, name)
+  if JS_IsException(val):
+    return err()
+  if not JS_IsUndefined(val):
+    ?ctx.fromJSFree(val, res)
+  ok()
+
+proc tryGetCallback(ctx: JSContext; proto: JSValueConst; t: CECallbackType;
+    callbacks: var CECallbackMap): Opt[void] =
+  let val = JS_GetPropertyStr(ctx, proto, cstring($t))
+  if JS_IsException(val):
+    return err()
+  if not JS_IsUndefined(val):
+    callbacks[t] = val # val is freed by caller
+    if not JS_IsFunction(ctx, val):
+      JS_ThrowTypeError(ctx, "lifecycle callback is not a function")
+      return err()
+  ok()
+
+proc define0(ctx: JSContext; this: CustomElementRegistry; name: CAtom;
+    ctor, proto: JSValueConst; def: CustomElementDef): Opt[void] =
+  if not JS_IsObject(proto):
+    JS_ThrowTypeError(ctx, "prototype is not an object")
+    return err()
+  for t in cctConnected..cctAttributeChanged:
+    ?ctx.tryGetCallback(proto, t, def.callbacks)
+  if not JS_IsNull(def.callbacks[cctAttributeChanged]):
+    ?ctx.tryGetStrSeq(ctor, "observedAttributes", def.observedAttrs)
+  var disabled: seq[string]
+  ?ctx.tryGetStrSeq(ctor, "disabledFeatures", disabled)
+  if "internals" in disabled:
+    def.flags.excl(cefInternals)
+  if "shadow" in disabled:
+    def.flags.excl(cefShadow)
+  var formAssociated: bool
+  let val = JS_GetPropertyStr(ctx, ctor, "formAssociated")
+  ?ctx.fromJS(val, formAssociated)
+  if formAssociated:
+    def.flags.incl(cefFormAssociated)
+    for t in cctFormAssociated..cctFormStateRestore:
+      ?ctx.tryGetCallback(proto, t, def.callbacks)
+  ok()
+
+proc newCustomElementDef(name, localName: CAtom): CustomElementDef =
+  let def = CustomElementDef(
+    name: name,
+    localName: localName,
+    flags: {cefInternals, cefShadow}
+  )
+  for it in def.callbacks.mitems:
+    it = JS_NULL
+  return def
+
+proc define(ctx: JSContext; this: CustomElementRegistry; name: CAtom;
+    ctor: JSValueConst; options = CustomElementDefinitionOptions()): JSValue
+    {.jsfunc.} =
+  if not JS_IsConstructor(ctx, ctor):
+    return JS_ThrowTypeError(ctx, "constructor expected")
+  if this.find(name) != nil or this.find(ctx, ctor) != nil:
+    return JS_ThrowDOMException(ctx, "NotSupportedError",
+      "a custom element with this name/constructor is already defined")
+  if options.extends.isSome:
+    #TODO extends
+    return JS_ThrowDOMException(ctx, "NotSupportedError",
+      "extends not supported yet")
+  if this.inDefine:
+    return JS_ThrowDOMException(ctx, "NotSupportedError",
+      "recursive custom element definition is not allowed")
+  this.inDefine = true
+  let proto = JS_GetPropertyStr(ctx, ctor, "prototype")
+  if JS_IsException(proto):
+    this.inDefine = false
+    return JS_EXCEPTION
+  let def = newCustomElementDef(name, name) #TODO extends/localName
+  let res = ctx.define0(this, name, ctor, proto, def)
+  JS_FreeValue(ctx, proto)
+  this.inDefine = false
+  if res.isErr:
+    for it in def.callbacks:
+      JS_FreeValue(ctx, it)
+    return JS_EXCEPTION
+  def.ctor = JS_DupValue(ctx, ctor)
+  if this.defsTail == nil:
+    this.defsHead = def
+  else:
+    this.defsTail.next = def
+  this.defsTail = def
+  #TODO is scoped
+  #TODO upgrade
+  #TODO when-defined
+  return JS_UNDEFINED
+
+proc get(ctx: JSContext; this: CustomElementRegistry; name: CAtom): JSValue
+    {.jsfunc.} =
+  let def = this.find(name)
+  if def != nil:
+    return JS_DupValue(ctx, def.ctor)
+  return JS_UNDEFINED
+
+proc getName(ctx: JSContext; this: CustomElementRegistry; ctor: JSValueConst):
+    CAtom {.jsfunc.} =
+  let def = this.find(ctx, ctor)
+  if def != nil:
+    return def.name
+  return CAtomNull
+
+#TODO whenDefined, initialize
 
 # Node
 when defined(debug):
@@ -3074,7 +3279,7 @@ proc jsReflectGet(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
   if ctx.fromJS(this, element).isErr:
     return JS_EXCEPTION
   if element.tagType notin entry.tags:
-    return JS_ThrowTypeError(ctx, "Invalid tag type %s", element.tagType)
+    return JS_ThrowTypeError(ctx, "invalid tag type")
   case entry.t
   of rtStr: return ctx.toJS(element.attr(entry.attrname))
   of rtUrl:
@@ -3099,6 +3304,7 @@ proc jsReflectGet(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
   of rtLong: return ctx.toJS(element.attrl(entry.attrname).get(entry.i))
   of rtUlong: return ctx.toJS(element.attrul(entry.attrname).get(entry.u))
   of rtUlongGz: return ctx.toJS(element.attrulgz(entry.attrname).get(entry.u))
+  of rtDoubleGz: return ctx.toJS(element.attrdgz(entry.attrname).get(entry.f))
   of rtFunction: return JS_NULL
 
 proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
@@ -3108,12 +3314,12 @@ proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
     return JS_EXCEPTION
   let entry = ReflectTable[uint16(magic)]
   if element.tagType notin entry.tags:
-    return JS_ThrowTypeError(ctx, "Invalid tag type %s", element.tagType)
+    return JS_ThrowTypeError(ctx, "invalid tag type")
   case entry.t
   of rtStr, rtUrl, rtReferrerPolicy, rtMethod:
     var x: string
-    if ctx.fromJS(val, x).isOk:
-      element.attr(entry.attrname, x)
+    ?ctx.fromJS(val, x)
+    element.attr(entry.attrname, x)
   of rtCrossOrigin:
     if JS_IsNull(val):
       let i = element.findAttr(entry.attrname.toAtom())
@@ -3121,29 +3327,35 @@ proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
         ctx.delAttr(element, i)
     else:
       var x: string
-      if ctx.fromJS(val, x).isOk:
-        element.attr(entry.attrname, x)
+      ?ctx.fromJS(val, x)
+      element.attr(entry.attrname, x)
   of rtBool:
     var x: bool
-    if ctx.fromJS(val, x).isOk:
-      if x:
-        element.attr(entry.attrname, "")
-      else:
-        let i = element.findAttr(entry.attrname.toAtom())
-        if i != -1:
-          ctx.delAttr(element, i)
+    ?ctx.fromJS(val, x)
+    if x:
+      element.attr(entry.attrname, "")
+    else:
+      let i = element.findAttr(entry.attrname.toAtom())
+      if i != -1:
+        ctx.delAttr(element, i)
   of rtLong:
     var x: int32
-    if ctx.fromJS(val, x).isOk:
-      element.attrl(entry.attrname, x)
+    ?ctx.fromJS(val, x)
+    element.attrl(entry.attrname, x)
   of rtUlong:
     var x: uint32
-    if ctx.fromJS(val, x).isOk:
-      element.attrul(entry.attrname, x)
+    ?ctx.fromJS(val, x)
+    element.attrul(entry.attrname, x)
   of rtUlongGz:
     var x: uint32
-    if ctx.fromJS(val, x).isOk:
-      element.attrulgz(entry.attrname, x)
+    ?ctx.fromJS(val, x)
+    element.attrulgz(entry.attrname, x)
+  of rtDoubleGz:
+    var x: float64
+    ?ctx.fromJS(val, x)
+    if classify(x) in {fcInf, fcNegInf, fcNan}:
+      return JS_ThrowTypeError(ctx, "double expected")
+    element.attrd(entry.attrname, x)
   of rtFunction:
     return ctx.eventReflectSet0(element, val, magic, jsReflectSet, entry.ctype)
   return JS_DupValue(ctx, val)
@@ -3207,11 +3419,32 @@ proc getRuleMap*(document: Document): CSSRuleMap =
     map.add(document.userSheet)
     sheet = document.authorSheetsHead
     while sheet != nil:
-      if not sheet.disabled:
+      if not sheet.disabled and sheet.applies:
         map.add(sheet)
       sheet = sheet.next
     document.ruleMap = map
   return document.ruleMap
+
+proc windowChange*(window: Window) =
+  let document = window.document
+  document.ruleMap = nil
+  if document.documentElement != nil:
+    document.documentElement.invalidate()
+  let baseURL = document.baseURL
+  var sheet = document.uaSheetsHead
+  while sheet != nil:
+    sheet.windowChange(baseURL)
+    sheet = sheet.next
+  if document.userSheet != nil:
+    document.userSheet.windowChange(baseURL)
+  sheet = document.authorSheetsHead
+  while sheet != nil:
+    sheet.windowChange(baseURL)
+    if sheet.media != "":
+      var ctx = initCSSParser(sheet.media)
+      let media = ctx.parseMediaQueryList(window.settings.attrsp)
+      sheet.applies = media.applies(addr window.settings)
+    sheet = sheet.next
 
 proc findAnchor*(document: Document; id: string): Element =
   if id.len == 0:
@@ -4067,6 +4300,18 @@ proc attrulgz*(element: Element; s: StaticAtom): Opt[uint32] =
 proc attrul*(element: Element; s: StaticAtom): Opt[uint32] =
   return parseUInt32(element.attr(s), allowSign = true)
 
+proc attrd*(element: Element; s: StaticAtom): Opt[float64] =
+  let d = parseFloat64(element.attr(s))
+  if isNaN(d):
+    return err()
+  ok(d)
+
+proc attrdgz*(element: Element; s: StaticAtom): Opt[float64] =
+  let d = element.attrd(s).get(0)
+  if d <= 0:
+    return err()
+  ok(d)
+
 proc attrb*(element: Element; s: CAtom): bool =
   return element.findAttr(s) != -1
 
@@ -4638,6 +4883,8 @@ proc newElement*(document: Document; localName, namespaceURI, prefix: CAtom):
     HTMLSourceElement()
   of TAG_INS, TAG_DEL:
     HTMLModElement()
+  of TAG_PROGRESS:
+    HTMLProgressElement()
   elif sns == satNamespaceSVG:
     if tagType == TAG_SVG:
       SVGSVGElement()
@@ -4871,6 +5118,9 @@ proc attrulgz(element: Element; name: StaticAtom; value: uint32) =
   if value > 0:
     element.attrul(name, value)
 
+proc attrd(element: Element; name: StaticAtom; value: float64) =
+  element.attr(name, dtoa(value))
+
 proc setAttribute(ctx: JSContext; element: Element; qualifiedName: string;
     value: sink string): Opt[void] {.jsfunc.} =
   ?ctx.validateName(qualifiedName)
@@ -4960,6 +5210,13 @@ proc getCharset(element: Element): Charset =
 
 proc isDefined*(element: Element): bool =
   element.custom in {cesUncustomized, cesCustom}
+
+proc getProgressPosition*(element: Element): float64 =
+  if not element.attrb(satValue):
+    return -1
+  let value = element.attrdgz(satValue).get(0)
+  let max = element.attrdgz(satMax).get(1)
+  return min(value, max) / max
 
 # DOMRect
 proc left(rect: DOMRect): float64 {.jsfget.} =
@@ -5695,6 +5952,10 @@ proc setSelected*(option: HTMLOptionElement; selected: bool)
         prevSelected == nil and firstOption != nil:
       firstOption.selected = true
       firstOption.invalidate(dtChecked)
+
+# <progress>
+proc position(this: HTMLProgressElement): float64 {.jsfget.} =
+  return this.getProgressPosition()
 
 # <select>
 proc displaySize(select: HTMLSelectElement): uint32 =
@@ -6554,6 +6815,7 @@ proc registerElements(ctx: JSContext; nodeCID: JSClassID) =
   register(HTMLObjectElement, TAG_OBJECT)
   register(HTMLSourceElement, TAG_SOURCE)
   register(HTMLModElement, [TAG_INS, TAG_DEL])
+  register(HTMLProgressElement, TAG_PROGRESS)
   let svgElementCID = ctx.registerType(SVGElement, parent = elementCID)
   ctx.registerType(SVGSVGElement, parent = svgElementCID)
 
@@ -6585,6 +6847,7 @@ proc addDOMModule*(ctx: JSContext; eventTargetCID: JSClassID) =
   ctx.registerType(CSSStyleDeclaration)
   ctx.registerType(DOMRect)
   ctx.registerType(DOMRectList)
+  ctx.registerType(CustomElementRegistry)
   ctx.registerElements(nodeCID)
   let imageFun = ctx.newFunction(["width", "height"], """
 const x = document.createElement("img");

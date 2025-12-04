@@ -410,6 +410,21 @@ proc postMessage(ctx: JSContext; window: Window; value: JSValueConst): Opt[void]
   window.fireEvent(event, window)
   ok()
 
+proc microtaskJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
+    JSValue {.cdecl.} =
+  let global = JS_GetGlobalObject(ctx)
+  let res = JS_Call(ctx, argv[0], global, 0, nil)
+  JS_FreeValue(ctx, global)
+  res
+
+proc queueMicrotask(ctx: JSContext; window: Window; fun: JSValueConst):
+    JSValue {.jsfunc.} =
+  if not JS_IsFunction(ctx, fun):
+    return JS_ThrowTypeError(ctx, "not a function")
+  if JS_EnqueueJob(ctx, microtaskJob, 1, fun.toJSValueConstArray()) < 0:
+    return JS_EXCEPTION
+  return JS_UNDEFINED
+
 proc normalizeModuleName*(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
   let sname = $name
@@ -496,6 +511,7 @@ proc addScripting*(window: Window) =
   window.jsctx = ctx
   window.importMapsAllowed = true
   window.timeouts = newTimeoutState(ctx, evalJSFree, window)
+  window.addCustomElementRegistry(rt)
   JS_SetHostPromiseRejectionTracker(rt, rejectionHandler, nil)
   let jsWindow = JS_GetGlobalObject(ctx)
   let weakMap = JS_GetPropertyStr(ctx, jsWindow, "WeakMap")
