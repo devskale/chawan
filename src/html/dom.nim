@@ -380,7 +380,6 @@ type
     cachedLinks: HTMLCollection
     cachedImages: HTMLCollection
     parser*: RootRef
-    internalCookie: string
     liveCollections: seq[ptr CollectionObj]
     cachedAll: HTMLAllCollection
 
@@ -689,7 +688,7 @@ proc newCDATASection(document: Document; data: string): CDATASection
 proc newComment(document: Document; data: sink string): Comment
 proc newText*(document: Document; data: sink string): Text
 proc newText(ctx: JSContext; data: sink string = ""): Text
-proc newDocument*(): Document
+proc newDocument*(url: URL): Document
 proc newDocumentType*(document: Document;
   name, publicId, systemId: sink string): DocumentType
 proc newDocumentFragment(document: Document): DocumentFragment
@@ -2219,10 +2218,10 @@ proc clone(node: Node; document = none(Document); deep = false): Node =
     Node(x)
   elif node of Document:
     let document = Document(node)
-    let x = newDocument()
+    let x = newDocument(document.url)
     x.charset = document.charset
     x.contentType = document.contentType
-    x.url = document.url
+    x.origin = document.origin
     x.mode = document.mode
     Node(x)
   elif node of DocumentType:
@@ -2828,10 +2827,21 @@ proc newXMLDocument(): XMLDocument =
   document.implementation = DOMImplementation(document: document)
   return document
 
-proc newDocument*(): Document {.jsctor.} =
+proc newDocument*(url: URL): Document =
+  let document = Document(
+    url: url,
+    contentType: satApplicationXml,
+    origin: url.origin
+  )
+  document.implementation = DOMImplementation(document: document)
+  return document
+
+proc newDocument(ctx: JSContext): Document {.jsctor.} =
+  let global = ctx.getGlobal()
   let document = Document(
     url: parseURL0("about:blank"),
-    contentType: satApplicationXml
+    contentType: satApplicationXml,
+    origin: global.document.origin
   )
   document.implementation = DOMImplementation(document: document)
   return document
@@ -2910,12 +2920,42 @@ proc images(document: Document): HTMLCollection {.jsfget.} =
 proc getURL(ctx: JSContext; document: Document): JSValue {.jsfget: "URL".} =
   return ctx.toJS($document.url)
 
-#TODO take cookie jar from loader
-proc cookie(document: Document): lent string {.jsfget.} =
-  return document.internalCookie
+proc getCookieWindow(ctx: JSContext; document: Document): Opt[Window] =
+  let window = document.window
+  if window == nil or document.url.schemeType notin {stHttp, stHttps}:
+    return ok(nil)
+  if document.origin.t == otOpaque:
+    JS_ThrowDOMException(ctx, "SecurityError",
+      "sandboxed iframe cannot access cookies")
+    return err()
+  ok(window)
 
-proc setCookie(document: Document; cookie: string) {.jsfset: "cookie".} =
-  document.internalCookie = cookie
+proc cookie(ctx: JSContext; document: Document): JSValue {.jsfget.} =
+  let window0 = ctx.getCookieWindow(document)
+  if window0.isErr:
+    return JS_EXCEPTION
+  let window = window0.get
+  if window == nil:
+    return ctx.toJS("")
+  let response = window.loader.doRequest(newRequest("x-cha-cookie:get-all"))
+  if response.res != 0:
+    return JS_ThrowInternalError(ctx, "internal error in cookie getter")
+  response.resume()
+  let cookie = response.body.readAll()
+  return ctx.toJS(cookie)
+
+proc setCookie(ctx: JSContext; document: Document; cookie: string):
+    Opt[void] {.jsfset: "cookie".} =
+  let window = ?ctx.getCookieWindow(document)
+  if window == nil:
+    return ok()
+  let headers = newHeaders(hgRequest, {"Set-Cookie": cookie})
+  let req = newRequest("x-cha-cookie:set", hmPost, headers,
+    credentials = cmOmit)
+  let response = window.loader.doRequest(req)
+  if response.res == 0:
+    response.close()
+  ok()
 
 proc focus*(document: Document): Element {.jsfget: "activeElement".} =
   return document.internalFocus
@@ -3212,7 +3252,7 @@ proc createDocument(ctx: JSContext; implementation: DOMImplementation;
 
 proc createHTMLDocument(ctx: JSContext; implementation: DOMImplementation;
     title: JSValueConst = JS_UNDEFINED): Opt[Document] {.jsfunc.} =
-  let doc = newDocument()
+  let doc = newDocument(ctx)
   doc.contentType = satTextHtml
   doc.append(doc.newDocumentType("html", "", ""))
   let html = doc.newHTMLElement(TAG_HTML)
@@ -3714,9 +3754,11 @@ proc value(tokenList: DOMTokenList): string {.jsfget.} =
 
 proc getter(ctx: JSContext; this: DOMTokenList; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if atom.isIndex():
-    return ctx.item(this, atom.toIndex()).uninitIfNull()
-  return JS_UNINITIALIZED
+  var u: uint32
+  return case ctx.fromIdx(atom, u)
+  of fiIdx: ctx.item(this, u).uninitIfNull()
+  of fiStr: JS_UNINITIALIZED
+  of fiErr: JS_EXCEPTION
 
 proc reflectTokens(this: DOMTokenList; value: Option[string]) =
   this.toks.setLen(0)
@@ -3783,9 +3825,12 @@ proc item(this: NodeList; u: uint32): Node {.jsfunc.} =
 
 proc getter(ctx: JSContext; this: NodeList; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if atom.isIndex():
-    return ctx.toJS(this.item(atom.toIndex())).uninitIfNull()
-  return JS_UNINITIALIZED
+  var u: uint32
+  var s: string
+  return case ctx.fromIdx(atom, u, s)
+  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+  of fiStr: JS_UNINITIALIZED
+  of fiErr: JS_EXCEPTION
 
 proc names(ctx: JSContext; this: NodeList): JSPropertyEnumList {.jspropnames.} =
   let L = this.length
@@ -3813,11 +3858,12 @@ proc namedItem(this: HTMLCollection; atom: CAtom): Element {.jsfunc.} =
 
 proc getter(ctx: JSContext; this: HTMLCollection; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if atom.isIndex():
-    return ctx.toJS(this.item(atom.toIndex())).uninitIfNull()
+  var u: uint32
   var s: CAtom
-  ?ctx.fromJS(atom, s)
-  return ctx.toJS(this.namedItem(s)).uninitIfNull()
+  return case ctx.fromIdx(atom, u, s)
+  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+  of fiStr: ctx.toJS(this.namedItem(s)).uninitIfNull()
+  of fiErr: JS_EXCEPTION
 
 proc names(ctx: JSContext; collection: HTMLCollection): JSPropertyEnumList
     {.jspropnames.} =
@@ -3861,11 +3907,12 @@ proc names(ctx: JSContext; this: HTMLFormControlsCollection): JSPropertyEnumList
 
 proc getter(ctx: JSContext; this: HTMLFormControlsCollection; atom: JSAtom):
     JSValue {.jsgetownprop.} =
-  if atom.isIndex():
-    return ctx.toJS(this.item(atom.toIndex())).uninitIfNull()
+  var u: uint32
   var s: CAtom
-  ?ctx.fromJS(atom, s)
-  return ctx.toJS(ctx.namedItem(this, s)).uninitIfNull()
+  return case ctx.fromIdx(atom, u, s)
+  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+  of fiStr: ctx.namedItem(this, s).uninitIfNull()
+  of fiErr: JS_EXCEPTION
 
 # HTMLAllCollection
 proc length(this: HTMLAllCollection): uint32 {.jsfget.} =
@@ -3879,9 +3926,11 @@ proc item(this: HTMLAllCollection; u: uint32): Element {.jsfunc.} =
 
 proc getter(ctx: JSContext; this: HTMLAllCollection; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if atom.isIndex():
-    return ctx.toJS(this.item(atom.toIndex())).uninitIfNull()
-  return JS_UNINITIALIZED
+  var u: uint32
+  return case ctx.fromIdx(atom, u)
+  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+  of fiStr: JS_UNINITIALIZED
+  of fiErr: JS_EXCEPTION
 
 proc names(ctx: JSContext; this: HTMLAllCollection): JSPropertyEnumList
     {.jspropnames.} =
@@ -4109,13 +4158,14 @@ proc item(map: NamedNodeMap; i: uint32): Attr {.jsfunc.} =
     return map.getAttr(int(i))
   return nil
 
-proc getter(ctx: JSContext; map: NamedNodeMap; atom: JSAtom): JSValue
+proc getter(ctx: JSContext; this: NamedNodeMap; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if atom.isIndex():
-    return ctx.toJS(map.item(atom.toIndex())).uninitIfNull()
+  var u: uint32
   var s: CAtom
-  ?ctx.fromJS(atom, s)
-  return ctx.toJS(map.getNamedItem(s)).uninitIfNull()
+  return case ctx.fromIdx(atom, u, s)
+  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+  of fiStr: ctx.toJS(this.getNamedItem(s)).uninitIfNull()
+  of fiErr: JS_EXCEPTION
 
 proc names(ctx: JSContext; map: NamedNodeMap): JSPropertyEnumList
     {.jspropnames.} =
@@ -5237,12 +5287,15 @@ proc length(this: DOMRectList): int {.jsfget.} =
 
 proc getter(ctx: JSContext; this: DOMRectList; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if not atom.isIndex():
-    return JS_UNINITIALIZED
-  let u = atom.toIndex()
-  if int64(u) > int64(this.list.len):
-    return JS_UNINITIALIZED
-  return ctx.toJS(this.list[int(u)])
+  var u: uint32
+  return case ctx.fromIdx(atom, u)
+  of fiIdx:
+    if int64(u) < int64(this.list.len):
+      ctx.toJS(this.list[int(u)]).uninitIfNull()
+    else:
+      JS_UNINITIALIZED
+  of fiStr: JS_UNINITIALIZED
+  of fiErr: JS_EXCEPTION
 
 # CSSStyleDeclaration
 #
@@ -5361,21 +5414,23 @@ proc getPropertyValue(this: CSSStyleDeclaration; s: string): string {.jsfunc.} =
 
 proc getter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom): JSValue
     {.jsgetownprop.} =
-  if atom.isIndex():
-    let u = atom.toIndex()
+  var u: uint32
+  var s: string
+  case ctx.fromIdx(atom, u, s)
+  of fiIdx:
     if u < this.length:
       return ctx.toJS(this.decls[int(u)].name)
-    return JS_UNDEFINED
-  var s: string
-  ?ctx.fromJS(atom, s)
-  if s == "cssFloat":
-    s = "float"
-  if s.isSupportedProperty():
-    return ctx.toJS(this.getPropertyValue(s))
-  s = camelToKebabCase(s)
-  if s.isSupportedProperty():
-    return ctx.toJS(this.getPropertyValue(s))
-  return JS_UNINITIALIZED
+    return JS_UNINITIALIZED
+  of fiStr:
+    if s == "cssFloat":
+      s = "float"
+    if s.isSupportedProperty():
+      return ctx.toJS(this.getPropertyValue(s))
+    s = camelToKebabCase(s)
+    if s.isSupportedProperty():
+      return ctx.toJS(this.getPropertyValue(s))
+    return JS_UNINITIALIZED
+  of fiErr: return JS_EXCEPTION
 
 # Consumes toks.
 proc setValue(this: CSSStyleDeclaration; i: int; toks: var seq[CSSToken]):
@@ -5451,18 +5506,21 @@ proc setter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom;
     value: string): JSValue {.jssetprop.} =
   if ctx.checkReadOnly(this).isErr:
     return JS_EXCEPTION
-  if atom.isIndex():
-    let u = atom.toIndex()
+  var u: uint32
+  var name: string
+  case ctx.fromIdx(atom, u, name)
+  of fiIdx:
     var toks = parseComponentValues(value)
     if this.setValue(int(u), toks).isErr:
       this.element.attr(satStyle, this.cssText)
     return JS_UNDEFINED
-  var name: string
-  ?ctx.fromJS(atom, name)
-  if name == "cssFloat":
-    name = "float"
-  name = camelToKebabCase(name)
-  return ctx.setProperty(this, name, value)
+  of fiStr:
+    if name == "cssFloat":
+      name = "float"
+    name = camelToKebabCase(name)
+    return ctx.setProperty(this, name, value)
+  of fiErr:
+    return JS_EXCEPTION
 
 proc style(element: Element): CSSStyleDeclaration {.jsfget.} =
   if element.cachedStyle == nil:
@@ -6050,9 +6108,11 @@ proc jsOptions(this: HTMLSelectElement): HTMLOptionsCollection
 
 proc setter(ctx: JSContext; this: HTMLOptionsCollection; atom: JSAtom;
     value: Option[HTMLOptionElement]): JSValue {.jssetprop.} =
-  if not atom.isIndex():
-    return JS_UNINITIALIZED
-  let u = atom.toIndex()
+  var u: uint32
+  case ctx.fromIdx(atom, u)
+  of fiIdx: discard
+  of fiStr: return JS_UNINITIALIZED
+  of fiErr: return JS_EXCEPTION
   let element = this.item(u)
   if value.isNone:
     let element = this.item(u)
@@ -6822,8 +6882,8 @@ proc registerElements(ctx: JSContext; nodeCID: JSClassID) =
 proc addDOMModule*(ctx: JSContext; eventTargetCID: JSClassID) =
   let nodeCID = ctx.registerType(Node, parent = eventTargetCID)
   doAssert ctx.defineConsts(nodeCID, NodeType) == dprSuccess
-  let nodeListCID = ctx.registerType(NodeList)
-  let htmlCollectionCID = ctx.registerType(HTMLCollection)
+  let nodeListCID = ctx.registerType(NodeList, iterable = jitValue)
+  let htmlCollectionCID = ctx.registerType(HTMLCollection, iterable = jitPair)
   ctx.registerType(HTMLAllCollection)
   ctx.registerType(HTMLFormControlsCollection, parent = htmlCollectionCID)
   ctx.registerType(HTMLOptionsCollection, parent = htmlCollectionCID)
@@ -6833,7 +6893,7 @@ proc addDOMModule*(ctx: JSContext; eventTargetCID: JSClassID) =
   let documentCID = ctx.registerType(Document, parent = nodeCID)
   ctx.registerType(XMLDocument, parent = documentCID)
   ctx.registerType(DOMImplementation)
-  ctx.registerType(DOMTokenList)
+  ctx.registerType(DOMTokenList, iterable = jitValue)
   ctx.registerType(DOMStringMap)
   let characterDataCID = ctx.registerType(CharacterData, parent = nodeCID)
   ctx.registerType(Comment, parent = characterDataCID)
