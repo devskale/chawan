@@ -1394,9 +1394,11 @@ proc initImages(pager: Pager; container: Container) =
     if not dims.onScreen:
       continue
     let imageId = image.bmp.imageId
-    let canvasImage = pager.term.findImage(pid, imageId, dims)
+    var canvasImage = pager.term.findImage(pid, imageId, dims, pass2 = false)
+    if canvasImage != nil and not pager.term.updateCanvasImage(canvasImage,
+        dims, redrawNext, bufHeight):
+      canvasImage = pager.term.findImage(pid, imageId, dims, pass2 = true)
     if canvasImage != nil:
-      pager.term.updateCanvasImage(canvasImage, dims, redrawNext, bufHeight)
       newImages.add(canvasImage)
       continue
     let cachedOffx = if imageMode == imSixel: dims.offx else: 0
@@ -1531,7 +1533,7 @@ proc draw(pager: Pager): Opt[void] =
       pager.term.clearImages(bufHeight)
   let (cursorx, cursory) = pager.getAbsoluteCursorXY(container)
   let mouse = pager.lineedit == nil
-  pager.term.draw(redraw, mouse, cursorx, cursory, bufHeight)
+  pager.term.draw(redraw, mouse, cursorx, cursory, bufHeight, container.bgcolor)
 
 proc writeAskPrompt(pager: Pager; s = "") =
   let maxwidth = pager.status.grid.width - s.width()
