@@ -51,9 +51,9 @@ type
     setxsave: bool
 
   ContainerEventType* = enum
-    cetReadLine, cetReadPassword, cetReadArea, cetReadFile, cetOpen, cetSave,
-    cetSaveSource, cetSetLoadInfo, cetStatus, cetAlert, cetLoaded, cetTitle,
-    cetCancel, cetMetaRefresh
+    cetReadLine, cetReadPassword, cetReadArea, cetReadFile, cetOpen,
+    cetSave, cetSaveSource, cetSetLoadInfo, cetStatus, cetLoaded, cetTitle,
+    cetMetaRefresh
 
   ContainerEvent* = ref object
     case t*: ContainerEventType
@@ -65,8 +65,6 @@ type
     of cetOpen, cetSave:
       request*: Request
       contentType*: string
-    of cetAlert:
-      msg*: string
     of cetMetaRefresh:
       refreshIn*: int
       refreshURL*: URL
@@ -224,7 +222,7 @@ jsDestructor(Highlight)
 jsDestructor(Container)
 
 # Forward declarations
-proc cursorLastLine*(container: Container)
+proc cursorLastLine(container: Container)
 proc find*(container: Container; dir: NavDirection): Container
 proc onclick(container: Container; res: ClickResult)
 proc triggerEvent(container: Container; t: ContainerEventType)
@@ -412,7 +410,7 @@ proc findColStartByte(s: string; endx: int): int =
 proc cursorStartByte(container: Container; y, cc: int): int =
   return container.getLineStr(y).findColStartByte(cc)
 
-proc currentCursorBytes(container: Container; cc = container.cursorx): int =
+proc currentCursorBytes*(container: Container; cc = container.cursorx): int =
   return container.cursorBytes(container.cursory, cc)
 
 # Returns the X position of the first cell occupied by the character the cursor
@@ -470,7 +468,7 @@ proc acursorx*(container: Container): int =
 proc acursory*(container: Container): int =
   container.cursory - container.fromy
 
-proc maxScreenWidth(container: Container): int =
+proc maxScreenWidth(container: Container): int {.jsfunc.} =
   result = 0
   for y in container.fromy..container.lastVisibleLine:
     result = max(container.getLineStr(y).width(), result)
@@ -480,8 +478,9 @@ proc getTitle*(container: Container): string {.jsfget: "title".} =
     return container.title
   return container.url.serialize(excludepassword = true)
 
-proc currentLineWidth(container: Container): int =
-  if container.numLines == 0: return 0
+proc currentLineWidth*(container: Container): int =
+  if container.numLines == 0:
+    return 0
   return container.currentLine.width()
 
 proc maxfromy(container: Container): int =
@@ -866,12 +865,6 @@ proc setCursorXYCenter*(container: Container; x, y: int; refresh = true)
   if fx != container.fromx:
     container.centerColumn()
 
-proc cursorDown(container: Container; n = 1) {.jsfunc.} =
-  container.setCursorY(container.cursory + n)
-
-proc cursorUp(container: Container; n = 1) {.jsfunc.} =
-  container.setCursorY(container.cursory - n)
-
 proc cursorLeft(container: Container; n = 1) {.jsfunc.} =
   container.setCursorX(container.cursorFirstX() - n)
 
@@ -891,32 +884,6 @@ proc pageUp(container: Container; n = 1) {.jsfunc.} =
   container.setCursorY(container.cursory - container.height * n)
   container.restoreCursorX()
 
-proc pageLeft(container: Container; n = 1) {.jsfunc.} =
-  container.setFromX(container.fromx - container.width * n)
-
-proc pageRight(container: Container; n = 1) {.jsfunc.} =
-  container.setFromX(container.fromx + container.width * n)
-
-# I am not cloning the vi behavior here because it is counter-intuitive
-# and annoying.
-# Users who disagree are free to implement it themselves. (It is about
-# 5 lines of JS.)
-proc halfPageUp(container: Container; n = 1) {.jsfunc.} =
-  container.setFromY(container.fromy - (container.height + 1) div 2 * n)
-  container.setCursorY(container.cursory - (container.height + 1) div 2 * n)
-  container.restoreCursorX()
-
-proc halfPageDown(container: Container; n = 1) {.jsfunc.} =
-  container.setFromY(container.fromy + (container.height + 1) div 2 * n)
-  container.setCursorY(container.cursory + (container.height + 1) div 2 * n)
-  container.restoreCursorX()
-
-proc halfPageLeft(container: Container; n = 1) {.jsfunc.} =
-  container.setFromX(container.fromx - (container.width + 1) div 2 * n)
-
-proc halfPageRight(container: Container; n = 1) {.jsfunc.} =
-  container.setFromX(container.fromx + (container.width + 1) div 2 * n)
-
 proc markPos0*(container: Container) {.jsfunc.} =
   container.tmpJumpMark = (container.cursorx, container.cursory)
 
@@ -930,76 +897,10 @@ proc cursorFirstLine(container: Container) {.jsfunc.} =
   container.setCursorY(0)
   container.markPos()
 
-proc cursorLastLine*(container: Container) {.jsfunc.} =
+proc cursorLastLine(container: Container) {.jsfunc.} =
   container.markPos0()
   container.setCursorY(container.numLines - 1)
   container.markPos()
-
-proc cursorTop(container: Container; i = 1) {.jsfunc.} =
-  container.markPos0()
-  let i = clamp(i - 1, 0, container.height - 1)
-  container.setCursorY(container.fromy + i)
-  container.markPos()
-
-proc cursorMiddle(container: Container) {.jsfunc.} =
-  container.markPos0()
-  container.setCursorY(container.fromy + (container.height - 2) div 2)
-  container.markPos()
-
-proc cursorBottom(container: Container; i = 1) {.jsfunc.} =
-  container.markPos0()
-  let i = clamp(i, 0, container.height)
-  container.setCursorY(container.fromy + container.height - i)
-  container.markPos()
-
-proc cursorLeftEdge(container: Container) {.jsfunc.} =
-  container.setCursorX(container.fromx)
-
-proc cursorMiddleColumn(container: Container) {.jsfunc.} =
-  container.setCursorX(container.fromx + (container.width - 2) div 2)
-
-proc cursorRightEdge(container: Container) {.jsfunc.} =
-  container.setCursorX(container.fromx + container.width - 1)
-
-proc scrollDown*(container: Container; n = 1) {.jsfunc.} =
-  let H = container.numLines
-  let y = min(container.fromy + container.height + n, H) - container.height
-  if y > container.fromy:
-    container.setFromY(y)
-    if container.fromy > container.cursory:
-      container.cursorDown(container.fromy - container.cursory)
-  else:
-    container.cursorDown(n)
-
-proc scrollUp*(container: Container; n = 1) {.jsfunc.} =
-  let y = max(container.fromy - n, 0)
-  if y < container.fromy:
-    container.setFromY(y)
-    if container.fromy + container.height <= container.cursory:
-      container.cursorUp(container.cursory - container.fromy -
-        container.height + 1)
-  else:
-    container.cursorUp(n)
-
-proc scrollRight*(container: Container; n = 1) {.jsfunc.} =
-  let msw = container.maxScreenWidth()
-  let x = min(container.fromx + container.width + n, msw) - container.width
-  if x > container.fromx:
-    container.setFromX(x)
-
-proc scrollLeft*(container: Container; n = 1) {.jsfunc.} =
-  let x = max(container.fromx - n, 0)
-  if x < container.fromx:
-    container.setFromX(x)
-
-proc alert(container: Container; msg: string) =
-  container.triggerEvent(ContainerEvent(t: cetAlert, msg: msg))
-
-proc lineInfo(container: Container) {.jsfunc.} =
-  container.alert("line " & $(container.cursory + 1) & "/" &
-    $container.numLines & " (" & $container.atPercentOf() & "%) col " &
-    $(container.cursorx + 1) & "/" & $container.currentLineWidth &
-    " (byte " & $container.currentCursorBytes & ")")
 
 proc updateCursor(container: Container) =
   if container.pos.setx > -1:
@@ -1011,7 +912,6 @@ proc updateCursor(container: Container) =
     let n = max(container.lastVisibleLine, 0)
     if container.cursory != n:
       container.setCursorY(n)
-      container.alert("Last line is #" & $container.numLines)
 
 proc pushCursorPos*(container: Container) =
   if container.select != nil:
@@ -1663,24 +1563,17 @@ proc applyResponse*(container: Container; response: Response;
   container.charset = container.charsetStack[^1]
   container.refreshHeader = response.headers.getFirst("Refresh")
 
-proc remoteCancel*(container: Container) =
+proc cancel*(container: Container) =
   if container.iface != nil:
     container.iface.cancel()
-  container.setLoadInfo("")
-  container.alert("Canceled loading")
-
-proc cancel*(container: Container) {.jsfunc.} =
-  if container.loadState == lsLoading:
-    container.loadState = lsCanceled
-    if container.iface != nil:
-      container.remoteCancel()
-    else:
-      container.triggerEvent(cetCancel)
 
 proc readCanceled*(container: Container) =
-  container.iface.readCanceled()
+  if container.iface != nil:
+    container.iface.readCanceled()
 
 proc readSuccess*(container: Container; s: string; fd: cint = -1) =
+  if container.iface == nil:
+    return
   let p = container.iface.readSuccess(s, fd)
   if fd != -1:
     doAssert container.iface.stream.flush().isOk
@@ -1778,13 +1671,10 @@ proc windowChange*(container: Container; attrs: WindowAttributes) =
   if container.select != nil:
     container.select.windowChange(container.width, container.height)
 
-proc peek(container: Container) {.jsfunc.} =
-  container.alert($container.url)
-
 proc clearHover*(container: Container) =
   container.lastPeek = HoverType.high
 
-proc peekCursor(container: Container) {.jsfunc.} =
+proc getPeekCursorStr*(container: Container): string =
   var p = container.lastPeek
   while true:
     if p < HoverType.high:
@@ -1793,9 +1683,9 @@ proc peekCursor(container: Container) {.jsfunc.} =
       p = HoverType.low
     if container.hoverText[p] != "" or p == container.lastPeek:
       break
-  if container.hoverText[p] != "":
-    container.alert(container.hoverText[p])
+  let s = container.hoverText[p]
   container.lastPeek = p
+  s
 
 proc hoverLink(container: Container): lent string {.jsfget.} =
   return container.hoverText[htLink]

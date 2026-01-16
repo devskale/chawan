@@ -139,7 +139,6 @@ type
     ussNone, ussUpdate, ussSkip
 
   Pager* = ref object of RootObj
-    alive: bool
     blockTillRelease: bool
     commandMode {.jsget.}: bool
     feednext*: bool
@@ -158,7 +157,7 @@ type
     askPromise*: Promise[string]
     askPrompt: string
     config*: Config
-    console*: Console
+    console: Console
     relist: BuiltinRegexList
     tabHead: Tab # not nil
     tab: Tab # not nil
@@ -166,7 +165,7 @@ type
     surfaces: array[SurfaceType, Surface]
     pinned*: Pinned
     exitCode: int
-    forkserver*: ForkServer
+    forkserver: ForkServer
     inputBuffer: string # currently uninterpreted characters
     iregex: Result[Regex, string]
     isearchpromise: EmptyPromise
@@ -587,7 +586,6 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
     console: Console): Pager =
   let tab = Tab()
   let pager = Pager(
-    alive: true,
     config: config,
     forkserver: forkserver,
     term: newTerminal(newPosixStream(STDOUT_FILENO), config),
@@ -641,45 +639,43 @@ proc makeDataDir(pager: Pager) =
     discard mkdir(cstring(pager.config.dataDir), 0o700)
 
 proc cleanup(pager: Pager) =
-  if pager.alive:
-    pager.alive = false
-    discard pager.term.quit() # maybe stdout is closed, but we don't mind here
-    let hist = pager.lineHist[lmLocation]
-    var needDataDir = true
-    if not hist.transient:
-      let hasConfigDir = dirExists(pager.config.dir)
+  discard pager.term.quit() # maybe stdout is closed, but we don't mind here
+  let hist = pager.lineHist[lmLocation]
+  var needDataDir = true
+  if not hist.transient:
+    let hasConfigDir = dirExists(pager.config.dir)
+    if hasConfigDir:
+      needDataDir = false
+      pager.makeDataDir()
+    if hist.write($pager.config.external.historyFile).isErr:
       if hasConfigDir:
-        needDataDir = false
-        pager.makeDataDir()
-      if hist.write($pager.config.external.historyFile).isErr:
-        if hasConfigDir:
-          # History is enabled by default, so do not print the error
-          # message if no config dir exists.
-          pager.alert("failed to save history")
-    if pager.cookieJars.needsWrite():
-      if needDataDir:
-        pager.makeDataDir()
-      if pager.cookieJars.write($pager.config.external.cookieFile).isErr:
-        pager.alert("failed to save cookies")
-    for msg in pager.alerts:
-      discard cast[ChaFile](stderr).write("cha: " & msg & '\n')
-    pager.jsctx.freeValues(pager.config.line)
-    pager.jsctx.freeValues(pager.config.page)
-    for fn in pager.config.jsvfns:
-      JS_FreeValue(pager.jsctx, fn.val)
-    JS_FreeValue(pager.jsctx, pager.config.feedNext.val)
-    pager.timeouts.clearAll()
-    assert not pager.inEval
-    let rt = JS_GetRuntime(pager.jsctx)
-    pager.jsctx.free()
-    rt.free()
-    if pager.console != nil and pager.dumpConsoleFile:
-      if file := chafile.fopen(pager.consoleFile, "r+"):
-        let stderr = cast[ChaFile](stderr)
-        var buffer {.noinit.}: array[1024, uint8]
-        while (let n = file.read(buffer); n != 0):
-          if stderr.write(buffer.toOpenArray(0, n - 1)).isErr:
-            break
+        # History is enabled by default, so do not print the error
+        # message if no config dir exists.
+        pager.alert("failed to save history")
+  if pager.cookieJars.needsWrite():
+    if needDataDir:
+      pager.makeDataDir()
+    if pager.cookieJars.write($pager.config.external.cookieFile).isErr:
+      pager.alert("failed to save cookies")
+  for msg in pager.alerts:
+    discard cast[ChaFile](stderr).write("cha: " & msg & '\n')
+  pager.jsctx.freeValues(pager.config.line)
+  pager.jsctx.freeValues(pager.config.page)
+  for fn in pager.config.jsvfns:
+    JS_FreeValue(pager.jsctx, fn.val)
+  JS_FreeValue(pager.jsctx, pager.config.feedNext.val)
+  pager.timeouts.clearAll()
+  assert not pager.inEval
+  let rt = JS_GetRuntime(pager.jsctx)
+  pager.jsctx.free()
+  rt.free()
+  if pager.console != nil and pager.dumpConsoleFile:
+    if file := chafile.fopen(pager.consoleFile, "r+"):
+      let stderr = cast[ChaFile](stderr)
+      var buffer {.noinit.}: array[1024, uint8]
+      while (let n = file.read(buffer); n != 0):
+        if stderr.write(buffer.toOpenArray(0, n - 1)).isErr:
+          break
 
 proc quit(pager: Pager; code: int) =
   pager.cleanup()
@@ -1833,6 +1829,27 @@ proc alert*(pager: Pager; msg: string) {.jsfunc.} =
   if msg != "":
     pager.alerts.add(msg)
     pager.updateStatus = ussUpdate
+
+proc peek(pager: Pager) {.jsfunc.} =
+  let container = pager.container
+  if container != nil:
+    pager.alert($container.url)
+
+proc peekCursor(pager: Pager) {.jsfunc.} =
+  let container = pager.container
+  if container == nil:
+    return
+  let s = container.getPeekCursorStr()
+  pager.alert(s)
+
+proc lineInfo(pager: Pager) {.jsfunc.} =
+  let container = pager.container
+  if container == nil:
+    return
+  pager.alert("line " & $(container.cursory + 1) & "/" &
+    $container.numLines & " (" & $container.atPercentOf() & "%) col " &
+    $(container.cursorx + 1) & "/" & $container.currentLineWidth &
+    " (byte " & $container.currentCursorBytes & ")")
 
 proc updatePinned(pager: Pager; old, replacement: Container) =
   if pager.pinned.downloads == old:
@@ -3598,6 +3615,22 @@ proc closeMenu(pager: Pager) {.jsfunc.} =
   if pager.menu != nil:
     pager.menuFinish(pager.menu)
 
+proc cancel(pager: Pager) {.jsfunc.} =
+  let container = pager.container
+  if container == nil or container.loadState != lsLoading:
+    return
+  container.loadState = lsCanceled
+  container.setLoadInfo("")
+  if container.iface != nil:
+    container.cancel()
+  elif (let item = pager.findConnectingContainer(container); item != nil):
+    dec pager.numload
+    # closes item's stream
+    pager.deleteContainer(container, container.find(ndAny))
+  else:
+    return
+  pager.alert("Canceled loading")
+
 proc handleEvent0(pager: Pager; container: Container; event: ContainerEvent) =
   case event.t
   of cetLoaded:
@@ -3665,19 +3698,6 @@ proc handleEvent0(pager: Pager; container: Container; event: ContainerEvent) =
       if container.loadState != lsLoading:
         pager.queueStatusUpdate()
       pager.updateTitle()
-  of cetAlert:
-    if pager.container == container:
-      pager.alert(event.msg)
-  of cetCancel:
-    let item = pager.findConnectingContainer(container)
-    if item == nil:
-      # whoops. we tried to cancel, but the event loop did not favor us...
-      # at least cancel it in the buffer
-      container.remoteCancel()
-    else:
-      dec pager.numload
-      # closes item's stream
-      pager.deleteContainer(container, container.find(ndAny))
   of cetMetaRefresh:
     let url = event.refreshURL
     let n = event.refreshIn
