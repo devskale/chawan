@@ -1,10 +1,16 @@
 {.push raises: [].}
 
+from std/strutils import
+  delete,
+  find,
+  repeat,
+  rfind,
+  strip
+
 import std/options
 import std/os
 import std/posix
 import std/sets
-import std/strutils
 import std/tables
 import std/times
 
@@ -40,6 +46,7 @@ import monoucha/libregexp
 import monoucha/quickjs
 import monoucha/tojs
 import server/buffer
+import server/bufferiface
 import server/connectionerror
 import server/forkserver
 import server/headers
@@ -668,8 +675,10 @@ proc evalAction(pager: Pager; val: JSValue; arg0: int32; oval: var JSValue):
   if JS_IsFunction(ctx, val):
     if arg0 != 0:
       let arg0 = ctx.toJS(arg0)
-      val = ctx.callFree(val, JS_UNDEFINED, arg0)
-      JS_FreeValue(ctx, arg0)
+      if JS_IsException(arg0):
+        JS_FreeValue(ctx, val)
+        return arg0
+      val = ctx.callSinkFree(val, JS_UNDEFINED, arg0)
     else: # no precnum
       val = ctx.callFree(val, JS_UNDEFINED)
   return val
@@ -682,14 +691,14 @@ proc evalAction(pager: Pager; action: string; arg0: int32) =
     pager.console.writeException(ctx)
     return
   let wasInEval = pager.evalJSStart()
-  if not JS_IsFunction(ctx, val): # yes, this looks weird, but it's correct
-    val = ctx.evalFunction(val)
   # If an action evaluates to a function that function is evaluated too.
   if JS_IsFunction(ctx, val):
     if arg0 != 0:
       let arg0 = ctx.toJS(arg0)
-      val = ctx.callFree(val, JS_UNDEFINED, arg0)
-      JS_FreeValue(ctx, arg0)
+      if JS_IsException(arg0):
+        val = arg0
+      else:
+        val = ctx.callSinkFree(val, JS_UNDEFINED, arg0)
     else: # no precnum
       val = ctx.callFree(val, JS_UNDEFINED)
   if JS_IsException(val):
@@ -727,9 +736,6 @@ proc evalInputAction(ctx: JSContext; pager: Pager; map: ActionMap; arg0: int32):
 proc queueStatusUpdate(pager: Pager) {.jsfunc.} =
   if pager.updateStatus == ussNone:
     pager.updateStatus = ussUpdate
-
-proc forceStatusUpdate(pager: Pager) {.jsfunc.} =
-  pager.updateStatus = ussUpdate
 
 # called from JS command()
 proc evalCommand(pager: Pager; src: string): JSValue {.jsfunc.} =
@@ -797,11 +803,12 @@ proc handleUserInput(pager: Pager): Opt[void] =
       let wasInEval = pager.evalJSStart()
       let ctx = pager.jsctx
       let arg0 = ctx.toJS(e.t)
-      #TODO what if exception?
+      if JS_IsException(arg0):
+        pager.console.writeException(ctx)
+        break
       let arg1 = if e.t == ietMouse: ctx.toJS(e.m) else: JS_UNDEFINED
-      let res = ctx.call(pager.jsmap.handleInput, pager.jsmap.pager, arg0, arg1)
-      JS_FreeValue(ctx, arg0)
-      JS_FreeValue(ctx, arg1)
+      let res = ctx.callSink(pager.jsmap.handleInput, pager.jsmap.pager, arg0,
+        arg1)
       let ex = JS_IsException(res)
       JS_FreeValue(ctx, res)
       pager.evalJSEnd(wasInEval)
@@ -1898,19 +1905,20 @@ proc applySiteconf(pager: Pager; url: URL; charsetOverride: Charset;
       let fun = sc.o.rewriteUrl.get
       var tmpUrl = newURL(url)
       let arg0 = ctx.toJS(tmpUrl)
-      let ret = ctx.call(fun, JS_UNDEFINED, arg0)
-      if not JS_IsException(ret):
-        # Warning: we must only print exceptions if the *call* returned one.
-        # Conversion may simply error out because the function didn't return a
-        # new URL, and that's fine.
-        var nu: URL
-        if ctx.fromJS(ret, nu).isOk:
-          tmpUrl = nu
-      else:
-        #TODO should writeException the message to console
+      if JS_IsException(arg0):
         pager.alert("Error rewriting URL: " & ctx.getExceptionMsg())
-      JS_FreeValue(ctx, arg0)
-      JS_FreeValue(ctx, ret)
+      else:
+        let ret = ctx.callSink(fun, JS_UNDEFINED, arg0)
+        if not JS_IsException(ret):
+          # Warning: we must only print exceptions if the *call* returned one.
+          # Conversion may simply error out because the function didn't return a
+          # new URL, and that's fine.
+          var nu: URL
+          if ctx.fromJSFree(ret, nu).isOk:
+            tmpUrl = nu
+        else:
+          #TODO should writeException the message to console
+          pager.alert("Error rewriting URL: " & ctx.getExceptionMsg())
       if $tmpUrl != surl:
         ourl = tmpUrl
         return
@@ -2036,16 +2044,15 @@ proc gotoURL(pager: Pager; request: Request; contentType = "";
 
 # Check if the user is trying to go to an anchor of the current buffer.
 # If yes, the caller need not call gotoURL.
-proc gotoURLHash(pager: Pager; request: Request; current: Container;
-    save: bool): bool =
+proc gotoURLHash(pager: Pager; request: Request; current: Container): bool =
   let url = request.url
   if current == nil or not current.url.equals(url, excludeHash = true) or
-      url.hash == "" or request.httpMethod != hmGet or save:
+      url.hash == "" or request.httpMethod != hmGet:
     return false
   let anchor = url.hash.substr(1)
   current.iface.gotoAnchor(anchor, false, false).then(
     proc(res: GotoAnchorResult) =
-      if res.found:
+      if res.y >= 0:
         let nc = pager.dupeBuffer(current, url)
         nc.setCursorXYCenter(res.x, res.y)
       else:
@@ -2059,12 +2066,12 @@ proc omniRewrite(pager: Pager; s: string): string =
       let fun = rule.substituteUrl
       let ctx = pager.jsctx
       let arg0 = ctx.toJS(s)
-      let jsRet = ctx.call(fun, JS_UNDEFINED, arg0)
-      JS_FreeValue(ctx, arg0)
-      var res: string
-      if not JS_IsException(jsRet) and ctx.fromJSFree(jsRet, res).isOk:
-        pager.lineHist[lmLocation].add(s)
-        return move(res)
+      if not JS_IsException(arg0):
+        let jsRet = ctx.callFree(fun, JS_UNDEFINED, arg0)
+        var res: string
+        if not JS_IsException(jsRet) and ctx.fromJSFree(jsRet, res).isOk:
+          pager.lineHist[lmLocation].add(s)
+          return move(res)
       pager.alert("Exception in omni-rule: " & ctx.getExceptionMsg())
   return s
 
@@ -2078,7 +2085,7 @@ proc loadURL(pager: Pager; url: string; contentType = "";
   let url0 = pager.omniRewrite(url)
   if firstParse := parseURL(url0):
     let request = newRequest(firstParse)
-    if not pager.gotoURLHash(request, pager.container, save = false):
+    if not pager.gotoURLHash(request, pager.container):
       let container = pager.gotoURL(request, contentType, charset,
         history = history)
       pager.addContainer(container)
@@ -2329,25 +2336,27 @@ proc updateReadLine(pager: Pager) {.jsfunc.} =
     of lmScript:
       let lineData = LineDataScript(line.data)
       JS_FreeValue(ctx, lineData.update)
-      let text = ctx.toJS(line.news)
-      let res = ctx.callFree(lineData.resolve, JS_UNDEFINED, text)
-      JS_FreeValue(ctx, text)
-      if JS_IsException(res):
+      let text = ctx.toJS(line.text)
+      if JS_IsException(text):
         pager.console.writeException(ctx)
-      JS_FreeValue(ctx, res)
+      else:
+        let res = ctx.callSinkFree(lineData.resolve, JS_UNDEFINED, text)
+        if JS_IsException(res):
+          pager.console.writeException(ctx)
+        JS_FreeValue(ctx, res)
     of lmUsername:
-      LineDataAuth(line.data).url.username = line.news
+      LineDataAuth(line.data).url.username = line.text
       pager.setLineEdit2(lmPassword, "Password: ", hide = true)
     of lmPassword:
       let lineData = LineDataAuth(line.data)
       let old = lineData.container
       let url = lineData.url
-      url.password = line.news
+      url.password = line.text
       let container = pager.gotoURL(newRequest(url), referrer = old)
       pager.replace(old, container)
-    of lmBuffer: pager.container.readSuccess(line.news)
+    of lmBuffer: pager.container.readSuccess(line.text)
     of lmBufferFile:
-      if path := ChaPath(line.news).unquote(myposix.getcwd()):
+      if path := ChaPath(line.text).unquote(myposix.getcwd()):
         let ps = newPosixStream(path, O_RDONLY, 0)
         if ps == nil:
           pager.alert("File not found")
@@ -2361,11 +2370,11 @@ proc updateReadLine(pager: Pager) {.jsfunc.} =
             pager.container.readSuccess(name, ps.fd)
           ps.sclose()
       else:
-        pager.alert("Invalid path: " & line.news)
+        pager.alert("Invalid path: " & line.text)
         pager.container.readCanceled()
     of lmDownload:
       let data = LineDataDownload(line.data)
-      let path = ChaPath(line.news).unquote(myposix.getcwd())
+      let path = ChaPath(line.text).unquote(myposix.getcwd())
       if path.isErr:
         pager.alert(path.error)
       else:
@@ -2383,7 +2392,7 @@ proc updateReadLine(pager: Pager) {.jsfunc.} =
           pager.saveTo(data, path)
     of lmMailcap:
       var mailcap = Mailcap.default
-      let res = mailcap.parseMailcap(line.news, "<input>")
+      let res = mailcap.parseMailcap(line.text, "<input>")
       let data = LineDataMailcap(line.data)
       if res.isOk and mailcap.len == 1:
         let res = pager.runMailcap(data.container.url, data.ostream,
@@ -2430,6 +2439,7 @@ type GotoURLDict = object of JSDict
   scripting {.jsdefault.}: Option[ScriptingMode]
   cookie {.jsdefault.}: Option[CookieMode]
   charset {.jsdefault.}: Option[Charset]
+  url {.jsdefault.}: Option[URL]
 
 proc jsGotoURL(ctx: JSContext; pager: Pager; v: JSValueConst;
     t = GotoURLDict()): Opt[Container] {.jsfunc: "gotoURL".} =
@@ -2449,7 +2459,7 @@ proc jsGotoURL(ctx: JSContext; pager: Pager; v: JSValueConst;
   let replace = t.replace.get(nil)
   let container = pager.gotoURL0(request, t.save, t.history, bufferConfig,
     loaderConfig, title = "", t.contentType.get(""), redirectDepth = 0,
-    url = nil, replace, filterCmd)
+    url = t.url.get(nil), replace, filterCmd)
   if replace == nil:
     pager.addContainer(container)
   ok(container)
@@ -2785,7 +2795,7 @@ proc runMailcap(pager: Pager; url: URL; stream: PosixStream;
 
 proc redirectTo(pager: Pager; container: Container; request: Request) =
   let save = cfSave in container.flags
-  if not pager.gotoURLHash(request, container, save):
+  if save or not pager.gotoURLHash(request, container):
     let nc = pager.gotoURL(request, redirectDepth = container.redirectDepth + 1,
       referrer = container, save = save, history = cfHistory in container.flags)
     if nc != nil:
@@ -3311,20 +3321,15 @@ proc handleEvent0(pager: Pager; container: Container; event: ContainerEvent) =
     if pager.container != container or
         not save and not container.isHoverURL(url):
       pager.ask("Open pop-up? " & $url).then(proc(x: bool) =
-        if x and not pager.gotoURLHash(request, container, save):
+        if x and (save or not pager.gotoURLHash(request, container)):
           let container = pager.gotoURL(request, contentType,
             referrer = container, save = save)
           pager.addContainer(container)
       )
-    elif not pager.gotoURLHash(request, container, save):
+    elif (save or not pager.gotoURLHash(request, container)):
       let container = pager.gotoURL(request, contentType, referrer = container,
         save = save)
       pager.addContainer(container)
-  of cetSaveSource:
-    let request = newRequest("cache:" & $container.cacheId)
-    let container = pager.gotoURL(request, "", referrer = pager.container,
-      save = true, url = container.url)
-    pager.addContainer(container)
   of cetStatus:
     if pager.container == container:
       pager.showAlerts()

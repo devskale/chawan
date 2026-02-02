@@ -1,5 +1,13 @@
 {.push raises: [].}
 
+from std/strutils import
+  contains,
+  repeat,
+  split,
+  strip,
+  toLowerAscii,
+  toUpperAscii
+
 import std/algorithm
 import std/hashes
 import std/math
@@ -7,7 +15,6 @@ import std/options
 import std/posix
 import std/sets
 import std/setutils
-import std/strutils
 import std/tables
 import std/times
 
@@ -1206,21 +1213,17 @@ proc getWindow*(ctx: JSContext): Window =
 
 proc setWeak(ctx: JSContext; wwm: WindowWeakMap; key, val: JSValue): Opt[void] =
   let global = ctx.getGlobal()
-  let argv = [key, val]
-  let res = JS_Invoke(ctx, global.weakMap[wwm], ctx.getOpaque().strRefs[jstSet],
-    2, argv.toJSValueConstArray())
+  let res = ctx.invokeSink(global.weakMap[wwm], ctx.getOpaque().strRefs[jstSet],
+    key, val)
   let e = JS_IsException(res)
   JS_FreeValue(ctx, res)
-  JS_FreeValue(ctx, key)
-  JS_FreeValue(ctx, val)
   if e:
     return err()
   ok()
 
 proc getWeak(ctx: JSContext; wwm: WindowWeakMap; key: JSValueConst): JSValue =
   let global = ctx.getGlobal()
-  return JS_Invoke(ctx, global.weakMap[wwm], ctx.getOpaque().strRefs[jstGet],
-    1, key.toJSValueConstArray())
+  return ctx.invoke(global.weakMap[wwm], ctx.getOpaque().strRefs[jstGet], key)
 
 proc isCell(this: Node): bool =
   return this of Element and Element(this).tagType in {TAG_TD, TAG_TH}
@@ -1492,7 +1495,7 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
         for s in response.headers.getAllCommaSplit("Cache-Control"):
           if s.startsWithIgnoreCase("max-age="):
             let i = s.skipBlanks("max-age=".len)
-            let s = s.until(AllChars - AsciiDigit, i)
+            let s = s.until(NonDigit, i)
             if pi := parseInt64(s):
               expiry = getTime().toUnix() + pi
             break
@@ -3631,14 +3634,15 @@ proc createNodeIterator(ctx: JSContext; document: Document; root: Node;
       let ctx = collection.ctx
       let filter = collection.filter
       let node = ctx.toJS(node)
+      if JS_IsException(node):
+        return false
       let val = if JS_IsFunction(ctx, filter):
-        ctx.call(filter, JS_UNDEFINED, node)
+        ctx.callSink(filter, JS_UNDEFINED, node)
       else:
         let atom = JS_NewAtom(ctx, cstringConst"acceptNode")
-        let val = JS_Invoke(ctx, filter, atom, 1, node.toJSValueArray())
+        let val = ctx.invokeSink(filter, atom, node)
         JS_FreeAtom(ctx, atom)
         val
-      JS_FreeValue(ctx, node)
       if JS_IsException(val):
         return false
       var res: uint32
@@ -5779,8 +5783,7 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
       return
     res.get.blob().then(proc(blob: BlobResult) =
       let jsBlob = ctx.toJS(blob)
-      let res = ctx.callFree(callback, JS_UNDEFINED, jsBlob)
-      JS_FreeValue(ctx, jsBlob)
+      let res = ctx.callSinkFree(callback, JS_UNDEFINED, jsBlob)
       if JS_IsException(res):
         window.console.error("Exception in canvas toBlob:",
           ctx.getExceptionMsg())
