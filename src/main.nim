@@ -230,7 +230,19 @@ proc parse(ctx: var ParamParseContext) =
       ctx.pages.add(param)
     inc ctx.i
 
-const defaultConfig = staticRead"res/config.toml"
+const defaultConfig = """
+[external]
+urimethodmap = [
+	"~/.urimethodmap",
+	"~/.w3m/urimethodmap",
+	"/etc/urimethodmap",
+	"/usr/local/etc/w3m/urimethodmap"
+]
+
+[siteconf.downloads]
+url = 'about:downloads'
+meta-refresh = "always"
+"""
 
 proc initConfig(ctx: ParamParseContext; warnings: var seq[string];
     jsctx: JSContext): Result[Config, string] =
@@ -243,7 +255,7 @@ proc initConfig(ctx: ParamParseContext; warnings: var seq[string];
       twtstr.setEnv("CHA_DATA_DIR", dataDir).isErr:
     die("failed to set env vars")
   let config = newConfig(jsctx, dir, dataDir)
-  ?config.parseConfig("res", defaultConfig, warnings, jsctx, "res/config.toml")
+  ?config.parseConfig("res", defaultConfig, warnings, jsctx, "default")
   let cwd = myposix.getcwd()
   when defined(debug):
     if (let ps = newPosixStream(cwd / "res/config.toml"); ps != nil):
@@ -257,7 +269,6 @@ proc initConfig(ctx: ParamParseContext; warnings: var seq[string];
     ps.sclose()
   for opt in ctx.opts:
     ?config.parseConfig(cwd, opt, warnings, jsctx, "<input>", laxnames = true)
-  ?jsctx.initCommands(config)
   string(config.buffer.userStyle) &= ctx.stylesheet
   isCJKAmbiguous = config.display.doubleWidthAmbiguous
   ok(config)
@@ -467,7 +478,6 @@ proc main() =
   loaderControl.setCloseOnExec()
   let loader = newFileLoader(clientPid, loaderControl)
   let client = newClient(forkserver, loader, jsctx, urandom)
-  jsctx.setupStartupScript("init.jsb")
   var warnings = newSeq[string]()
   let cres = ctx.initConfig(warnings, jsctx)
   if cres.isErr:
@@ -504,6 +514,9 @@ proc main() =
       sigintCaught = true
     else:
       quit(1)
+  jsctx.setupStartupScript("init.jsb")
+  if (let res = jsctx.initCommands(config); res.isErr):
+    die(res.error)
   let pager = newPager(config, forkserver, jsctx, warnings, loader, loaderPid,
     client.console)
   client.pager = pager

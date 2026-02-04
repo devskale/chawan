@@ -1,11 +1,6 @@
 {.push raises: [].}
 
-from std/strutils import
-  delete,
-  find,
-  repeat,
-  rfind,
-  strip
+from std/strutils import strip
 
 import std/options
 import std/os
@@ -755,16 +750,12 @@ proc toJS(ctx: JSContext; input: MouseInput): JSValue =
   let obj = JS_NewObject(ctx)
   let t = input.t
   let button = input.button
-  let shift = mimShift in input.mods
-  let ctrl = mimCtrl in input.mods
-  let meta = mimMeta in input.mods
+  let mods = cast[int32](input.mods)
   let (x, y) = input.pos
   # TODO we must check for exception on toJS too
   if ctx.defineProperty(obj, "t", ctx.toJS(t)) == dprException or
       ctx.defineProperty(obj, "button", ctx.toJS(button)) == dprException or
-      ctx.defineProperty(obj, "shift", ctx.toJS(shift)) == dprException or
-      ctx.defineProperty(obj, "ctrl", ctx.toJS(ctrl)) == dprException or
-      ctx.defineProperty(obj, "meta", ctx.toJS(meta)) == dprException or
+      ctx.defineProperty(obj, "mods", ctx.toJS(mods)) == dprException or
       ctx.defineProperty(obj, "x", ctx.toJS(x)) == dprException or
       ctx.defineProperty(obj, "y", ctx.toJS(y)) == dprException:
     JS_FreeValue(ctx, obj)
@@ -2063,11 +2054,10 @@ proc gotoURLHash(pager: Pager; request: Request; current: Container): bool =
 proc omniRewrite(pager: Pager; s: string): string =
   for rule in pager.config.omnirule:
     if rule.match.match(s):
-      let fun = rule.substituteUrl
       let ctx = pager.jsctx
       let arg0 = ctx.toJS(s)
       if not JS_IsException(arg0):
-        let jsRet = ctx.callFree(fun, JS_UNDEFINED, arg0)
+        let jsRet = ctx.callSink(rule.substituteUrl, JS_UNDEFINED, arg0)
         var res: string
         if not JS_IsException(jsRet) and ctx.fromJSFree(jsRet, res).isOk:
           pager.lineHist[lmLocation].add(s)
@@ -2345,8 +2335,9 @@ proc updateReadLine(pager: Pager) {.jsfunc.} =
           pager.console.writeException(ctx)
         JS_FreeValue(ctx, res)
     of lmUsername:
-      LineDataAuth(line.data).url.username = line.text
-      pager.setLineEdit2(lmPassword, "Password: ", hide = true)
+      let data = LineDataAuth(line.data)
+      data.url.username = line.text
+      pager.setLineEdit0(lmPassword, "Password: ", "", hide = true, data)
     of lmPassword:
       let lineData = LineDataAuth(line.data)
       let old = lineData.container
