@@ -718,8 +718,7 @@ proc jsLinkHintChars(ctx: JSContext; input: InputConfig): JSValue
         break good
       vals.add(val)
     return ctx.newArrayFrom(vals)
-  for val in vals:
-    JS_FreeValue(ctx, val)
+  ctx.freeValues(vals)
   return JS_EXCEPTION
 
 proc freeValues*(ctx: JSContext; map: ActionMap) =
@@ -1474,17 +1473,18 @@ proc newConfig*(ctx: JSContext; dir, dataDir: string): Config =
     )
   )
 
-proc addConfigModule*(ctx: JSContext) =
-  ctx.registerType(ActionMap)
-  ctx.registerType(StartConfig)
-  ctx.registerType(SearchConfig)
-  ctx.registerType(EncodingConfig)
-  ctx.registerType(ExternalConfig)
-  ctx.registerType(NetworkConfig)
-  ctx.registerType(InputConfig)
-  ctx.registerType(DisplayConfig)
-  ctx.registerType(StatusConfig)
-  ctx.registerType(BufferSectionConfig, name = "BufferConfig")
-  ctx.registerType(Config)
+proc addConfigModule*(ctx: JSContext): Opt[void] =
+  ?ctx.registerType(ActionMap)
+  ?ctx.registerType(StartConfig)
+  ?ctx.registerType(SearchConfig)
+  ?ctx.registerType(EncodingConfig)
+  ?ctx.registerType(ExternalConfig)
+  ?ctx.registerType(NetworkConfig)
+  ?ctx.registerType(InputConfig)
+  ?ctx.registerType(DisplayConfig)
+  ?ctx.registerType(StatusConfig)
+  ?ctx.registerType(BufferSectionConfig, name = "BufferConfig")
+  ?ctx.registerType(Config)
+  ok()
 
 {.pop.} # raises: []

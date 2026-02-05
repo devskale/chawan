@@ -201,24 +201,22 @@ proc getRandomValues(ctx: JSContext; crypto: Crypto; array: JSValueConst):
   doAssert crypto.urandom.readLoop(view.abuf.p, int(view.abuf.len)).isOk
   return JS_DupValue(ctx, array)
 
-proc addNavigatorModule*(ctx: JSContext) =
-  ctx.registerType(Navigator)
-  ctx.registerType(PluginArray)
-  ctx.registerType(MimeTypeArray)
-  ctx.registerType(Screen)
-  ctx.registerType(History)
-  ctx.registerType(Storage)
-  ctx.registerType(Crypto)
+proc addNavigatorModule*(ctx: JSContext): Opt[void] =
+  ?ctx.registerType(Navigator)
+  ?ctx.registerType(PluginArray)
+  ?ctx.registerType(MimeTypeArray)
+  ?ctx.registerType(Screen)
+  ?ctx.registerType(History)
+  ?ctx.registerType(Storage)
+  ?ctx.registerType(Crypto)
+  ok()
 
 # Window
 proc finalize(window: Window) {.jsfin.} =
   window.timeouts.clearAll()
-  for it in window.weakMap:
-    JS_FreeValueRT(window.jsrt, it)
-  for it in window.jsStore.mitems:
-    let val = it
-    it = JS_UNINITIALIZED
-    JS_FreeValueRT(window.jsrt, val)
+  let rt = window.jsrt
+  rt.freeValues(window.weakMap)
+  rt.freeValues(window.jsStore)
   window.jsStore.setLen(0)
   window.settings.moduleMap.clear(window.jsrt)
 
@@ -365,13 +363,19 @@ proc getEvent(ctx: JSContext; window: Window): JSValue {.jsrfget: "event".} =
     return JS_UNDEFINED
   return ctx.toJS(window.event)
 
+proc animationFrameHandler(ctx: JSContext; this: JSValueConst; argc: cint;
+    argv: JSValueConstArray): JSValue {.cdecl.} =
+  let arg0 = ctx.toJS(getUnixMillis())
+  return ctx.callSink(argv[0], this, arg0)
+
 proc requestAnimationFrame(ctx: JSContext; window: Window;
     callback: JSValueConst): JSValue {.jsfunc.} =
   if not JS_IsFunction(ctx, callback):
     return JS_ThrowTypeError(ctx, "callback is not a function")
-  let handler = ctx.newFunction(["callback"], """
-callback(new Event("").timeStamp);
-""")
+  let handler = JS_NewCFunction(ctx, animationFrameHandler,
+    "animation frame handler", 1)
+  if JS_IsException(handler):
+    return JS_EXCEPTION
   let res = ctx.toJS(window.setTimeout(handler, 0, callback))
   JS_FreeValue(ctx, handler)
   res
@@ -466,11 +470,9 @@ proc rejectionHandler(ctx: JSContext; promise, reason: JSValueConst;
     var s: string
     if fromJS(ctx, reason, s).isOk:
       s &= '\n'
-    let stack = JS_GetPropertyStr(ctx, reason, "stack");
     var ss: string
-    if not JS_IsUndefined(stack) and ctx.fromJS(stack, ss).isOk:
+    if ctx.fromJSGetProp(reason, "stack", ss).isOk:
       s &= ss
-    JS_FreeValue(ctx, stack)
     if window.document != nil:
       window.console.error("Unhandled promise in document",
         $window.document.url, s)
@@ -479,24 +481,43 @@ proc rejectionHandler(ctx: JSContext; promise, reason: JSValueConst;
     window.console.flush()
 
 proc addWindowModule*(ctx: JSContext):
-    tuple[eventCID, eventTargetCID: JSClassID] =
-  let (eventCID, eventTargetCID) = ctx.addEventModule()
-  ctx.registerType(Window, parent = eventTargetCID, asglobal = true)
+    Opt[tuple[eventCID, eventTargetCID: JSClassID]] =
+  let (eventCID, eventTargetCID) = ?ctx.addEventModule()
+  ?ctx.registerType(Window, parent = eventTargetCID, asglobal = true)
   let global = JS_GetGlobalObject(ctx)
-  discard ctx.addEventGetSet(global, WindowEvents)
+  ?ctx.addEventGetSet(global, WindowEvents)
   JS_FreeValue(ctx, global)
-  ctx.registerType(MediaQueryList, parent = eventTargetCID)
-  JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), rejectionHandler, nil)
-  return (eventCID, eventTargetCID)
+  ok((eventCID, eventTargetCID))
 
 proc addWindowModule2*(ctx: JSContext):
-    tuple[windowCID, eventCID, eventTargetCID: JSClassID] =
-  let (eventCID, eventTargetCID) = ctx.addEventModule()
+    Opt[tuple[windowCID, eventCID, eventTargetCID: JSClassID]] =
+  let (eventCID, eventTargetCID) = ?ctx.addEventModule()
   let windowCID = ctx.registerType(Window, parent = eventTargetCID,
     asglobal = true, globalparent = true)
-  ctx.registerType(MediaQueryList, parent = eventTargetCID)
+  if windowCID == 0:
+    return err()
+  ok((windowCID, eventCID, eventTargetCID))
+
+proc addCommonModules*(ctx: JSContext; eventCID, eventTargetCID: JSClassID):
+    Opt[void] =
+  ?ctx.registerType(MediaQueryList, parent = eventTargetCID)
   JS_SetHostPromiseRejectionTracker(JS_GetRuntime(ctx), rejectionHandler, nil)
-  return (windowCID, eventCID, eventTargetCID)
+  ?ctx.addConsoleModule()
+  ?ctx.addNavigatorModule()
+  ?ctx.addDOMExceptionModule()
+  ?ctx.addDOMModule(eventTargetCID)
+  ?ctx.addCanvasModule()
+  ?ctx.addURLModule()
+  ?ctx.addHTMLModule()
+  ?ctx.addIntlModule()
+  ?ctx.addBlobModule()
+  ?ctx.addFormDataModule()
+  ?ctx.addXMLHttpRequestModule(eventCID, eventTargetCID)
+  ?ctx.addHeadersModule()
+  ?ctx.addRequestModule()
+  ?ctx.addResponseModule()
+  ?ctx.addEncodingModule()
+  ctx.addPerformanceModule(eventTargetCID)
 
 proc evalJSFree(opaque: RootRef; src, file: string) =
   let window = Window(opaque)
@@ -510,9 +531,8 @@ proc evalJSFree(opaque: RootRef; src, file: string) =
 proc getConsole(ctx: JSContext): Console =
   ctx.getGlobal().console
 
-proc addScripting*(window: Window) =
-  let rt = newJSRuntime()
-  let ctx = rt.newJSContext()
+proc addScripting*(window: Window; ctx: JSContext): Opt[void] =
+  let rt = JS_GetRuntime(ctx)
   window.jsrt = rt
   window.jsctx = ctx
   window.importMapsAllowed = true
@@ -522,7 +542,8 @@ proc addScripting*(window: Window) =
   let weakMap = JS_GetPropertyStr(ctx, jsWindow, "WeakMap")
   for it in window.weakMap.mitems:
     it = JS_CallConstructor(ctx, weakMap, 0, nil)
-    doAssert not JS_IsException(it)
+    if JS_IsException(it):
+      return err()
   JS_FreeValue(ctx, weakMap)
   JS_FreeValue(ctx, jsWindow)
   JS_SetModuleLoaderFunc(rt, normalizeModuleName, loadJSModule, nil)
@@ -531,24 +552,9 @@ proc addScripting*(window: Window) =
     window.settings.scriptAttrsp = window.settings.attrsp
   else:
     window.settings.scriptAttrsp = unsafeAddr dummyAttrs
-  let (eventCID, eventTargetCID) = ctx.addWindowModule()
+  let (eventCID, eventTargetCID) = ?ctx.addWindowModule()
   ctx.setGlobal(window)
-  ctx.addConsoleModule()
-  ctx.addNavigatorModule()
-  ctx.addDOMExceptionModule()
-  ctx.addDOMModule(eventTargetCID)
-  ctx.addCanvasModule()
-  ctx.addURLModule()
-  ctx.addHTMLModule()
-  ctx.addIntlModule()
-  ctx.addBlobModule()
-  ctx.addFormDataModule()
-  ctx.addXMLHttpRequestModule(eventCID, eventTargetCID)
-  ctx.addHeadersModule()
-  ctx.addRequestModule()
-  ctx.addResponseModule()
-  ctx.addEncodingModule()
-  ctx.addPerformanceModule(eventTargetCID)
+  ctx.addCommonModules(eventCID, eventTargetCID)
 
 proc newWindow*(scripting: ScriptingMode; images, styling, autofocus: bool;
     headless: HeadlessMode; attrsp: ptr WindowAttributes; loader: FileLoader;
@@ -581,7 +587,12 @@ proc newWindow*(scripting: ScriptingMode; images, styling, autofocus: bool;
   for it in window.weakMap.mitems:
     it = JS_UNDEFINED
   if scripting != smFalse:
-    window.addScripting()
+    let rt = newJSRuntime()
+    let ctx = rt.newJSContext()
+    if window.addScripting(ctx).isErr:
+      window.console.error("failed to initialize JS")
+      window.console.writeException(ctx)
+      quit(1)
   return window
 
 # Forward declaration hack

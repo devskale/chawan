@@ -107,17 +107,6 @@ proc fromJS(ctx: JSContext; val: JSValueConst; unit: var NumberUnit):
     unit = NumberUnit(part1: part1.get)
   fjOk
 
-proc fromJSGetProp[T](ctx: JSContext; this: JSValueConst; name: cstring;
-    res: var T): Opt[bool] =
-  let prop = JS_GetPropertyStr(ctx, this, name)
-  if JS_IsException(prop):
-    return err()
-  if JS_IsUndefined(prop):
-    return ok(false)
-  ?ctx.fromJS(prop, res)
-  JS_FreeValue(ctx, prop)
-  ok(true)
-
 proc newNumberFormat(ctx: JSContext; name = "en-US";
     options: JSValueConst = JS_UNDEFINED): Opt[NumberFormat] {.jsfctor.} =
   let nf = NumberFormat()
@@ -258,12 +247,17 @@ proc select(this: PluralRules; num: float64): string {.jsfunc.} =
 proc newRelativeTimeFormat(): RelativeTimeFormat {.jsctor.} =
   return RelativeTimeFormat()
 
-proc addIntlModule*(ctx: JSContext) =
+proc addIntlModule*(ctx: JSContext): Opt[void] =
   let global = JS_GetGlobalObject(ctx)
   let intl = JS_NewObject(ctx)
-  ctx.registerType(NumberFormat, namespace = intl)
-  ctx.registerType(DateTimeFormat, namespace = intl)
-  ctx.registerType(PluralRules, namespace = intl)
-  ctx.registerType(RelativeTimeFormat, namespace = intl)
-  doAssert ctx.defineProperty(global, "Intl", intl) != dprException
+  if JS_IsException(intl):
+    return err()
+  ?ctx.registerType(NumberFormat, namespace = intl)
+  ?ctx.registerType(DateTimeFormat, namespace = intl)
+  ?ctx.registerType(PluralRules, namespace = intl)
+  ?ctx.registerType(RelativeTimeFormat, namespace = intl)
+  case ctx.defineProperty(global, "Intl", intl)
+  of dprException: return err()
+  else: discard
   JS_FreeValue(ctx, global)
+  ok()
