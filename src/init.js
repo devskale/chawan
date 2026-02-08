@@ -159,6 +159,16 @@ globalThis.cmd = {
             pager.alert("Error; please install xsel or adjust external.copy-cmd");
         pager.cursorToggleSelection();
     },
+    cursorSearchWordForward: async n => {
+        const word = await pager.getCurrentWord();
+        pager.regex = new RegExp('\\b' + RegExp.escape(word) + '\\b', "g");
+        return pager.searchNext(n);
+    },
+    cursorSearchWordBackward: async n => {
+        const word = await pager.getCurrentWord();
+        pager.regex = new RegExp('\\b' + RegExp.escape(word) + '\\b', "g");
+        return pager.searchPrev(n);
+    },
     line: {
         openEditor: () => {
             const res = pager.openEditor(line.text);
@@ -314,13 +324,6 @@ Pager.prototype.compileSearchRegex = function(s) {
     if (!hasC && !hasUpper && ignoreCaseOpt == "auto")
         ignoreCase = true;
     return new RegExp(s2, ignoreCase ? "gui" : "gu");
-}
-
-Pager.prototype.setSearchRegex = function(s, flags, reverse = false) {
-    if (!flags.includes('g'))
-        flags += 'g';
-    this.regex = new RegExp(s, flags);
-    this.reverseSearch = reverse;
 }
 
 Pager.prototype.searchNext = async function(n = 1) {
@@ -716,6 +719,29 @@ Pager.prototype.closeMenu = function() {
         this.menu = null;
         return menu.cancel();
     }
+}
+
+Pager.prototype.openEditor = function(input) {
+    let tmpf = this.getTempFile();
+    Util.mkdir(config.external.tmpdir, 0o700);
+    input += '\n';
+    try {
+        writeFile(tmpf, input, 0o600);
+    } catch (e) {
+        this.alert("failed to write temporary file");
+        return null;
+    }
+    const cmd = this.getEditorCommand(tmpf);
+    if (cmd == "") {
+        this.alert("invalid external.editor command");
+        return null;
+    }
+    this.extern(cmd);
+    let res = readFile(tmpf, input);
+    Util.unlink(tmpf);
+    if (res != null && res.at(-1) == '\n')
+        res = res.substring(0, res.length - 1);
+    return res;
 }
 
 /* private */
@@ -1261,6 +1287,22 @@ Buffer.prototype.cursorBigWordEnd = function(n) {
     return this.cursorNextWordImpl(ReBigWordEnd, n);
 }
 
+Buffer.prototype.getCurrentWord = async function(x = this.cursorx,
+                                                 y = this.cursory) {
+    const iface = this.iface
+    if (iface == null)
+        return;
+    let p1 = iface.findPrevMatch(ReViWordStart, x + 1, y, false, 1);
+    let p2 = iface.findNextMatch(ReViWordEnd, x - 1, y, false, 1);
+    let [x1, y1, w1] = await p1;
+    let [x2, y2, w2] = await p2;
+    if (y1 < y)
+        x1 = 0;
+    if (y2 > y)
+        x2 = 0;
+    return iface.getSelectionText(x1, y, x2, y, "normal");
+}
+
 /* zb */
 Buffer.prototype.lowerPage = function(n) {
     if (n)
@@ -1513,9 +1555,11 @@ Buffer.prototype.reshape = function() {
 
 Buffer.prototype.editSource = function() {
     const url = pager.url;
-    pager.extern(pager.getEditorCommand(url.protocol == "file:" ?
+    const path = url.protocol == "file:" ?
         decodeURIComponent(url.pathname) :
-        pager.cacheFile));
+        pager.cacheFile;
+    const cmd = pager.getEditorCommand(path)
+    pager.extern(cmd);
 }
 
 Buffer.prototype.saveSource = function() {
@@ -1743,10 +1787,8 @@ Buffer.prototype.loaded = async function(headless, metaRefresh, autofocus) {
         if (ok) {
             setTimeout(() => {
                 if (replace.iface != null) {
-                    pager.gotoURL(url, {
-                        replace: replace,
-                        history: replace.history
-                    }).copyCursorPos(replace);
+                    pager.gotoURL(url, {replace, history: replace.history})
+                        .copyCursorPos(replace);
                 }
             }, n);
         }
