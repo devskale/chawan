@@ -323,6 +323,7 @@ proc fromJSEnumBody(map: openArray[IdentMapItem]; ctx: JSContext;
   if i == -1:
     JS_ThrowTypeError(ctx, "`%s' is not a valid value for enumeration %s",
       s, tname)
+  JS_FreeCString(ctx, s)
   return i
 
 proc fromJS*[T: enum](ctx: JSContext; val: JSValueConst; res: var T):
@@ -477,19 +478,19 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var JSArrayBuffer):
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var JSArrayBufferView):
     FromJSResult =
   var offset {.noinit.}: csize_t
-  var nmemb {.noinit.}: csize_t
-  var nsize {.noinit.}: csize_t
-  let jsbuf = JS_GetTypedArrayBuffer(ctx, val, offset, nmemb, nsize)
+  var len {.noinit.}: csize_t
+  var bytesPerItem {.noinit.}: csize_t
+  let jsbuf = JS_GetTypedArrayBuffer(ctx, val, offset, len, bytesPerItem)
   if JS_IsException(jsbuf):
     return fjErr
   var abuf: JSArrayBuffer
   ?ctx.fromJSFree(jsbuf, abuf)
   res = JSArrayBufferView(
     abuf: abuf,
-    offset: offset,
-    nmemb: nmemb,
-    nsize: nsize,
-    t: JS_GetTypedArrayType(val)
+    offset: cast[int64](offset),
+    len: cast[int64](len),
+    bytesPerItem: uint8(bytesPerItem),
+    t: JSTypedArrayEnum(JS_GetTypedArrayType(val))
   )
   fjOk
 
