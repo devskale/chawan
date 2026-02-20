@@ -7,6 +7,7 @@
 {.push raises: [].}
 
 import std/algorithm
+import std/posix
 import std/tables
 
 import io/dynstream
@@ -18,6 +19,17 @@ type PacketWriter* = object
   bufLen*: int
   # file descriptors to send in the packet
   fds: seq[cint]
+
+type
+  BufferPacketFun* = proc(opaque: RootRef; stream: PosixStream) {.nimcall,
+    raises: [].}
+
+  PacketBuffer* = object
+    ws: seq[PacketWriter]
+    wi: int # index into ws
+    opaque: RootRef
+    register: BufferPacketFun
+    registered*: bool
 
 proc swrite*(w: var PacketWriter; n: SomeNumber)
 proc swrite*[T](w: var PacketWriter; s: set[T])
@@ -33,6 +45,7 @@ proc swrite*(w: var PacketWriter; obj: ref object)
 proc swrite*(w: var PacketWriter; c: ARGBColor)
 proc swrite*(w: var PacketWriter; c: CellColor)
 
+# consumes `fd'
 proc sendFd*(w: var PacketWriter; fd: cint) =
   w.fds.add(fd)
 
@@ -44,24 +57,90 @@ proc initPacketWriter*(): PacketWriter =
     bufLen: InitLen
   )
 
+proc initPacketBuffer*(register: BufferPacketFun; opaque: RootRef):
+    PacketBuffer =
+  PacketBuffer(register: register, opaque: opaque)
+
 proc writeSize*(w: var PacketWriter) =
   # subtract the length field's size
   let len = [w.bufLen - InitLen, w.fds.len]
   copyMem(addr w.buffer[0], unsafeAddr len[0], sizeof(len))
 
+proc closeFds(w: var PacketWriter) =
+  for fd in w.fds:
+    discard close(fd)
+  w.fds.setLen(0)
+
 # Returns false on EOF, true if we flushed successfully.
 proc flush*(w: var PacketWriter; stream: DynStream): bool =
   w.writeSize()
   if stream.writeLoop(w.buffer.toOpenArray(0, w.bufLen - 1)).isErr:
+    w.closeFds()
     return false
   if w.fds.len > 0:
     w.fds.reverse()
     let n = SocketStream(stream).sendMsg([0u8], w.fds)
     if n < 1:
       return false
+  w.closeFds()
   w.bufLen = 0
-  w.fds.setLen(0)
   true
+
+type FlushResult = enum
+  frEOF, frBuffer, frDone
+
+proc flush2(w: var PacketWriter; stream: PosixStream): FlushResult =
+  let bufLen = w.bufLen
+  let n = stream.write(w.buffer.toOpenArray(0, bufLen - 1))
+  if n < 0:
+    let e = errno
+    if e == EAGAIN or e == EWOULDBLOCK or e == EINTR:
+      return frBuffer
+    w.bufLen = 0
+    w.closeFds()
+    return frEOF
+  elif n < w.bufLen:
+    let left = bufLen - n
+    moveMem(addr w.buffer[0], addr w.buffer[n], left)
+    w.bufLen = left
+    return frBuffer
+  w.bufLen = 0
+  w.buffer = @[]
+  if w.fds.len > 0:
+    w.fds.reverse()
+    let n = SocketStream(stream).sendMsg([0u8], w.fds)
+    assert n != 0
+    if n < 0:
+      let e = errno
+      if e == EAGAIN or e == EWOULDBLOCK or e == EINTR:
+        w.fds.reverse() # will be reversed on next flush
+        return frBuffer
+      w.closeFds()
+      return frEOF
+    w.closeFds()
+  frDone
+
+proc flush*(b: var PacketBuffer; stream: PosixStream): bool =
+  if b.registered:
+    return true
+  while b.wi < b.ws.len:
+    case b.ws[b.wi].flush2(stream)
+    of frDone:
+      inc b.wi
+    of frBuffer:
+      b.register(b.opaque, stream)
+      b.registered = true
+      return true
+    of frEOF: return false
+  b.wi = 0
+  b.ws.setLen(0)
+  true
+
+proc flush*(b: var PacketBuffer; w: var PacketWriter; stream: PosixStream):
+    bool =
+  w.writeSize()
+  b.ws.add(move(w))
+  b.flush(stream)
 
 template withPacketWriter*(stream: DynStream; w, body, fallback: untyped) =
   var w = initPacketWriter()
@@ -73,6 +152,13 @@ template withPacketWriterFire*(stream: DynStream; w, body: untyped) =
   var w = initPacketWriter()
   body
   discard w.flush(stream)
+
+template withPacketWriter*(b: var PacketBuffer; stream: PosixStream;
+    w, body, fallback: untyped) =
+  var w = initPacketWriter()
+  body
+  if not b.flush(w):
+    fallback
 
 proc writeData*(w: var PacketWriter; buffer: pointer; len: int) =
   let targetLen = w.bufLen + len

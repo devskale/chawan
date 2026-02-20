@@ -215,21 +215,31 @@ type
     userStyle*: string
 
   BufferInitFlag* = enum
-    bifSave, bifIsHTML, bifHistory, bifTailOnLoad, bifCrashed, bifHasStart
+    bifSave, bifHTML, bifHistory, bifTailOnLoad, bifCrashed, bifHasStart,
+    bifRedirected, bifMailcapCancel
 
   LoadState* = enum
     lsLoading = "loading"
     lsCanceled = "canceled"
     lsLoaded = "loaded"
 
+  BufferConnectionResult* = enum
+    bcrFail = "fail"
+    bcrCancel = "cancel"
+    bcrConnected = "connected"
+    bcrSave = "save"
+    bcrRedirect = "redirect"
+    bcrUnauthorized = "unauthorized"
+    bcrMailcap = "mailcap"
+
   Mark = object
     id: string
     pos: PagePos
 
-  BufferInterface* = ref object
+  BufferInterface* = ref object of MapData
     map: seq[BufferIfaceItem]
     packetid: int
-    stream*: BufStream
+    packetBuffer: PacketBuffer
     lines: SimpleFlexibleGrid
     lineShift: int
     numLines* {.jsget.}: int
@@ -245,6 +255,7 @@ type
     lastPeek: HoverType
     redraw*: bool
     refreshStatus*: bool
+    dead* {.jsget.}: bool
     gotLines {.jsget.}: bool
     loadState* {.jsgetset.}: LoadState # private
     #TODO copy marks on clone
@@ -256,7 +267,7 @@ type
   BufferInit* = ref object
     config*: BufferConfig
     loaderConfig*: LoaderClientConfig
-    filter*: string # filter command (called on load)
+    filterCmd*: string # filter command (called on load)
     startpos*: Option[CursorState]
     title: string
     # if set, this *overrides* any content type received from the network.
@@ -278,17 +289,26 @@ type
     width* {.jsgetset.}: int
     height* {.jsgetset.}: int
     flags*: set[BufferInitFlag]
-    showLoading* {.jsgetset.}: bool
     #TODO this is inaccurate, because charsetStack can desync
     charset*: Charset
     charsetStack*: seq[Charset]
-    refreshUrl* {.jsget.}: URL
-    refreshMillis* {.jsget.}: int
-    retry*: URL
+    refreshUrl: URL
+    refreshMillis: int
+    connectedPtr: pointer # JSObject *
+    # this really doesn't belong in here, but I don't want to expose
+    # PosixStream to JS so instead I'll just smuggle it through init
+    ostream*: PosixStream
+    istreamOutputId*: int
+    ostreamOutputId*: int
 
 jsDestructor(BufferInterface)
 jsDestructor(BufferInit)
 jsDestructor(Highlight)
+
+# Forward declarations
+proc queueDraw*(iface: BufferInterface)
+proc sendCursorPosition(iface: BufferInterface)
+proc requestLinesFast*(iface: BufferInterface; force = false)
 
 proc finalize(rt: JSRuntime; iface: BufferInterface) {.jsfin.} =
   for it in iface.map:
@@ -301,16 +321,19 @@ proc mark(rt: JSRuntime; iface: BufferInterface; markFunc: JS_MarkFunc)
     if it.fun != nil:
       JS_MarkValue(rt, JS_MKPTR(JS_TAG_OBJECT, it.fun), markFunc)
 
-# Forward declarations
-proc queueDraw*(iface: BufferInterface)
-proc sendCursorPosition(iface: BufferInterface)
-proc requestLinesFast*(iface: BufferInterface; force = false)
+proc finalize(rt: JSRuntime; init: BufferInit) {.jsfin.} =
+  if init.connectedPtr != nil:
+    JS_FreeValueRT(rt, JS_MKPTR(JS_TAG_OBJECT, init.connectedPtr))
+
+proc mark(rt: JSRuntime; init: BufferInit; markFunc: JS_MarkFunc) {.jsmark.} =
+  if init.connectedPtr != nil:
+    JS_MarkValue(rt, JS_MKPTR(JS_TAG_OBJECT, init.connectedPtr), markFunc)
 
 # BufferInit
 proc newBufferInit*(config: BufferConfig; loaderConfig: LoaderClientConfig;
     url: URL; request: Request; attrs: WindowAttributes; title: string;
-    redirectDepth: int; flags: set[BufferInitFlag]; contentType: string;
-    charsetStack: seq[Charset]): BufferInit =
+    redirectDepth: int; flags: set[BufferInitFlag];
+    contentType, filterCmd: string; charsetStack: seq[Charset]): BufferInit =
   let cacheId = if request.url.schemeType == stCache:
     parseInt32(request.url.pathname).get(-1)
   else:
@@ -334,10 +357,12 @@ proc newBufferInit*(config: BufferConfig; loaderConfig: LoaderClientConfig;
     request: request,
     charsetStack: charsetStack,
     loadInfo: loadInfo,
-    refreshMillis: -1
+    refreshMillis: -1,
+    filterCmd: filterCmd,
+    istreamOutputId: -1
   )
 
-proc newBufferInit*(url: URL; init: BufferInit): BufferInit =
+proc newBufferInit*(url: URL; init: BufferInit): BufferInit {.jsctor.} =
   BufferInit(
     config: init.config,
     loaderConfig: init.loaderConfig,
@@ -351,7 +376,8 @@ proc newBufferInit*(url: URL; init: BufferInit): BufferInit =
     height: init.height,
     request: init.request,
     charsetStack: init.charsetStack,
-    refreshMillis: -1
+    refreshMillis: -1,
+    istreamOutputId: -1
   )
 
 proc copyCursorPos(ctx: JSContext; this: BufferInit; val: JSValueConst):
@@ -389,6 +415,18 @@ proc charsetOverride(ctx: JSContext; init: BufferInit): JSValue {.jsfget.} =
 proc save(init: BufferInit): bool {.jsfget.} =
   bifSave in init.flags
 
+proc setSave(init: BufferInit; b: bool) {.jsfset: "save".} =
+  if b:
+    init.flags.incl(bifSave)
+  else:
+    init.flags.excl(bifSave)
+
+proc shortContentType(init: BufferInit): string {.jsfget.} =
+  init.contentType.untilLower(';')
+
+proc ishtml(init: BufferInit): bool {.jsfget.} =
+  bifHTML in init.flags
+
 proc cookie(init: BufferInit): CookieMode {.jsfget.} =
   init.loaderConfig.cookieMode
 
@@ -415,10 +453,44 @@ proc title*(init: BufferInit): string {.jsfget.} =
 proc setTitle(init: BufferInit; title: string) {.jsfset: "title".} =
   init.title = title
 
+proc connected*(ctx: JSContext; init: BufferInit; res: BufferConnectionResult;
+    arg1: JSValue): JSValue =
+  if init.connectedPtr == nil:
+    JS_FreeValue(ctx, arg1)
+    return JS_UNDEFINED
+  let fun = JS_MKPTR(JS_TAG_OBJECT, init.connectedPtr)
+  init.connectedPtr = nil
+  let this = ctx.toJS(init)
+  if JS_IsException(this):
+    ctx.freeValues(fun, arg1)
+    return JS_EXCEPTION
+  let arg0 = ctx.toJS(res)
+  if JS_IsException(arg0):
+    ctx.freeValues(fun, this, arg1)
+    return JS_EXCEPTION
+  return ctx.callSinkThisFree(fun, this, arg0, arg1)
+
+proc setConnected(ctx: JSContext; init: BufferInit; connected: JSValueConst):
+      JSValue {.jsfset: "connected".} =
+  if not JS_IsFunction(ctx, connected):
+    return JS_ThrowTypeError(ctx, "not a function")
+  if init.connectedPtr != nil:
+    return JS_ThrowTypeError(ctx, "connected is already set")
+  let val = JS_DupValue(ctx, connected)
+  init.connectedPtr = JS_VALUE_GET_PTR(val)
+  return JS_DupValue(ctx, connected)
+
+proc closeMailcap*(init: BufferInit) {.jsfunc.} =
+  if init.ostream != nil:
+    init.ostream.sclose()
+    init.ostream = nil
+  init.istreamOutputId = -1
+  init.flags.incl(bifMailcapCancel)
+
 # Apply data received in response.
 # Note: pager must call this before checkMailcap.
 proc applyResponse*(init: BufferInit; response: Response;
-    mimeTypes: MimeTypes) =
+    mimeTypes: MimeTypesTable) =
   # accept cookies
   let cookieJar = init.loaderConfig.cookieJar
   if cookieJar != nil:
@@ -434,8 +506,7 @@ proc applyResponse*(init: BufferInit; response: Response;
   if init.contentType == "":
     var contentType = response.getLongContentType("application/octet-stream")
     if contentType.until(';') == "application/octet-stream":
-      contentType = mimeTypes.guessContentType(init.url.pathname,
-        "text/plain")
+      contentType = mimeTypes.guessContentType(init.url.pathname, "text/plain")
     init.contentType = move(contentType)
   # setup charsets:
   # * override charset
@@ -459,8 +530,9 @@ proc applyResponse*(init: BufferInit; response: Response;
   init.refreshMillis = refresh.n
 
 # BufferInterface
-proc newBufferInterface*(stream: BufStream; phandle: ProcessHandle;
-    attrsp: ptr WindowAttributes; init: BufferInit): BufferInterface =
+proc newBufferInterface*(stream: SocketStream; register: BufferPacketFun;
+    opaque: RootRef; phandle: ProcessHandle; attrsp: ptr WindowAttributes;
+    init: BufferInit): BufferInterface =
   inc phandle.refc
   return BufferInterface(
     phandle: phandle,
@@ -471,6 +543,7 @@ proc newBufferInterface*(stream: BufStream; phandle: ProcessHandle;
     init: init,
     pos: CursorState(setx: -1),
     lastPeek: HoverType.high,
+    packetBuffer: initPacketBuffer(register, opaque)
   )
 
 proc newProcessHandle*(pid: int): ProcessHandle =
@@ -714,8 +787,6 @@ proc setFromY(iface: BufferInterface; y: int) {.jsfunc.} =
     iface.queueDraw()
 
 proc setFromX(iface: BufferInterface; x: int; refresh = true) {.jsfunc.} =
-  if refresh:
-    iface.init.showLoading = true
   if iface.pos.fromx != x:
     iface.pos.fromx = max(min(x, iface.maxfromx), 0)
     if iface.pos.fromx > iface.cursorx:
@@ -731,8 +802,6 @@ proc setFromX(iface: BufferInterface; x: int; refresh = true) {.jsfunc.} =
 #   movement.
 proc setCursorX(iface: BufferInterface; x: int; refresh, save: bool)
     {.jsfunc.} =
-  if refresh:
-    iface.init.showLoading = true
   if not iface.lineLoaded(iface.cursory):
     iface.pos.setx = x
     iface.pos.setxrefresh = refresh
@@ -769,8 +838,6 @@ proc setCursorX(iface: BufferInterface; x: int; refresh, save: bool)
     iface.sendCursorPosition()
 
 proc setCursorY(iface: BufferInterface; y: int; refresh = true) {.jsfunc.} =
-  if refresh:
-    iface.init.showLoading = true
   let y = max(min(y, iface.numLines - 1), 0)
   if y >= iface.fromy and y - iface.init.height < iface.fromy:
     discard
@@ -782,8 +849,6 @@ proc setCursorY(iface: BufferInterface; y: int; refresh = true) {.jsfunc.} =
     iface.pos.cursor.y = y
     iface.setCursorX(iface.pos.xend, false, false)
     if refresh:
-      # cursor moved, trigger status so the status is recomputed
-      iface.refreshStatus = true
       iface.sendCursorPosition()
 
 # Send/receive packets
@@ -890,16 +955,6 @@ proc toJS(ctx: JSContext; res: GotoAnchorResult): JSValue =
   ctx.freeValues(init)
   return JS_EXCEPTION
 
-proc toJS(ctx: JSContext; res: CheckRefreshResult): JSValue =
-  let n = ctx.toJS(res.n)
-  if JS_IsException(n):
-    return JS_EXCEPTION
-  let url = ctx.toJS(res.url)
-  if JS_IsException(url):
-    JS_FreeValue(ctx, url)
-    return JS_EXCEPTION
-  return ctx.newArrayFrom(n, url)
-
 proc toJS(ctx: JSContext; x: CursorXY): JSValue =
   let obj = JS_NewObject(ctx)
   if JS_IsException(obj):
@@ -940,6 +995,7 @@ type IfaceResult* = enum
 
 # Returns false on I/O error, err on JS error.
 proc handleCommand*(ctx: JSContext; iface: BufferInterface): IfaceResult =
+  assert not iface.dead
   iface.stream.withPacketReader r:
     var packetid: int
     r.sread(packetid)
@@ -965,6 +1021,10 @@ proc handleCommand*(ctx: JSContext; iface: BufferInterface): IfaceResult =
   do:
     return irEOF
   irOk
+
+proc flushWrite*(iface: BufferInterface): bool =
+  iface.packetBuffer.registered = false
+  return iface.packetBuffer.flush(iface.stream)
 
 proc hasPromises(iface: BufferInterface): bool =
   return iface.map.len > 0
@@ -1039,40 +1099,65 @@ proc atPercentOf*(iface: BufferInterface): int =
     return 100
   return (100 * (iface.cursory + 1)) div iface.numLines
 
-#TODO probably we need some mechanism to block sending packets after a
-# buffer is deleted
+proc initPacketWriter(iface: BufferInterface; cmd: BufferCommand):
+    PacketWriter =
+  result = initPacketWriter()
+  result.swrite(cmd)
+  result.swrite(iface.packetid)
 
-template withPacketWriterFire(iface: BufferInterface; cmd: BufferCommand;
-    w, body: untyped) =
-  iface.stream.withPacketWriterFire w:
-    w.swrite(cmd)
-    w.swrite(iface.packetid)
-    body
+proc flush(ctx: JSContext; iface: BufferInterface; w: var PacketWriter): bool =
+  if iface.dead or not iface.packetBuffer.flush(w, iface.stream):
+    JS_ThrowTypeError(ctx, "buffer %d disconnected", cint(iface.phandle.process))
+    return false
+  return true
+
+template withPacketWriter(ctx: JSContext; iface: BufferInterface;
+    cmd: BufferCommand; w, body: untyped) =
+  var w = iface.initPacketWriter(cmd)
+  body
+  if not flush(ctx, iface, w):
+    return JS_EXCEPTION
+
+template withPacketWriter(iface: BufferInterface; cmd: BufferCommand;
+    w, body, fallback: untyped) =
+  var w = iface.initPacketWriter(cmd)
+  body
+  if iface.dead or not iface.packetBuffer.flush(w, iface.stream):
+    fallback
+
+template withPacketWriterSync(iface: BufferInterface; cmd: BufferCommand;
+    w, body, fallback: untyped) =
+  var w = iface.initPacketWriter(cmd)
+  body
+  if iface.dead or not w.flush(iface.stream):
+    fallback
 
 proc cancel*(iface: BufferInterface) {.jsfunc.} =
-  iface.withPacketWriterFire bcCancel, w:
+  iface.withPacketWriter bcCancel, w:
     discard
+  do:
+    return
   iface.addPromise(nil)
 
 proc checkRefresh(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcCheckRefresh, w:
+  let refreshMillis = iface.init.refreshMillis
+  if refreshMillis >= 0:
+    iface.init.refreshMillis = -1
+    return ctx.toJS((n: refreshMillis, url: move(iface.init.refreshUrl)))
+  ctx.withPacketWriter iface, bcCheckRefresh, w:
     discard
   return addPromise[CheckRefreshResult](ctx, iface)
 
 proc click(ctx: JSContext; iface: BufferInterface; x, y, n: int): JSValue {.
     jsfunc.} =
-  iface.withPacketWriterFire bcClick, w:
+  ctx.withPacketWriter iface, bcClick, w:
     w.swrite(x)
     w.swrite(y)
     w.swrite(n)
   return addPromise[ClickResult](ctx, iface)
 
 proc clone*(iface: BufferInterface; newurl: URL; pstreamFd: cint): Opt[void] =
-  if iface.stream.flush().isErr:
-    return err()
-  iface.stream.source.withPacketWriter w:
-    w.swrite(bcClone)
-    w.swrite(iface.packetid)
+  iface.withPacketWriter bcClone, w:
     w.swrite(newurl)
     w.sendFd(pstreamFd)
   do:
@@ -1082,14 +1167,14 @@ proc clone*(iface: BufferInterface; newurl: URL; pstreamFd: cint): Opt[void] =
 
 proc contextMenu(ctx: JSContext; iface: BufferInterface; cursorx, cursory: int):
     JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcContextMenu, w:
+  ctx.withPacketWriter iface, bcContextMenu, w:
     w.swrite(cursorx)
     w.swrite(cursory)
   return addPromise[bool](ctx, iface)
 
 proc findNextLink(ctx: JSContext; iface: BufferInterface; x, y, n: int): JSValue
     {.jsfunc.} =
-  iface.withPacketWriterFire bcFindNextLink, w:
+  ctx.withPacketWriter iface, bcFindNextLink, w:
     w.swrite(x)
     w.swrite(y)
     w.swrite(n)
@@ -1116,7 +1201,7 @@ proc findNextMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
       y = 0
     if not iface.lineLoaded(y):
       let regex = bytecodeToRegex(bytecode, bytecodeLen)
-      iface.withPacketWriterFire bcFindNextMatch, w:
+      ctx.withPacketWriter iface, bcFindNextMatch, w:
         w.swrite(regex)
         w.swrite(x)
         w.swrite(y)
@@ -1141,7 +1226,7 @@ proc findNextMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
 
 proc findNextParagraph(ctx: JSContext; iface: BufferInterface; y, n: int):
     JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcFindNextParagraph, w:
+  ctx.withPacketWriter iface, bcFindNextParagraph, w:
     w.swrite(y)
     w.swrite(n)
   return addPromise[int](ctx, iface)
@@ -1149,7 +1234,7 @@ proc findNextParagraph(ctx: JSContext; iface: BufferInterface; y, n: int):
 #TODO findPrevLink & findRevNthLink should probably be merged into findNextLink
 proc findPrevLink(ctx: JSContext; iface: BufferInterface; x, y, n: int):
     JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcFindPrevLink, w:
+  ctx.withPacketWriter iface, bcFindPrevLink, w:
     w.swrite(x)
     w.swrite(y)
     w.swrite(n)
@@ -1176,7 +1261,7 @@ proc findPrevMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
       wrap = false
     if not iface.lineLoaded(y):
       let regex = bytecodeToRegex(bytecode, bytecodeLen)
-      iface.withPacketWriterFire bcFindPrevMatch, w:
+      ctx.withPacketWriter iface, bcFindPrevMatch, w:
         w.swrite(regex)
         w.swrite(x)
         w.swrite(y)
@@ -1203,14 +1288,14 @@ proc findPrevMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
 
 proc findRevNthLink(ctx: JSContext; iface: BufferInterface; x, y, n: int):
     JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcFindPrevLink, w:
+  ctx.withPacketWriter iface, bcFindPrevLink, w:
     w.swrite(x)
     w.swrite(y)
     w.swrite(n)
   return addPromise[PagePos](ctx, iface)
 
 proc forceReshape(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcForceReshape, w:
+  ctx.withPacketWriter iface, bcForceReshape, w:
     discard
   return addEmptyPromise(ctx, iface)
 
@@ -1233,6 +1318,7 @@ proc getLinesFromStream(ctx: JSContext; iface: BufferInterface;
       let n = max(iface.lastVisibleLine, 0)
       if iface.cursory != n:
         iface.setCursorY(n)
+        iface.refreshStatus = true
     if iface.init.startpos.isSome and
         iface.numLines >= iface.init.startpos.get.cursor.y:
       iface.pos = iface.init.startpos.get
@@ -1243,6 +1329,7 @@ proc getLinesFromStream(ctx: JSContext; iface: BufferInterface;
       iface.refreshStatus = true
     if bifTailOnLoad in iface.init.flags:
       iface.setCursorY(int.high)
+      iface.refreshStatus = true
       iface.init.flags.excl(bifTailOnLoad)
   let slice = iface.lineShift ..< iface.lineShift + iface.lines.len
   if slice.b >= iface.fromy and slice.a <= iface.fromy + iface.init.height or
@@ -1255,8 +1342,10 @@ proc requestLinesFast*(iface: BufferInterface; force = false) =
   if not force and iface.requestedLines == slice:
     return
   iface.requestedLines = slice
-  iface.withPacketWriterFire bcGetLines, w:
+  iface.withPacketWriter bcGetLines, w:
     w.swrite(slice)
+  do:
+    return
   iface.addPromise(getLinesFromStream)
 
 proc requestLines(ctx: JSContext; iface: BufferInterface; force = false):
@@ -1265,7 +1354,7 @@ proc requestLines(ctx: JSContext; iface: BufferInterface; force = false):
   if not force and iface.requestedLines == slice:
     return JS_UNDEFINED
   iface.requestedLines = slice
-  iface.withPacketWriterFire bcGetLines, w:
+  ctx.withPacketWriter iface, bcGetLines, w:
     w.swrite(slice)
   return ctx.addPromise(iface, getLinesFromStream)
 
@@ -1275,6 +1364,9 @@ type HandleReadLine = proc(line: SimpleFlexibleLine): Opt[void]
 # Synchronously read all lines in the buffer.
 proc requestLinesSync*(ctx: JSContext; iface: BufferInterface;
     handle: HandleReadLine): IfaceResult =
+  if iface.dead:
+    return irEOF
+  iface.stream.setBlocking(true)
   while iface.hasPromises:
     # fulfill all promises
     let res = ctx.handleCommand(iface)
@@ -1283,10 +1375,12 @@ proc requestLinesSync*(ctx: JSContext; iface: BufferInterface;
   var slice = 0 .. 23
   while true:
     let packetid = iface.packetid
-    iface.withPacketWriterFire bcGetLines, w:
+    iface.withPacketWriterSync bcGetLines, w:
       w.swrite(slice)
+    do:
+      return irEOF
     inc iface.packetid
-    iface.stream.withPacketReaderFire r:
+    iface.stream.withPacketReader r:
       var packetid2: int
       r.sread(packetid2)
       assert packetid == packetid2
@@ -1295,6 +1389,8 @@ proc requestLinesSync*(ctx: JSContext; iface: BufferInterface;
       r.sread(iface.bgcolor)
       r.sread(iface.lines)
       r.sread(iface.images)
+    do:
+      return irEOF
     for line in iface.lines:
       if handle(line).isErr:
         return irEOF
@@ -1308,8 +1404,10 @@ proc requestLinesSync*(ctx: JSContext; iface: BufferInterface;
     if handle(SimpleFlexibleLine()).isErr:
       return irEOF
     let packetid = iface.packetid
-    iface.withPacketWriterFire bcGetLinks, w:
+    iface.withPacketWriterSync bcGetLinks, w:
       discard
+    do:
+      return irEOF
     inc iface.packetid
     var links: seq[string]
     iface.stream.withPacketReaderFire r:
@@ -1325,7 +1423,7 @@ proc requestLinesSync*(ctx: JSContext; iface: BufferInterface;
 
 proc getSelectionText(ctx: JSContext; iface: BufferInterface;
     sx, sy, ex, ey: int; t: SelectionType): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcGetSelectionText, w:
+  ctx.withPacketWriter iface, bcGetSelectionText, w:
     w.swrite(sx)
     w.swrite(sy)
     w.swrite(ex)
@@ -1334,40 +1432,40 @@ proc getSelectionText(ctx: JSContext; iface: BufferInterface;
   return addPromise[string](ctx, iface)
 
 proc getTitle(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcGetTitle, w:
+  ctx.withPacketWriter iface, bcGetTitle, w:
     discard
   return addPromise[string](ctx, iface)
 
 proc gotoAnchor(ctx: JSContext; iface: BufferInterface; anchor: string;
     autofocus, target: bool): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcGotoAnchor, w:
+  ctx.withPacketWriter iface, bcGotoAnchor, w:
     w.swrite(anchor)
     w.swrite(autofocus)
     w.swrite(target)
   return addPromise[GotoAnchorResult](ctx, iface)
 
 proc hideHints(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcHideHints, w:
+  ctx.withPacketWriter iface, bcHideHints, w:
     discard
   return addEmptyPromise(ctx, iface)
 
 proc load(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcLoad, w:
+  ctx.withPacketWriter iface, bcLoad, w:
     discard
   return addPromise[LoadResult](ctx, iface)
 
 proc markURL(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcMarkURL, w:
+  ctx.withPacketWriter iface, bcMarkURL, w:
     discard
   return addEmptyPromise(ctx, iface)
 
 proc onReshape(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcOnReshape, w:
+  ctx.withPacketWriter iface, bcOnReshape, w:
     discard
   return addEmptyPromise(ctx, iface)
 
 proc readCanceled(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcReadCanceled, w:
+  ctx.withPacketWriter iface, bcReadCanceled, w:
     discard
   return addEmptyPromise(ctx, iface)
 
@@ -1375,24 +1473,23 @@ proc readSuccess(ctx: JSContext; iface: BufferInterface; s: string; fd: cint):
     JSValue {.jsfunc.} =
   if iface.stream.flush().isErr:
     return JS_UNDEFINED
-  iface.withPacketWriterFire bcReadSuccess, w:
+  ctx.withPacketWriter iface, bcReadSuccess, w:
     w.swrite(s)
     let hasfd = fd != -1
     w.swrite(hasfd)
     if hasfd:
       w.sendFd(fd)
-  discard close(fd)
   return addPromise[ClickResult](ctx, iface)
 
 proc select(ctx: JSContext; iface: BufferInterface; selected: int): JSValue
     {.jsfunc.} =
-  iface.withPacketWriterFire bcSelect, w:
+  ctx.withPacketWriter iface, bcSelect, w:
     w.swrite(selected)
   return addPromise[ClickResult](ctx, iface)
 
 proc showHints(ctx: JSContext; iface: BufferInterface; sx, sy, ex, ey: int):
     JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcShowHints, w:
+  ctx.withPacketWriter iface, bcShowHints, w:
     w.swrite(sx)
     w.swrite(sy)
     w.swrite(ex)
@@ -1401,13 +1498,13 @@ proc showHints(ctx: JSContext; iface: BufferInterface; sx, sy, ex, ey: int):
 
 proc submitForm(ctx: JSContext; iface: BufferInterface; x, y: int): JSValue {.
     jsfunc.} =
-  iface.withPacketWriterFire bcSubmitForm, w:
+  ctx.withPacketWriter iface, bcSubmitForm, w:
     w.swrite(x)
     w.swrite(y)
   return addPromise[ClickResult](ctx, iface)
 
 proc toggleImages(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
-  iface.withPacketWriterFire bcToggleImages, w:
+  ctx.withPacketWriter iface, bcToggleImages, w:
     discard
   return addPromise[bool](ctx, iface)
 
@@ -1423,9 +1520,11 @@ proc updateHoverFromStream(ctx: JSContext; iface: BufferInterface;
   return JS_UNDEFINED
 
 proc sendCursorPosition(iface: BufferInterface) {.jsfunc.} =
-  iface.withPacketWriterFire bcUpdateHover, w:
+  iface.withPacketWriter bcUpdateHover, w:
     w.swrite(iface.cursorx)
     w.swrite(iface.cursory)
+  do:
+    return
   iface.addPromise(updateHoverFromStream)
 
 proc windowChange(ctx: JSContext; iface: BufferInterface; x, y: int): JSValue
@@ -1434,7 +1533,7 @@ proc windowChange(ctx: JSContext; iface: BufferInterface; x, y: int): JSValue
   # subtract status line height
   attrs.height -= 1
   attrs.heightPx -= attrs.ppl
-  iface.withPacketWriterFire bcWindowChange, w:
+  ctx.withPacketWriter iface, bcWindowChange, w:
     w.swrite(attrs)
     w.swrite(x)
     w.swrite(y)
