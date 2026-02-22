@@ -1,5 +1,6 @@
 {.push raises: [].}
 
+import std/algorithm
 import std/tables
 
 import quickjs
@@ -55,10 +56,18 @@ type
   JSFinalizerFunction* = proc(rt: JSRuntime; opaque: pointer) {.nimcall,
     raises: [].}
 
+  EnumMapItem* = object
+    atom*: JSAtom
+    n*: int32
+
+  EnumMapEntry* = object
+    atoms*: seq[JSAtom] # enum number -> atom
+    enums*: seq[EnumMapItem] # atom number -> enum
+
   JSRuntimeOpaque* = ref object
     classes*: seq[JSClassData] # JSClassID -> data
     typemap*: Table[pointer, JSClassID] # getTypePtr -> JSClassID
-    enumMap*: seq[seq[JSAtom]]
+    enumMap*: seq[EnumMapEntry]
     plist*: Table[pointer, pointer] # Nim -> JS
     destroying*: pointer
     # temp list for uninit
@@ -114,5 +123,31 @@ proc setUnforgeable*(ctx: JSContext; val: JSValueConst; class: JSClassID):
         cint(rtOpaque.classes[iclass].unforgeable.len)) == -1:
       return false
   true
+
+proc putEnums0(ctx: JSContext; entry: var EnumMapEntry;
+    atoms: openArray[string]): bool =
+  entry.enums = newSeqOfCap[EnumMapItem](atoms.len)
+  if entry.atoms.len < atoms.len:
+    entry.atoms.setLen(atoms.len)
+  for i in 0'i32 ..< int32(atoms.len):
+    let atom = JS_NewAtomLen(ctx, cstringConst(atoms[i]),
+      csize_t(atoms[i].len))
+    if atom == JS_ATOM_NULL:
+      return false
+    if entry.atoms[i] == JS_ATOM_NULL:
+      entry.atoms[i] = JS_DupAtom(ctx, atom)
+    entry.enums.add(EnumMapItem(n: i, atom: atom))
+  entry.enums.sort(proc(x, y: EnumMapItem): int {.nimcall.} =
+    cmp(uint32(x.atom), uint32(y.atom))
+  )
+  true
+
+proc putEnums*(ctx: JSContext; enumId: int; atoms: openArray[string]): bool =
+  let rtOpaque = JS_GetRuntime(ctx).getOpaque()
+  if enumId >= rtOpaque.enumMap.len:
+    rtOpaque.enumMap.setLen(enumId + 1)
+  if rtOpaque.enumMap[enumId].enums.len == atoms.len:
+    return true
+  ctx.putEnums0(rtOpaque.enumMap[enumId], atoms)
 
 {.pop.} # raises

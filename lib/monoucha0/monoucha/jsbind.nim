@@ -197,8 +197,10 @@ proc free*(rt: JSRuntime) =
   # once.)
   let rtOpaque = rt.getOpaque()
   for map in rtOpaque.enumMap:
-    for val in map:
-      JS_FreeAtomRT(rt, val)
+    for atom in map.atoms:
+      JS_FreeAtomRT(rt, atom)
+    for it in map.enums:
+      JS_FreeAtomRT(rt, it.atom)
   rtOpaque.tmplist.setLen(rtOpaque.plist.len)
   GC_unref(rtOpaque)
   # For refc: ensure there are no ghost Nim objects holding onto JS

@@ -8,6 +8,7 @@ import io/packetreader
 import io/packetwriter
 import monoucha/fromjs
 import monoucha/jsbind
+import monoucha/jsopaque
 import monoucha/jstypes
 import monoucha/libunicode
 import monoucha/quickjs
@@ -1294,8 +1295,25 @@ proc `$`*(origin: Origin): string =
 proc jsOrigin*(url: URL): string {.jsfget: "origin".} =
   return $url.origin
 
-proc protocol*(url: URL): string {.jsfget.} =
-  return url.scheme & ':'
+proc protocol*(ctx: JSContext; url: URL): JSValue {.jsfget.} =
+  if url.schemeType == stUnknown:
+    return ctx.toJS(url.scheme & ':')
+  const enumId = getJSEnumId(SchemeType)
+  let n = int(url.schemeType)
+  let rt = JS_GetRuntime(ctx)
+  let rtOpaque = rt.getOpaque()
+  if rtOpaque.enumMap.len <= enumId:
+    rtOpaque.enumMap.setLen(enumId + 1)
+  if rtOpaque.enumMap[enumId].atoms.len <= n:
+    rtOpaque.enumMap[enumId].atoms.setLen(n + 1)
+  var atom = rtOpaque.enumMap[enumId].atoms[n]
+  if atom == JS_ATOM_NULL:
+    let s = url.scheme & ':'
+    atom = JS_NewAtomLen(ctx, cstringConst(s), csize_t(s.len))
+    if atom == JS_ATOM_NULL:
+      return JS_EXCEPTION
+    rtOpaque.enumMap[enumId].atoms[n] = atom
+  return JS_AtomToValue(ctx, atom)
 
 proc setProtocol*(url: URL; s: string) {.jsfset: "protocol".} =
   parseURL1(s & ':', url, usSchemeStart)
