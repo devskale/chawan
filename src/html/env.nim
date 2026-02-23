@@ -220,7 +220,7 @@ proc addNavigatorModule*(ctx: JSContext): Opt[void] =
 proc finalize(rt: JSRuntime; window: Window) {.jsfin.} =
   window.timeouts.clearAll()
   rt.freeValues(window.weakMap)
-  window.settings.moduleMap.clear(window.jsrt)
+  window.settings.moduleMap.clear(rt)
   for data in window.loader.data:
     if data of ConnectData:
       let data = ConnectData(data)
@@ -539,7 +539,6 @@ proc getConsole(ctx: JSContext): Console =
 
 proc addScripting*(window: Window; ctx: JSContext): Opt[void] =
   let rt = JS_GetRuntime(ctx)
-  window.jsrt = rt
   window.jsctx = ctx
   window.importMapsAllowed = true
   window.timeouts = newTimeoutState(ctx, evalJSFree, window)

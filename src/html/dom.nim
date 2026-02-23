@@ -155,7 +155,6 @@ type
     settings*: EnvironmentSettings
     loader*: FileLoader
     location* {.jsget.}: Location
-    jsrt*: JSRuntime
     jsctx*: JSContext
     document* {.jsufget.}: Document
     timeouts*: TimeoutState
@@ -1658,8 +1657,9 @@ proc loadResource*(window: Window; svg: SVGSVGElement) =
   window.pendingImages.add(p)
 
 proc runJSJobs*(window: Window) =
+  let rt = JS_GetRuntime(window.jsctx)
   while true:
-    let ctx = window.jsrt.runJSJobs()
+    let ctx = rt.runJSJobs()
     if ctx == nil:
       break
     window.console.writeException(ctx)
