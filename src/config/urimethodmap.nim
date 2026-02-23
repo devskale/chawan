@@ -34,7 +34,7 @@ type URIMethodMapResult* = enum
   ummrNotFound, ummrSuccess, ummrWrongURL
 
 proc findAndRewrite*(this: URIMethodMap; url: var URL): URIMethodMapResult =
-  let s = this.map.getOrDefault(url.protocol)
+  let s = this.map.getOrDefault(url.scheme)
   if s != "":
     let surl = s.rewriteURL($url)
     if x := parseURL(surl):
@@ -55,7 +55,6 @@ proc parseURIMethodMap*(this: var URIMethodMap; s: string) =
     var i = k.len
     if i >= line.len or line[i] != ':':
       continue # invalid
-    k &= ':'
     i = line.skipBlanks(i + 1) # skip colon
     var v = line.until(AsciiWhitespace, i)
     # Basic w3m compatibility.

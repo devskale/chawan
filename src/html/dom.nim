@@ -4297,8 +4297,8 @@ proc reload(location: Location) {.jsuffunc.} =
 proc origin*(location: Location): string {.jsuffget.} =
   return location.url.jsOrigin
 
-proc protocol(location: Location): string {.jsuffget.} =
-  return location.url.protocol
+proc protocol(ctx: JSContext; location: Location): JSValue {.jsuffget.} =
+  return ctx.protocol(location.url)
 
 proc setProtocol(ctx: JSContext; location: Location; s: string): JSValue
     {.jsfset: "protocol".} =

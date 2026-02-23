@@ -235,22 +235,27 @@ proc toJSEnum(ctx: JSContext; enumId: int; n: int; s: string): JSValue =
   let rtOpaque = rt.getOpaque()
   if rtOpaque.enumMap.len <= enumId:
     rtOpaque.enumMap.setLen(enumId + 1)
-  if rtOpaque.enumMap[enumId].len <= n:
-    rtOpaque.enumMap[enumId].setLen(n + 1)
-  var atom = rtOpaque.enumMap[enumId][n]
+  if rtOpaque.enumMap[enumId].atoms.len <= n:
+    rtOpaque.enumMap[enumId].atoms.setLen(n + 1)
+  var atom = rtOpaque.enumMap[enumId].atoms[n]
   if atom == JS_ATOM_NULL:
     atom = JS_NewAtomLen(ctx, cstringConst(s), csize_t(s.len))
     if atom == JS_ATOM_NULL:
       return JS_EXCEPTION
-    rtOpaque.enumMap[enumId][n] = atom
+    rtOpaque.enumMap[enumId].atoms[n] = atom
   return JS_AtomToValue(ctx, atom)
 
 const EnumCounter = CacheCounter("EnumCounter")
 
-proc toJS*[T: enum](ctx: JSContext; e: T): JSValue =
+proc getJSEnumId*[T: enum](t: typedesc[T]): int =
   const enumId = EnumCounter.value
   static:
+    assert int(T.low) >= 0
     inc EnumCounter
+  enumId
+
+proc toJS*[T: enum](ctx: JSContext; e: T): JSValue =
+  const enumId = getJSEnumId(T)
   ctx.toJSEnum(enumId, int(e), $e)
 
 proc toJS(ctx: JSContext; j: JSValue): JSValue =

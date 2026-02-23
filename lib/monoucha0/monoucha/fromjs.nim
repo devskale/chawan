@@ -296,44 +296,41 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var bool): FromJSResult =
   res = ret != 0
   fjOk
 
-type IdentMapItem = tuple[s: string; n: int]
+proc cmpItem(x: EnumMapItem; y: JSAtom): int =
+  cmp(uint32(x.atom), uint32(y))
 
-proc getIdentMap[T: enum](e: typedesc[T]): seq[IdentMapItem] =
-  result = @[]
-  for e in T.low .. T.high:
-    result.add(($e, int(e)))
-  result.sort(proc(x, y: IdentMapItem): int = cmp(x.s, y.s))
-
-proc cmpItemOA(x: IdentMapItem; y: openArray[char]): int =
-  let xlen = x.s.len
-  let L = min(xlen, y.len)
-  if L > 0:
-    let n = cmpMem(unsafeAddr x.s[0], unsafeAddr y[0], L)
-    if n != 0:
-      return n
-  return xlen - y.len
-
-proc fromJSEnumBody(map: openArray[IdentMapItem]; ctx: JSContext;
-    val: JSValueConst; tname: cstring): int =
-  var plen {.noinit.}: csize_t
-  let s = JS_ToCStringLen(ctx, plen, val)
-  if s == nil:
+proc fromJSEnumBody(ctx: JSContext; val: JSValueConst; enumId: int;
+    enums: openArray[string]; tname: cstring): int32 =
+  if not ctx.putEnums(enumId, enums):
     return -1
-  let i = map.binarySearch(s.toOpenArray(0, int(plen) - 1), cmpItemOA)
+  let atom = JS_ValueToAtom(ctx, val)
+  if atom == JS_ATOM_NULL:
+    return -1
+  let rtOpaque = JS_GetRuntime(ctx).getOpaque()
+  let i = rtOpaque.enumMap[enumId].enums.binarySearch(atom, cmpItem)
+  JS_FreeAtom(ctx, atom)
   if i == -1:
-    JS_ThrowTypeError(ctx, "`%s' is not a valid value for enumeration %s",
-      s, tname)
-  JS_FreeCString(ctx, s)
-  return i
+    JS_ThrowTypeError(ctx, "invalid value for enumeration %s", tname)
+    return -1
+  return rtOpaque.enumMap[enumId].enums[i].n
+
+proc getEnumMap[T: enum](t: typedesc[T]): array[T, string] =
+  result = array[T, string].default
+  for e, s in result.mpairs:
+    s = $e
 
 proc fromJS*[T: enum](ctx: JSContext; val: JSValueConst; res: var T):
     FromJSResult =
-  const IdentMap = getIdentMap(T)
   const tname = cstring($T)
-  if (let i = fromJSEnumBody(IdentMap, ctx, val, tname); i >= 0):
-    res = T(IdentMap[i].n)
-    return fjOk
-  fjErr
+  const enumId = getJSEnumId(T)
+  const enums = getEnumMap(T)
+  let n = ctx.fromJSEnumBody(val, enumId, enums, tname)
+  if n == -1:
+    return fjErr
+  {.push rangeChecks: off.}
+  res = T(n)
+  {.pop.}
+  fjOk
 
 proc fromJS(ctx: JSContext; val: JSValueConst; nimt: pointer; res: var pointer):
     FromJSResult =
