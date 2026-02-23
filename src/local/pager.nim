@@ -2656,7 +2656,7 @@ const LegacyReflectFuncList = [
 const LegacyReflectGetList = [
   cstring"url", "hoverTitle", "hoverLink", "hoverImage", "cursorx", "cursory",
   "fromx", "fromy", "numLines", "width", "height", "process", "title",
-  "next", "prev", "select"
+  "next", "prev", "select", "currentSelection"
 ]
 
 proc legacyReflectFunction(ctx: JSContext; this: JSValueConst; argc: cint;
