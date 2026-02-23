@@ -253,9 +253,7 @@ proc jsFinish0(opaque: JSBlobOpaque; val: JSValue) =
     let res = ctx.callSink(resolve, JS_UNDEFINED, val)
     JS_FreeValue(ctx, res)
   else:
-    let ex = JS_GetException(ctx)
-    let res = ctx.callSink(reject, JS_UNDEFINED, ex)
-    JS_FreeValue(ctx, res)
+    discard ctx.enqueueRejection(reject)
   JS_FreeValue(ctx, resolve)
   JS_FreeValue(ctx, reject)
   JS_FreeContext(ctx)

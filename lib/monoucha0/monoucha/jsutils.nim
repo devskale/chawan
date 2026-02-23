@@ -143,6 +143,23 @@ proc newArrayFrom*(ctx: JSContext; vals: varargs[JSValue]): JSValue =
 proc newPromiseCapability*(ctx: JSContext; funs: array[2, JSValue]): JSValue =
   return JS_NewPromiseCapability(ctx, funs.toJSValueArray())
 
+proc enqueueJob*(ctx: JSContext; fun: JSJobFunc;
+    argv: varargs[JSValueConst]): cint =
+  return JS_EnqueueJob(ctx, fun, cint(argv.len), argv.toJSValueConstArray())
+
+proc rejectJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
+    JSValue {.cdecl.} =
+  return ctx.call(argv[0], JS_UNDEFINED, argv[1])
+
+proc enqueueRejection*(ctx: JSContext; reject: JSValue): cint =
+  ## Usage: throw an exception, then call queueRejection with the reject fun.
+  ## reject is freed.
+  let ex = JS_GetException(ctx)
+  let code = ctx.enqueueJob(rejectJob, reject, ex)
+  JS_FreeValue(ctx, reject)
+  JS_FreeValue(ctx, ex)
+  return code
+
 type DefinePropertyResult* = enum
   dprException, dprSuccess, dprFail
 

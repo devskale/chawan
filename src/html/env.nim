@@ -249,6 +249,10 @@ proc fetch0(window: Window; input: JSRequest): FetchPromise =
     return newResolvedPromise[Response](nil)
   return window.loader.fetch(input.request)
 
+proc throwNetworkError(ctx: JSContext): JSValue =
+  return JS_ThrowTypeError(ctx,
+    "NetworkError when attempting to fetch resource")
+
 proc jsFinish(opaque: RootRef; response: Response) =
   let opaque = JSFetchOpaque(opaque)
   let ctx = opaque.ctx
@@ -257,16 +261,16 @@ proc jsFinish(opaque: RootRef; response: Response) =
   opaque.resolve = JS_UNDEFINED
   opaque.reject = JS_UNDEFINED
   opaque.ctx = nil
-  let val = ctx.toJS(response)
-  if not JS_IsException(val):
-    let res = ctx.callSink(resolve, JS_UNDEFINED, val)
-    JS_FreeValue(ctx, res)
+  if response != nil:
+    let val = ctx.toJS(response)
+    if not JS_IsException(val):
+      let res = ctx.callSink(resolve, JS_UNDEFINED, val)
+      JS_FreeValue(ctx, res)
+    JS_FreeValue(ctx, reject)
   else:
-    let ex = JS_GetException(ctx)
-    let res = ctx.callSink(reject, JS_UNDEFINED, ex)
-    JS_FreeValue(ctx, res)
+    discard ctx.throwNetworkError()
+    discard ctx.enqueueRejection(reject)
   JS_FreeValue(ctx, resolve)
-  JS_FreeValue(ctx, reject)
   JS_FreeContext(ctx)
 
 proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
@@ -279,15 +283,21 @@ proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
   let res = ctx.newPromiseCapability(funs)
   if JS_IsException(res):
     return res
-  let opaque = JSFetchOpaque(
-    ctx: JS_DupContext(ctx),
-    resolve: funs[0],
-    reject: funs[1]
-  )
   if input.request.url.schemeType != stData and
       not window.isSameOrigin(input.request.url.origin):
-    jsFinish(opaque, nil)
+    JS_FreeValue(ctx, funs[0])
+    # reject immediately
+    discard ctx.throwNetworkError()
+    let code = ctx.enqueueRejection(funs[1])
+    if code < 0:
+      JS_FreeValue(ctx, res)
+      return JS_EXCEPTION
   else:
+    let opaque = JSFetchOpaque(
+      ctx: JS_DupContext(ctx),
+      resolve: funs[0],
+      reject: funs[1]
+    )
     window.loader.fetch(input.request, jsFinish, opaque)
   return res
 
@@ -441,7 +451,7 @@ proc queueMicrotask(ctx: JSContext; window: Window; fun: JSValueConst):
     JSValue {.jsfunc.} =
   if not JS_IsFunction(ctx, fun):
     return JS_ThrowTypeError(ctx, "not a function")
-  if JS_EnqueueJob(ctx, microtaskJob, 1, fun.toJSValueConstArray()) < 0:
+  if ctx.enqueueJob(microtaskJob, fun) < 0:
     return JS_EXCEPTION
   return JS_UNDEFINED
 
