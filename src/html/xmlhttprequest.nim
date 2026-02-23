@@ -337,12 +337,11 @@ proc send(ctx: JSContext; this: XMLHttpRequest; body: JSValueConst = JS_NULL):
   let window = ctx.getWindow()
   if xhrfSync notin this.flags: # async
     window.fireProgressEvent(this, satLoadstart, 0, 0)
-    window.fetchImpl(jsRequest).then(proc(res: FetchResult) =
-      if res.isErr:
+    window.fetchImpl(jsRequest).then(proc(response: Response) =
+      if response == nil:
         this.response = makeNetworkError()
         discard window.handleErrors(this, nil)
         return
-      let response = res.get
       this.response = response
       this.readyState = xhrsHeadersReceived
       window.fireReadyStateChangeEvent(this)
@@ -359,12 +358,12 @@ proc send(ctx: JSContext; this: XMLHttpRequest; body: JSValueConst = JS_NULL):
     #TODO cors requests?
     if window.settings.origin.isSameOrigin(request.url.origin):
       let response = window.loader.doRequest(request)
-      if response.res == 0:
+      if response.body != nil:
         #TODO timeout
         response.resume()
         this.response = response
         this.received = response.body.readAll()
-        response.close()
+        window.loader.close(response)
         #TODO report timing
         let len = max(response.getContentLength(), 0)
         response.opaque = XHROpaque(this: this, window: window, len: len)

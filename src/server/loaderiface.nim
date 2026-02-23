@@ -3,6 +3,8 @@
 #
 # See server/loader for a more detailed description of the protocol.
 
+{.push raises: [].}
+
 import std/posix
 
 import config/conftypes
@@ -12,7 +14,6 @@ import io/packetreader
 import io/packetwriter
 import io/poll
 import io/promise
-import server/connectionerror
 import server/headers
 import server/request
 import server/response
@@ -43,12 +44,14 @@ type
 
   LoaderData = ref object of MapData
 
+  FetchFinish* = proc(opaque: RootRef; res: Response) {.nimcall, raises: [].}
+
   ConnectData* = ref object of LoaderData
     state: ConnectDataState
-    res: int
     outputId: int
     redirectNum: int
-    promise: FetchPromise
+    finish: FetchFinish
+    opaque*: RootRef
     request: Request
 
   OngoingData* = ref object of LoaderData
@@ -219,20 +222,29 @@ proc unblockRegister*(loader: FileLoader) =
     loader.register(it.data, it.events)
   loader.registerQueue.setLen(0)
 
-proc fetch0(loader: FileLoader; input: Request; promise: FetchPromise;
-    redirectNum: int) =
+proc fetch0(loader: FileLoader; input: Request; finish: FetchFinish;
+    opaque: RootRef; redirectNum = 0) =
   let stream = loader.startRequest(input)
   if stream != nil:
     loader.register(ConnectData(
-      promise: promise,
+      opaque: opaque,
+      finish: finish,
       request: input,
       stream: stream,
       redirectNum: redirectNum
     ))
 
+proc legacyFinish(opaque: RootRef; response: Response) =
+  let promise = FetchPromise(opaque)
+  promise.resolve(response)
+
+proc fetch*(loader: FileLoader; input: Request; finish: FetchFinish;
+    opaque: RootRef) =
+  loader.fetch0(input, finish, opaque, 0)
+
 proc fetch*(loader: FileLoader; input: Request): FetchPromise =
   let promise = FetchPromise()
-  loader.fetch0(input, promise, 0)
+  loader.fetch(input, legacyFinish, promise)
   return promise
 
 proc suspend*(loader: FileLoader; fds: seq[int]) =
@@ -247,6 +259,18 @@ proc resume*(loader: FileLoader; fds: openArray[int]) =
 
 proc resume*(loader: FileLoader; fds: int) =
   loader.resume([fds])
+
+proc close*(loader: FileLoader; response: Response) =
+  response.bodyUsed = true
+  if response.resumeFun != nil:
+    response.resume()
+  if response.body != nil:
+    let fd = response.body.fd
+    let data = loader.get(fd)
+    if data != nil:
+      loader.unregister(data)
+    response.body.sclose()
+    response.body = nil
 
 proc tee*(loader: FileLoader; sourceId, targetPid: int): (SocketStream, int) =
   loader.withPacketWriter w:
@@ -304,7 +328,8 @@ proc redirectToFile*(loader: FileLoader; outputId: int; targetPath: string;
 
 proc onConnected(loader: FileLoader; connectData: ConnectData) =
   let stream = connectData.stream
-  let promise = connectData.promise
+  let finish = connectData.finish
+  let opaque = connectData.opaque
   let request = connectData.request
   stream.withPacketReader r:
     case connectData.state
@@ -323,10 +348,9 @@ proc onConnected(loader: FileLoader; connectData: ConnectData) =
         stream.sclose()
         # delete before resolving the promise
         loader.unset(connectData)
-        promise.resolve(FetchResult.err())
+        finish(opaque, nil)
     of cdsBeforeStatus:
-      let response = newResponse(connectData.res, request, stream,
-        connectData.outputId)
+      let response = newResponse(request, stream, connectData.outputId)
       # packet 2
       r.sread(response.status)
       r.sread(response.headers)
@@ -336,30 +360,26 @@ proc onConnected(loader: FileLoader; connectData: ConnectData) =
       loader.unset(connectData)
       let data = OngoingData(response: response, stream: stream)
       loader.put(data)
-      response.unregisterFun = proc() =
-        loader.unset(data)
-        let fd = data.stream.fd
-        loader.unregister(fd)
       response.resumeFun = proc(outputId: int) =
         loader.resume(outputId)
       stream.setBlocking(false)
       let redirect = response.getRedirect(request)
       if redirect != nil:
-        response.unregisterFun()
+        loader.unregister(data)
         stream.sclose()
         let redirectNum = connectData.redirectNum + 1
         if redirectNum < 5: #TODO use config.network.max_redirect?
-          loader.fetch0(redirect, promise, redirectNum)
+          loader.fetch0(redirect, finish, opaque, redirectNum)
         else:
-          promise.resolve(FetchResult.err())
+          finish(opaque, nil)
       else:
-        promise.resolve(FetchResult.ok(response))
+        finish(opaque, response)
   do: # loader died
     loader.unregister(connectData.stream.fd)
     stream.sclose()
     # delete before resolving the promise
     loader.unset(connectData)
-    promise.resolve(FetchResult.err())
+    finish(opaque, nil)
 
 proc onRead*(loader: FileLoader; data: OngoingData) =
   let response = data.response
@@ -368,7 +388,7 @@ proc onRead*(loader: FileLoader; data: OngoingData) =
     if response.onFinish != nil:
       response.onFinish(response, true)
     response.onFinish = nil
-    response.close()
+    loader.close(response)
 
 proc onRead*(loader: FileLoader; fd: int) =
   let data = loader.map[fd]
@@ -382,7 +402,7 @@ proc onError*(loader: FileLoader; data: OngoingData) =
   if response.onFinish != nil:
     response.onFinish(response, true)
   response.onFinish = nil
-  response.close()
+  loader.close(response)
 
 proc onError*(loader: FileLoader; fd: int): bool =
   let data = loader.map[fd]
@@ -399,8 +419,9 @@ proc doRequest*(loader: FileLoader; request: Request): Response =
   let response = Response(url: request.url)
   var r: PacketReader
   if stream != nil and stream.initPacketReader(r):
-    r.sread(response.res) # packet 1
-    if response.res == 0:
+    var res: int
+    r.sread(res) # packet 1
+    if res == 0:
       r.sread(response.outputId) # packet 1
       if stream.initPacketReader(r): # packet 2
         r.sread(response.status)
@@ -410,14 +431,12 @@ proc doRequest*(loader: FileLoader; request: Request): Response =
         response.resumeFun = proc(outputId: int) =
           loader.resume(outputId)
       else: # EOF
-        response.res = int(ceLoaderGone)
         stream.sclose()
     else:
       var msg: string
       r.sread(msg) # packet 1
       stream.sclose()
   else: # EOF
-    response.res = int(ceLoaderGone)
     if stream != nil:
       stream.sclose()
   return response
@@ -515,7 +534,7 @@ proc doPipeRequest*(loader: FileLoader; id: string):
     return (nil, nil)
   let request = newRequest("stream:" & id)
   let response = loader.doRequest(request)
-  if response.res != 0:
+  if response.body == nil:
     ps.sclose()
     return (nil, nil)
   return (ps, response)
@@ -526,3 +545,5 @@ proc newFileLoader*(clientPid: int; controlStream: SocketStream):
     clientPid: clientPid,
     controlStream: controlStream
   )
+
+{.pop.}

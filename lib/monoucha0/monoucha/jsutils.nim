@@ -140,6 +140,9 @@ proc newArrayFrom*(ctx: JSContext; vals: varargs[JSValue]): JSValue =
     inc u
   return obj
 
+proc newPromiseCapability*(ctx: JSContext; funs: array[2, JSValue]): JSValue =
+  return JS_NewPromiseCapability(ctx, funs.toJSValueArray())
+
 type DefinePropertyResult* = enum
   dprException, dprSuccess, dprFail
 

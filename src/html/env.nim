@@ -40,6 +40,11 @@ import types/url
 import types/winattrs
 import utils/twtstr
 
+type JSFetchOpaque = ref object of RootObj
+  ctx: JSContext
+  resolve: JSValue
+  reject: JSValue
+
 # Forward declarations
 proc setLocation(ctx: JSContext; window: Window; s: string): JSValue
 
@@ -212,18 +217,24 @@ proc addNavigatorModule*(ctx: JSContext): Opt[void] =
   ok()
 
 # Window
-proc finalize(window: Window) {.jsfin.} =
+proc finalize(rt: JSRuntime; window: Window) {.jsfin.} =
   window.timeouts.clearAll()
-  let rt = window.jsrt
   rt.freeValues(window.weakMap)
-  rt.freeValues(window.jsStore)
-  window.jsStore.setLen(0)
   window.settings.moduleMap.clear(window.jsrt)
+  for data in window.loader.data:
+    if data of ConnectData:
+      let data = ConnectData(data)
+      if data.opaque of JSFetchOpaque:
+        let opaque = JSFetchOpaque(data.opaque)
+        JS_FreeValueRT(rt, opaque.resolve)
+        JS_FreeValueRT(rt, opaque.reject)
+        JS_FreeContext(opaque.ctx)
+        opaque.resolve = JS_UNDEFINED
+        opaque.reject = JS_UNDEFINED
+        opaque.ctx = nil
 
 proc mark(rt: JSRuntime; window: Window; markFunc: JS_MarkFunc) {.jsmark.} =
   for it in window.weakMap:
-    JS_MarkValue(rt, it, markFunc)
-  for it in window.jsStore:
     JS_MarkValue(rt, it, markFunc)
 
 proc isSameOrigin(window: Window; origin: Origin): bool =
@@ -235,45 +246,50 @@ proc fetch0(window: Window; input: JSRequest): FetchPromise =
   #TODO cors requests?
   if input.request.url.schemeType != stData and
       not window.isSameOrigin(input.request.url.origin):
-    return newResolvedPromise(FetchResult.err())
+    return newResolvedPromise[Response](nil)
   return window.loader.fetch(input.request)
 
-proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
-    init: JSValueConst = JS_UNDEFINED): Opt[FetchPromise] {.jsfunc.} =
-  let input = ?newRequest(ctx, input, init)
-  ok(window.fetch0(input))
-
-proc storeJS0(ctx: JSContext; v: JSValue): int =
-  assert not JS_IsUninitialized(v)
-  let global = ctx.getGlobal()
-  let n = global.jsStoreFree
-  if n == global.jsStore.len:
-    global.jsStore.add(v)
+proc jsFinish(opaque: RootRef; response: Response) =
+  let opaque = JSFetchOpaque(opaque)
+  let ctx = opaque.ctx
+  let resolve = opaque.resolve
+  let reject = opaque.reject
+  opaque.resolve = JS_UNDEFINED
+  opaque.reject = JS_UNDEFINED
+  opaque.ctx = nil
+  let val = ctx.toJS(response)
+  if not JS_IsException(val):
+    let res = ctx.callSink(resolve, JS_UNDEFINED, val)
+    JS_FreeValue(ctx, res)
   else:
-    global.jsStore[n] = v
-  var m = global.jsStoreFree
-  while m < global.jsStore.len:
-    if JS_IsUninitialized(global.jsStore[m]):
-      break
-    inc m
-  global.jsStoreFree = m
-  return n
+    let ex = JS_GetException(ctx)
+    let res = ctx.callSink(reject, JS_UNDEFINED, ex)
+    JS_FreeValue(ctx, res)
+  JS_FreeValue(ctx, resolve)
+  JS_FreeValue(ctx, reject)
+  JS_FreeContext(ctx)
 
-proc fetchJS0(ctx: JSContext; n: int): JSValue =
-  let global = ctx.getGlobal()
-  if n >= global.jsStore.len:
-    return JS_UNINITIALIZED
-  result = global.jsStore[n]
-  global.jsStore[n] = JS_UNINITIALIZED
-  if n < global.jsStoreFree:
-    global.jsStoreFree = n
-  if n == global.jsStore.high:
-    var n = n
-    while n >= 0:
-      if not JS_IsUninitialized(global.jsStore[n]):
-        break
-      dec n
-    global.jsStore.setLen(n + 1)
+proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
+    init: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
+  let input0 = newRequest(ctx, input, init)
+  if input0.isErr:
+    return JS_EXCEPTION
+  let input = input0.get
+  var funs {.noinit.}: array[2, JSValue]
+  let res = ctx.newPromiseCapability(funs)
+  if JS_IsException(res):
+    return res
+  let opaque = JSFetchOpaque(
+    ctx: JS_DupContext(ctx),
+    resolve: funs[0],
+    reject: funs[1]
+  )
+  if input.request.url.schemeType != stData and
+      not window.isSameOrigin(input.request.url.origin):
+    jsFinish(opaque, nil)
+  else:
+    window.loader.fetch(input.request, jsFinish, opaque)
+  return res
 
 proc scrollTo(window: Window) {.jsfunc.} =
   discard #TODO maybe in app mode?
@@ -455,12 +471,12 @@ proc loadJSModule(ctx: JSContext; moduleName: cstringConst; opaque: pointer):
     return nil
   let request = newRequest(url)
   let response = window.loader.doRequest(request)
-  if response.res != 0:
+  if response.body == nil:
     JS_ThrowTypeError(ctx, "Failed to load module %s", moduleName)
     return nil
   response.resume()
   let source = response.body.readAll()
-  response.close()
+  window.loader.close(response)
   return ctx.finishLoadModule(source, name)
 
 proc rejectionHandler(ctx: JSContext; promise, reason: JSValueConst;
@@ -585,8 +601,6 @@ proc newWindow*(scripting: ScriptingMode; images, styling, autofocus: bool;
 
 # Forward declaration hack
 fetchImpl = fetch0
-storeJSImpl = storeJS0
-fetchJSImpl = fetchJS0
 getConsoleImpl = getConsole
 
 {.pop.} # raises: []
