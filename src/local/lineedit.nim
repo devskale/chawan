@@ -132,8 +132,14 @@ proc generateOutput*(edit: LineEdit): FixedGrid =
 proc getCursorX*(edit: LineEdit): int =
   return edit.promptw + edit.cursorx + edit.padding - edit.shiftx
 
+proc update(ctx: JSContext; edit: LineEdit): JSValue =
+  if JS_IsUndefined(edit.update):
+    return JS_UNDEFINED
+  return ctx.call(edit.update, JS_UNDEFINED)
+
 proc resolve(ctx: JSContext; edit: LineEdit; val: JSValue): JSValue =
   if not JS_IsFunction(ctx, edit.resolve):
+    JS_FreeValue(ctx, val)
     return JS_ThrowTypeError(ctx, "nothing to resolve")
   let resolve = edit.resolve
   edit.resolve = JS_UNDEFINED
@@ -150,13 +156,15 @@ proc submit(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
     return text
   return ctx.resolve(edit, text)
 
-proc backspace(edit: LineEdit) {.jsfunc.} =
+proc backspace(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori > 0:
     let pi = edit.cursori
     let u = edit.text.prevUTF8(edit.cursori)
     edit.text.delete(edit.cursori ..< pi)
     edit.cursorx -= edit.width(u)
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
 proc write*(ctx: JSContext; edit: LineEdit; s: string): JSValue {.jsfunc.} =
   edit.escNext = false
@@ -165,30 +173,35 @@ proc write*(ctx: JSContext; edit: LineEdit; s: string): JSValue {.jsfunc.} =
     edit.cursori += s.len
     edit.cursorx += edit.width(s)
     edit.redraw = true
-    if not JS_IsUndefined(edit.update):
-      return ctx.call(edit.update, JS_UNDEFINED)
+    return ctx.update(edit)
   return JS_UNDEFINED
 
-proc delete(edit: LineEdit) {.jsfunc.} =
+proc delete(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori < edit.text.len:
     let len = edit.text.pointLenAt(edit.cursori)
     edit.text.delete(edit.cursori ..< edit.cursori + len)
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
 proc escape(edit: LineEdit) {.jsfunc.} =
   edit.escNext = true
 
-proc clear(edit: LineEdit) {.jsfunc.} =
+proc clear(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori > 0:
     edit.text.delete(0..edit.cursori - 1)
     edit.cursori = 0
     edit.cursorx = 0
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
-proc kill*(edit: LineEdit) {.jsfunc.} =
+proc kill(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori < edit.text.len:
     edit.text.setLen(edit.cursori)
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
 proc backward(edit: LineEdit) {.jsfunc.} =
   if edit.cursori > 0:
@@ -232,16 +245,18 @@ proc nextWord(edit: LineEdit) {.jsfunc.} =
         edit.redraw = true
       break
 
-proc clearWord(edit: LineEdit) {.jsfunc.} =
+proc clearWord(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   let oc = edit.cursori
   edit.prevWord()
   if oc != edit.cursori:
     edit.text.delete(edit.cursori .. oc - 1)
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
-proc killWord(edit: LineEdit) {.jsfunc.} =
+proc killWord(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori >= edit.text.len:
-    return
+    return JS_UNDEFINED
   var i = edit.cursori
   var u = edit.text.nextUTF8(i)
   if not edit.luctx.breaksWord(u):
@@ -253,6 +268,7 @@ proc killWord(edit: LineEdit) {.jsfunc.} =
         break
   edit.text.delete(edit.cursori ..< i)
   edit.redraw = true
+  return ctx.update(edit)
 
 proc begin(edit: LineEdit) {.jsfunc.} =
   edit.cursori = 0
@@ -267,7 +283,7 @@ proc `end`(edit: LineEdit) {.jsfunc.} =
     if edit.cursorx >= edit.shiftx + edit.maxwidth:
       edit.redraw = true
 
-proc prevHist(edit: LineEdit) {.jsfunc.} =
+proc prevHist(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.currHist == nil:
     var last = edit.hist.last
     if last != nil and edit.skipLast:
@@ -284,8 +300,10 @@ proc prevHist(edit: LineEdit) {.jsfunc.} =
     edit.begin()
     edit.end()
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
-proc nextHist(edit: LineEdit) {.jsfunc.} =
+proc nextHist(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.currHist != nil:
     edit.currHist = edit.currHist.next
     if edit.currHist != nil:
@@ -294,10 +312,11 @@ proc nextHist(edit: LineEdit) {.jsfunc.} =
         edit.currHist = nil
     else:
       edit.text = move(edit.histtmp)
-      edit.histtmp = ""
     edit.begin()
     edit.end()
     edit.redraw = true
+    return ctx.update(edit)
+  return JS_UNDEFINED
 
 proc windowChange*(edit: LineEdit; attrs: WindowAttributes) =
   edit.maxwidth = attrs.width - edit.promptw - 1
