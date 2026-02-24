@@ -9,6 +9,7 @@ import io/dynstream
 import io/promise
 import monoucha/fromjs
 import monoucha/jsbind
+import monoucha/jsutils
 import monoucha/quickjs
 import monoucha/tojs
 import server/headers
@@ -33,70 +34,65 @@ type
     rfAborted
 
   Response* = ref object
-    responseType* {.jsget: "type".}: ResponseType
-    res*: int
     body*: PosixStream
+    flags*: set[ResponseFlag]
+    responseType* {.jsget: "type".}: ResponseType
     bodyUsed* {.jsget.}: bool
     status* {.jsget.}: uint16
     headers* {.jsget.}: Headers
     url*: URL #TODO should be urllist?
-    unregisterFun*: proc() {.raises: [].}
     resumeFun*: proc(outputId: int)
-    internalMessage*: string # should NOT be exposed to JS!
-    outputId*: int
     onRead*: proc(response: Response) {.nimcall, raises: [].}
     onFinish*: proc(response: Response; success: bool) {.nimcall, raises: [].}
+    outputId*: int
     opaque*: RootRef
-    flags*: set[ResponseFlag]
-
-  FetchResult* = object
-    get*: Response
-
-  BlobResult* = object
-    get*: Blob
 
   TextResult* = object
     isOk*: bool
     get*: string
 
-  FetchPromise* = Promise[FetchResult]
+  FetchPromise* = Promise[Response] # response may be nil
+
+  BlobFinish* = proc(opaque: BlobOpaque; blob: Blob) {.nimcall, raises: [].}
+
+  BlobOpaque = ref object of RootObj
+    p: pointer
+    len: int
+    size: int
+    finish: BlobFinish
+    contentType: string
+
+  JSBlobOpaque = ref object of BlobOpaque
+    ctx: JSContext
+    resolve: pointer # JSObject *
+    reject: pointer # JSObject *
+
+  NimBlobOpaque = ref object of BlobOpaque
+    opaque: RootRef
 
 jsDestructor(Response)
 
-template isOk*(x: FetchResult): bool =
-  x.get != nil
+template resolveVal(this: BlobOpaque): JSValue =
+  JS_MKPTR(JS_TAG_OBJECT, this.resolve)
 
-template isErr*(x: FetchResult): bool =
-  x.get == nil
+template rejectVal(this: BlobOpaque): JSValue =
+  JS_MKPTR(JS_TAG_OBJECT, this.reject)
 
-template ok*(t: typedesc[FetchResult]; x: Response): FetchResult =
-  FetchResult(get: x)
+proc finalize(rt: JSRuntime; this: Response) {.jsfin.} =
+  if this.opaque of JSBlobOpaque:
+    let opaque = JSBlobOpaque(this.opaque)
+    if opaque.resolve != nil:
+      JS_FreeValueRT(rt, opaque.resolveVal)
+    if opaque.reject != nil:
+      JS_FreeValueRT(rt, opaque.rejectVal)
 
-template err*(t: typedesc[FetchResult]): FetchResult =
-  FetchResult(get: nil)
-
-proc toJS*(ctx: JSContext; x: FetchResult): JSValue =
-  if x.isOk:
-    return ctx.toJS(x.get)
-  return JS_ThrowTypeError(ctx,
-    "NetworkError when attempting to fetch resource")
-
-template isOk*(x: BlobResult): bool =
-  x.get != nil
-
-template isErr*(x: BlobResult): bool =
-  x.get == nil
-
-template ok*(t: typedesc[BlobResult]; x: Blob): BlobResult =
-  BlobResult(get: x)
-
-template err*(t: typedesc[BlobResult]): BlobResult =
-  BlobResult(get: nil)
-
-proc toJS*(ctx: JSContext; x: BlobResult): JSValue =
-  if x.isOk:
-    return ctx.toJS(x.get)
-  return JS_ThrowTypeError(ctx, "error reading response body")
+proc mark(rt: JSRuntime; this: Response; fun: JS_MarkFunc) {.jsmark.} =
+  if this.opaque of JSBlobOpaque:
+    let opaque = JSBlobOpaque(this.opaque)
+    if opaque.resolve != nil:
+      JS_MarkValue(rt, opaque.resolveVal, fun)
+    if opaque.reject != nil:
+      JS_MarkValue(rt, opaque.rejectVal, fun)
 
 template isErr*(x: TextResult): bool =
   not x.isOk
@@ -112,10 +108,9 @@ proc toJS*(ctx: JSContext; x: TextResult): JSValue =
     return ctx.toJS(x.get)
   return JS_ThrowTypeError(ctx, "error reading response body")
 
-proc newResponse*(res: int; request: Request; stream: PosixStream;
-    outputId: int): Response =
+proc newResponse*(request: Request; stream: PosixStream; outputId: int):
+    Response =
   return Response(
-    res: res,
     url: if request != nil: request.url else: nil,
     body: stream,
     outputId: outputId,
@@ -128,12 +123,11 @@ proc newResponse*(ctx: JSContext; body: JSValueConst = JS_UNDEFINED;
     #TODO
     JS_ThrowInternalError(ctx, "Response constructor with body or init")
     return err()
-  return ok(newResponse(0, nil, nil, -1))
+  return ok(newResponse(nil, nil, -1))
 
 proc makeNetworkError*(): Response {.jsstfunc: "Response#error".} =
   #TODO use "create" function
   return Response(
-    res: 0,
     responseType: rtError,
     status: 0,
     headers: newHeaders(hgImmutable),
@@ -147,19 +141,6 @@ proc surl*(response: Response): string {.jsfget: "url".} =
   if response.responseType == rtError or response.url == nil:
     return ""
   return $response.url
-
-#TODO: this should be a property of body
-proc close*(response: Response) =
-  response.bodyUsed = true
-  if response.resumeFun != nil:
-    response.resumeFun(response.outputId)
-    response.resumeFun = nil
-  if response.unregisterFun != nil:
-    response.unregisterFun()
-    response.unregisterFun = nil
-  if response.body != nil:
-    response.body.sclose()
-    response.body = nil
 
 proc getCharset*(this: Response; fallback: Charset): Charset =
   let header = this.headers.getFirst("Content-Type").toLowerAscii()
@@ -200,13 +181,6 @@ proc resume*(response: Response) =
 
 const BufferSize = 4096
 
-type BlobOpaque = ref object of RootObj
-  p: pointer
-  len: int
-  size: int
-  bodyRead: Promise[BlobResult]
-  contentType: string
-
 proc onReadBlob(response: Response) =
   let opaque = BlobOpaque(response.opaque)
   while true:
@@ -223,7 +197,6 @@ proc onReadBlob(response: Response) =
 
 proc onFinishBlob(response: Response; success: bool) =
   let opaque = BlobOpaque(response.opaque)
-  let bodyRead = opaque.bodyRead
   if success:
     let p = opaque.p
     opaque.p = nil
@@ -231,38 +204,104 @@ proc onFinishBlob(response: Response; success: bool) =
       newEmptyBlob(opaque.contentType)
     else:
       newBlob(p, opaque.len, opaque.contentType, deallocBlob)
-    bodyRead.resolve(BlobResult.ok(blob))
+    opaque.finish(opaque, blob)
   else:
     if opaque.p != nil:
       dealloc(opaque.p)
       opaque.p = nil
-    bodyRead.resolve(BlobResult.err())
+    opaque.finish(opaque, nil)
 
-proc blob*(response: Response): Promise[BlobResult] {.jsfunc.} =
+proc blob*(response: Response; opaque: BlobOpaque) =
   if response.bodyUsed:
-    return newResolvedPromise(BlobResult.err())
+    opaque.finish(opaque, nil)
+    return
   if response.body == nil:
     response.bodyUsed = true
-    return newResolvedPromise(BlobResult.ok(newEmptyBlob()))
-  let opaque = BlobOpaque(
-    bodyRead: Promise[BlobResult](),
-    contentType: response.getContentType(),
-    p: alloc(BufferSize),
-    size: BufferSize
-  )
+    opaque.finish(opaque, newEmptyBlob())
+    return
+  opaque.contentType = response.getContentType()
+  opaque.p = alloc(BufferSize)
+  opaque.size = BufferSize
   response.opaque = opaque
   response.onRead = onReadBlob
   response.onFinish = onFinishBlob
   response.bodyUsed = true
   response.resume()
-  return opaque.bodyRead
 
-proc text*(response: Response): Promise[TextResult] {.jsfunc.} =
-  return response.blob().then(proc(res: BlobResult): TextResult =
-    if res.isErr:
-      return TextResult.err()
-    TextResult.ok(res.get.toOpenArray().toValidUTF8())
+proc legacyBlobFinish(opaque: BlobOpaque; blob: Blob) =
+  let opaque = NimBlobOpaque(opaque)
+  let promise = Promise[Blob](opaque.opaque)
+  promise.resolve(blob)
+
+proc blob*(response: Response): Promise[Blob] =
+  let promise = Promise[Blob]()
+  let opaque = NimBlobOpaque(
+    finish: legacyBlobFinish,
+    opaque: promise
   )
+  response.blob(opaque)
+  return promise
+
+proc jsFinish0(opaque: JSBlobOpaque; val: JSValue) =
+  let ctx = opaque.ctx
+  let resolve = opaque.resolveVal
+  let reject = opaque.rejectVal
+  opaque.resolve = nil
+  opaque.reject = nil
+  opaque.ctx = nil
+  if not JS_IsException(val):
+    let res = ctx.callSink(resolve, JS_UNDEFINED, val)
+    JS_FreeValue(ctx, res)
+  else:
+    discard ctx.enqueueRejection(reject)
+  JS_FreeValue(ctx, resolve)
+  JS_FreeValue(ctx, reject)
+  JS_FreeContext(ctx)
+
+proc jsBlobFinish(opaque: BlobOpaque; blob: Blob) =
+  let opaque = JSBlobOpaque(opaque)
+  let ctx = opaque.ctx
+  let val = if blob != nil:
+    ctx.toJS(blob)
+  else:
+    JS_ThrowTypeError(ctx, "error reading response body")
+  jsFinish0(opaque, val)
+
+proc blob0(ctx: JSContext; response: Response; finish: BlobFinish): JSValue =
+  var funs {.noinit.}: array[2, JSValue]
+  let res = ctx.newPromiseCapability(funs)
+  if JS_IsException(res):
+    return res
+  let opaque = JSBlobOpaque(
+    ctx: JS_DupContext(ctx),
+    resolve: JS_VALUE_GET_PTR(funs[0]),
+    reject: JS_VALUE_GET_PTR(funs[1]),
+    finish: finish
+  )
+  response.blob(opaque)
+  return res
+
+proc blob(ctx: JSContext; response: Response): JSValue {.jsfunc.} =
+  return ctx.blob0(response, jsBlobFinish)
+
+proc text*(response: Response): Promise[TextResult] =
+  return response.blob().then(proc(blob: Blob): TextResult =
+    if blob == nil:
+      return TextResult.err()
+    TextResult.ok(blob.toOpenArray().toValidUTF8())
+  )
+
+proc jsTextFinish(opaque: BlobOpaque; blob: Blob) =
+  let opaque = JSBlobOpaque(opaque)
+  let ctx = opaque.ctx
+  let val = if blob != nil:
+    ctx.toJS(blob.toOpenArray().toValidUTF8())
+  else:
+    JS_ThrowTypeError(ctx, "error reading response body")
+  jsFinish0(opaque, val)
+
+proc text(ctx: JSContext; response: Response): JSValue {.jsfunc.} =
+  return ctx.blob0(response, jsTextFinish)
 
 proc cssDecode(iq: openArray[char]; fallback: Charset): string =
   var charset = fallback
@@ -287,19 +326,24 @@ proc cssDecode(iq: openArray[char]; fallback: Charset): string =
   iq.toOpenArray(offset, iq.high).decodeAll(charset)
 
 proc cssText*(response: Response; fallback: Charset): Promise[TextResult] =
-  return response.blob().then(proc(res: BlobResult): TextResult =
-    if res.isErr:
+  return response.blob().then(proc(blob: Blob): TextResult =
+    if blob == nil:
       return TextResult.err()
-    TextResult.ok(res.get.toOpenArray().cssDecode(fallback))
+    TextResult.ok(blob.toOpenArray().cssDecode(fallback))
   )
 
-proc json(ctx: JSContext; this: Response): Promise[JSValue] {.jsfunc.} =
-  return this.text().then(proc(s: TextResult): JSValue =
-    if s.isErr:
-      return ctx.toJS(s)
-    return JS_ParseJSON(ctx, cstring(s.get), csize_t(s.get.len),
-      cstring"<input>")
-  )
+proc jsJsonFinish(opaque: BlobOpaque; blob: Blob) =
+  let opaque = JSBlobOpaque(opaque)
+  let ctx = opaque.ctx
+  let val = if blob != nil:
+    let s = blob.toOpenArray().toValidUTF8()
+    JS_ParseJSON(ctx, cstring(s), csize_t(s.len), cstring"<input>")
+  else:
+    JS_ThrowTypeError(ctx, "error reading response body")
+  jsFinish0(opaque, val)
+
+proc json(ctx: JSContext; this: Response): JSValue {.jsfunc.} =
+  return ctx.blob0(this, jsJsonFinish)
 
 proc addResponseModule*(ctx: JSContext): JSClassID =
   return ctx.registerType(Response)

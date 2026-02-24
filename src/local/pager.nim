@@ -83,7 +83,6 @@ type
   ConnectingBuffer = ref object of MapData
     state: BufferConnectionState
     init: BufferInit
-    res: int
     outputId: int
 
   SurfaceType = enum
@@ -237,7 +236,7 @@ proc setLineEdit0(ctx: JSContext; pager: Pager; mode: LineMode; prompt: string;
     if JS_IsException(update):
       return JS_EXCEPTION
   var funs {.noinit.}: array[2, JSValue]
-  let res = JS_NewPromiseCapability(ctx, funs.toJSValueArray())
+  let res = ctx.newPromiseCapability(funs)
   if JS_IsException(res):
     JS_FreeValue(ctx, update)
     return JS_EXCEPTION
@@ -341,14 +340,13 @@ proc initLoader(pager: Pager) =
   let loader = pager.loader
   discard loader.addClient(loader.clientPid, clientConfig, isPager = true)
   let request = newRequest("about:cookie-stream")
-  loader.fetch(request).then(proc(res: FetchResult) =
-    if res.isErr:
+  loader.fetch(request).then(proc(response: Response) =
+    if response == nil:
       pager.alert("failed to open cookie stream")
       return
     # ugly hack, so that the cookie stream does not keep headless
     # instances running
     dec loader.mapFds
-    let response = res.get
     response.opaque = CookieStreamOpaque(pager: pager)
     response.onRead = onReadCookieStream
     response.onFinish = onFinishCookieStream
@@ -919,19 +917,18 @@ proc loadCachedImage(pager: Pager; iface: BufferInterface; bmp: NetworkBitmap;
     httpMethod = hmPost,
     body = RequestBody(t: rbtCache, cacheId: bmp.cacheId),
     tocache = true
-  )).then(proc(res: FetchResult): FetchPromise =
+  )).then(proc(response: Response): FetchPromise =
     # remove previous step
     pager.loader.removeCachedItem(bmp.cacheId)
-    if res.isErr:
+    if response == nil:
       return nil
-    let response = res.get
     let cacheId = response.outputId # set by loader in tocache
     if cachedImage.state == cisCanceled: # container is no longer visible
       pager.loader.removeCachedItem(cacheId)
       return nil
     if width == bmp.width and height == bmp.height:
       # skip resize
-      return newResolvedPromise(res)
+      return newResolvedPromise(response)
     # resize
     # use a temp file, so that img-resize can mmap its output
     let headers = newHeaders(hgRequest, {
@@ -944,18 +941,17 @@ proc loadCachedImage(pager: Pager; iface: BufferInterface; bmp: NetworkBitmap;
       headers = headers,
       body = RequestBody(t: rbtCache, cacheId: cacheId),
       tocache = true
-    )).then(proc(res: FetchResult): FetchPromise =
+    )).then(proc(res: Response): FetchPromise =
       # ugh. I must remove the previous cached item, but only after
       # resize is done...
       pager.loader.removeCachedItem(cacheId)
       return newResolvedPromise(res)
     )
-    response.close()
+    pager.loader.close(response)
     return p
-  ).then(proc(res: FetchResult) =
-    if res.isErr:
+  ).then(proc(response: Response) =
+    if response == nil:
       return
-    let response = res.get
     let cacheId = response.outputId
     if cachedImage.state == cisCanceled:
       pager.loader.removeCachedItem(cacheId)
@@ -982,15 +978,14 @@ proc loadCachedImage(pager: Pager; iface: BufferInterface; bmp: NetworkBitmap;
       tocache = true
     )
     let r = pager.loader.fetch(request)
-    response.close()
-    r.then(proc(res: FetchResult) =
+    pager.loader.close(response)
+    r.then(proc(response: Response) =
       # remove previous step
       pager.loader.removeCachedItem(cacheId)
-      if res.isErr:
+      if response == nil:
         return
-      let response = res.get
-      response.close()
-      let cacheId = res.get.outputId
+      pager.loader.close(response)
+      let cacheId = response.outputId
       if cachedImage.state == cisCanceled:
         pager.loader.removeCachedItem(cacheId)
         return
@@ -1179,7 +1174,7 @@ proc askChar(ctx: JSContext; pager: Pager; prompt: string): JSValue {.jsfunc.} =
   if prompt == "":
     return JS_ThrowTypeError(ctx, "prompt may not be empty")
   var funs {.noinit.}: array[2, JSValue]
-  let res = JS_NewPromiseCapability(ctx, funs.toJSValueArray())
+  let res = ctx.newPromiseCapability(funs)
   if JS_IsException(res):
     return JS_EXCEPTION
   JS_FreeValue(ctx, funs[1])
@@ -1683,14 +1678,14 @@ proc addConsoleFile(pager: Pager): Opt[ChaFile] =
   ps.setCloseOnExec()
   let file = ?ps.fdopen("w")
   let response = pager.loader.doRequest(newRequest(url))
-  if response.res != 0:
+  if response.body == nil:
     discard file.close()
     return err()
   let cacheId = pager.loader.addCacheFile(response.outputId)
   if cacheId == -1:
     discard file.close()
     return err()
-  response.close()
+  pager.loader.close(response)
   pager.consoleCacheId = cacheId
   pager.consoleFile = pager.getCacheFile(cacheId)
   ok(file)
@@ -2354,7 +2349,7 @@ proc handleRead(pager: Pager; item: ConnectingBuffer): Opt[void] =
         msg = getLoaderErrorMessage(res)
       return pager.fail(init, msg)
   of bcsBeforeStatus:
-    let response = newResponse(item.res, init.request, stream, item.outputId)
+    let response = newResponse(init.request, stream, item.outputId)
     stream.withPacketReaderFire r:
       r.sread(response.status)
       r.sread(response.headers)
@@ -2656,7 +2651,7 @@ const LegacyReflectFuncList = [
 const LegacyReflectGetList = [
   cstring"url", "hoverTitle", "hoverLink", "hoverImage", "cursorx", "cursory",
   "fromx", "fromy", "numLines", "width", "height", "process", "title",
-  "next", "prev", "select"
+  "next", "prev", "select", "currentSelection"
 ]
 
 proc legacyReflectFunction(ctx: JSContext; this: JSValueConst; argc: cint;

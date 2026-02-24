@@ -392,10 +392,8 @@ proc addJSModules(client: Client; ctx: JSContext): Opt[void] =
 
 proc newClient(forkserver: ForkServer; loader: FileLoader; jsctx: JSContext;
     urandom: PosixStream): Client =
-  let jsrt = JS_GetRuntime(jsctx)
   let console = newConsole(cast[ChaFile](stderr))
   let client = Client(
-    jsrt: jsrt,
     jsctx: jsctx,
     loader: loader,
     crypto: Crypto(urandom: urandom),

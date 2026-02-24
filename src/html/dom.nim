@@ -155,7 +155,6 @@ type
     settings*: EnvironmentSettings
     loader*: FileLoader
     location* {.jsget.}: Location
-    jsrt*: JSRuntime
     jsctx*: JSContext
     document* {.jsufget.}: Document
     timeouts*: TimeoutState
@@ -181,8 +180,6 @@ type
     userAgent*: string
     referrer* {.jsget.}: string
     performance* {.jsget.}: Performance
-    jsStore*: seq[JSValue]
-    jsStoreFree*: int
     weakMap*: array[WindowWeakMap, JSValue]
     customElements* {.jsget.}: CustomElementRegistry
 
@@ -1389,7 +1386,7 @@ proc getWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
 
 proc corsFetch(window: Window; input: Request): FetchPromise =
   if not window.settings.images and input.url.scheme.startsWith("img-codec+"):
-    return newResolvedPromise(FetchResult.err())
+    return newResolvedPromise[Response](nil)
   return window.loader.fetch(input)
 
 proc parseStylesheet(window: Window; s: string; baseURL: URL; charset: Charset;
@@ -1427,12 +1424,11 @@ proc loadSheet(window: Window; url: URL; charset: Charset; layer: CAtom):
     Promise[LoadSheetResult] =
   return window.corsFetch(
     newRequest(url)
-  ).then(proc(res: FetchResult): Promise[TextResult] =
-    if res.isOk:
-      let res = res.get
-      if res.getContentType().equalsIgnoreCase("text/css"):
-        return res.cssText(charset)
-      res.close()
+  ).then(proc(response: Response): Promise[TextResult] =
+    if response != nil:
+      if response.getContentType().equalsIgnoreCase("text/css"):
+        return response.cssText(charset)
+      window.loader.close(response)
     return newResolvedPromise(TextResult.err())
   ).then(proc(s: TextResult): Promise[LoadSheetResult] =
     if s.isErr:
@@ -1521,11 +1517,10 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
     let headers = newHeaders(hgRequest, {"Accept": "*/*"})
     inc window.remoteImageNum
     let p = window.corsFetch(newRequest(url, headers = headers)).then(
-      proc(res: FetchResult): EmptyPromise =
+      proc(response: Response): EmptyPromise =
         inc window.loadedImageNum
-        if res.isErr:
+        if response == nil:
           return newResolvedPromise()
-        let response = res.get
         let contentType = response.getContentType("image/x-unknown")
         if not contentType.startsWith("image/"):
           return newResolvedPromise()
@@ -1553,8 +1548,7 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
           body = RequestBody(t: rbtOutput, outputId: response.outputId),
         )
         let r = window.corsFetch(request)
-        response.resume()
-        response.close()
+        window.loader.close(response)
         var expiry = -1i64
         for s in response.headers.getAllCommaSplit("Cache-Control"):
           if s.startsWithIgnoreCase("max-age="):
@@ -1565,12 +1559,11 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
             break
         cachedURL.loading = false
         cachedURL.expiry = expiry
-        return r.then(proc(res: FetchResult) =
-          if res.isErr:
+        return r.then(proc(response: Response) =
+          if response == nil:
             return
-          let response = res.get
           # close immediately; all data we're interested in is in the headers.
-          response.close()
+          window.loader.close(response)
           let headers = response.headers
           let dims = headers.getFirst("Cha-Image-Dimensions")
           let width = parseIntP(dims.until('x')).get(-1)
@@ -1636,13 +1629,12 @@ proc loadResource*(window: Window; svg: SVGSVGElement) =
     headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
     body = RequestBody(t: rbtOutput, outputId: svgres.outputId)
   )
-  let p = loader.fetch(request).then(proc(res: FetchResult) =
-    svgres.close()
-    if res.isErr: # no SVG module; give up
+  let p = loader.fetch(request).then(proc(response: Response) =
+    loader.close(svgres)
+    if response == nil: # no SVG module; give up
       return
-    let response = res.get
     # close immediately; all data we're interested in is in the headers.
-    response.close()
+    loader.close(response)
     let dims = response.headers.getFirst("Cha-Image-Dimensions")
     let width = parseIntP(dims.until('x')).get(-1)
     let height = parseIntP(dims.after('x')).get(-1)
@@ -1665,8 +1657,9 @@ proc loadResource*(window: Window; svg: SVGSVGElement) =
   window.pendingImages.add(p)
 
 proc runJSJobs*(window: Window) =
+  let rt = JS_GetRuntime(window.jsctx)
   while true:
-    let ctx = window.jsrt.runJSJobs()
+    let ctx = rt.runJSJobs()
     if ctx == nil:
       break
     window.console.writeException(ctx)
@@ -3196,7 +3189,7 @@ proc cookie(ctx: JSContext; document: Document): JSValue {.jsfget.} =
   if window == nil:
     return ctx.toJS("")
   let response = window.loader.doRequest(newRequest("x-cha-cookie:get-all"))
-  if response.res != 0:
+  if response.body == nil:
     return JS_ThrowInternalError(ctx, "internal error in cookie getter")
   response.resume()
   let cookie = response.body.readAll()
@@ -3211,8 +3204,7 @@ proc setCookie(ctx: JSContext; document: Document; cookie: string):
   let req = newRequest("x-cha-cookie:set", hmPost, headers,
     credentials = cmOmit)
   let response = window.loader.doRequest(req)
-  if response.res == 0:
-    response.close()
+  window.loader.close(response)
   ok()
 
 proc focus*(document: Document): Element {.jsfget: "activeElement".} =
@@ -6100,20 +6092,19 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
     "img-codec+x-cha-canvas:decode",
     httpMethod = hmPost,
     body = RequestBody(t: rbtCache, cacheId: this.bitmap.cacheId)
-  )).then(proc(res: FetchResult): FetchPromise =
-    if res.isErr:
-      return newResolvedPromise(res)
-    let res = res.get
+  )).then(proc(response: Response): FetchPromise =
+    if response == nil:
+      return newResolvedPromise(response)
     let p = window.corsFetch(newRequest(
       url,
       httpMethod = hmPost,
       headers = headers,
-      body = RequestBody(t: rbtOutput, outputId: res.outputId)
+      body = RequestBody(t: rbtOutput, outputId: response.outputId)
     ))
-    res.close()
+    window.loader.close(response)
     return p
-  ).then(proc(res: FetchResult) =
-    if res.isErr:
+  ).then(proc(res: Response) =
+    if res == nil:
       if contentType != "image/png":
         # redo as PNG.
         # Note: this sounds dumb, and is dumb, but also standard mandated so
@@ -6123,8 +6114,14 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
         window.console.error("missing/broken PNG encoder")
       JS_FreeValue(ctx, callback)
       return
-    res.get.blob().then(proc(blob: BlobResult) =
+    res.blob().then(proc(blob: Blob) =
+      if blob == nil:
+        JS_FreeValue(ctx, callback)
+        return
       let jsBlob = ctx.toJS(blob)
+      if JS_IsException(jsBlob):
+        JS_FreeValue(ctx, callback)
+        return
       let res = ctx.callSinkFree(callback, JS_UNDEFINED, jsBlob)
       if JS_IsException(res):
         window.console.error("Exception in canvas toBlob:",
@@ -6864,14 +6861,13 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
   #TODO set up module script request
   #TODO performFetch
   let p = window.fetchImpl(request)
-  p.then(proc(res: FetchResult) =
+  p.then(proc(res: Response) =
     let ctx = window.jsctx
-    if res.isErr:
+    if res == nil:
       let res = ScriptResult(t: srtNull)
       settings.moduleMap.set(url, moduleType, res, ctx)
       element.onComplete(res)
       return
-    let res = res.get
     let contentType = res.getContentType()
     let referrerPolicy = res.getReferrerPolicy()
     res.text().then(proc(s: TextResult) =
@@ -7066,7 +7062,7 @@ proc prepare*(element: HTMLScriptElement) =
       element.blockRendering()
       element.onReady = scriptOnReadyRunInParser
     if response != nil:
-      if response.res != 0:
+      if response.body == nil:
         element.markAsReady(ScriptResult(t: srtNull))
       else:
         response.resume()

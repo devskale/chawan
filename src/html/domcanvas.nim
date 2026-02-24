@@ -95,13 +95,12 @@ proc create2DContext*(loader: FileLoader; target: EventTarget;
     body = RequestBody(t: rbtOutput, outputId: ctlres.outputId)
   )
   let response = loader.doRequest(request)
-  if response.res != 0:
+  loader.close(ctlres)
+  if response.body == nil:
     # no canvas module; give up
     ps.sclose()
-    ctlres.close()
     return nil
-  ctlres.close()
-  response.close()
+  loader.close(response)
   ps.withPacketWriterFire w:
     w.swrite(pcSetDimensions)
     w.swrite(bitmap.width)

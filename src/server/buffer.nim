@@ -1851,8 +1851,9 @@ proc cleanup(bc: BufferContext) =
   #TODO loader map handles?
   bc.window.crypto.urandom.sclose()
   if bc.config.scripting != smFalse:
+    let rt = JS_GetRuntime(bc.window.jsctx)
     bc.window.jsctx.free()
-    bc.window.jsrt.free()
+    rt.free()
 
 proc launchBuffer*(config: BufferConfig; url: URL; attrs: WindowAttributes;
     ishtml: bool; charsetStack: seq[Charset]; loader: FileLoader;

@@ -1037,14 +1037,14 @@ proc getFromStream[T](ctx: JSContext; iface: BufferInterface;
 
 proc addPromise(ctx: JSContext; iface: BufferInterface; get: GetValueProc):
     JSValue =
-  var resolvingFuncs {.noinit.}: array[2, JSValue]
-  let res = JS_NewPromiseCapability(ctx, resolvingFuncs.toJSValueArray())
+  var funs {.noinit.}: array[2, JSValue]
+  let res = ctx.newPromiseCapability(funs)
   if JS_IsException(res):
     return res
-  JS_FreeValue(ctx, resolvingFuncs[1])
+  JS_FreeValue(ctx, funs[1])
   iface.map.add(BufferIfaceItem(
     id: iface.packetid,
-    fun: JS_VALUE_GET_PTR(resolvingFuncs[0]),
+    fun: JS_VALUE_GET_PTR(funs[0]),
     get: get
   ))
   inc iface.packetid

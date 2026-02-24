@@ -23,5 +23,14 @@ const x = document.getElementById("x");
 	const ua = ss.find(x => x.startsWith("user-agent"));
 	assertEquals(ua, "user-agent: chawan");
 }
+{
+	let ok = false;
+	try {
+		await fetch("file:///tmp/should-throw");
+	} catch (e) {
+		ok = true;
+	}
+	assert(ok);
+}
 x.textContent = "Success";
 </script>
