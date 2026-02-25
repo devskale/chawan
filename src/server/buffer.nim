@@ -29,7 +29,6 @@ import io/dynstream
 import io/packetreader
 import io/packetwriter
 import io/poll
-import io/promise
 import io/timeout
 import local/select
 import monoucha/fromjs
@@ -65,7 +64,7 @@ type
     prevHover: Element
     next: PagerHandle
 
-  BufferContext = ref object
+  BufferContext = ref object of RootObj
     firstBufferRead: bool
     headlessLoading: bool
     ishtml: bool
@@ -293,7 +292,8 @@ proc cursorBytes(bc: BufferContext; y, cc: int): int =
     w += u.width()
   return i
 
-proc navigate(bc: BufferContext; url: URL) =
+proc navigate(bc: RootRef; url: URL) =
+  let bc = BufferContext(bc)
   let stderr = cast[ChaFile](stderr)
   bc.navigateUrl = url
   discard stderr.writeLine("navigate to " & $url)
@@ -566,6 +566,10 @@ proc maybeReshape(bc: BufferContext; suppressFouc = false) =
         else:
           handle.onReshapeImmediately = true
 
+proc ensureLayout(bc: RootRef; element: Element) =
+  let bc = BufferContext(bc)
+  bc.maybeReshape(suppressFouc = true)
+
 proc processData0(bc: BufferContext; data: UnsafeSlice): bool =
   if bc.ishtml:
     if bc.htmlParser.parseBuffer(data.toOpenArray()) == PRES_STOP:
@@ -673,54 +677,6 @@ proc updateHover(bc: BufferContext; handle: PagerHandle;
   handle.prevHover = thisNode
   move(hover)
 
-proc loadResources(bc: BufferContext): EmptyPromise =
-  if bc.window.pendingResources.len > 0:
-    let promises = move(bc.window.pendingResources)
-    if promises.len > 0:
-      bc.window.pendingResources = @[]
-      let res = EmptyPromise()
-      var u = 0u
-      let L = uint(promises.len)
-      for promise in promises:
-        promise.then(proc() =
-          if bc.state == bsLoadingResources:
-            for handle in bc.handles:
-              if handle.hasTask(bcLoad):
-                bc.resolveLoad(handle, bc.window.loadedSheetNum,
-                  bc.window.remoteSheetNum)
-          inc u
-          if u == L:
-            res.resolve()
-        )
-      return res.then(proc(): EmptyPromise =
-        return bc.loadResources()
-      )
-  return newResolvedPromise()
-
-proc loadImages(bc: BufferContext): EmptyPromise =
-  if bc.window.pendingImages.len > 0:
-    let promises = move(bc.window.pendingImages)
-    if promises.len > 0:
-      bc.window.pendingImages = @[]
-      let res = EmptyPromise()
-      var u = 0u
-      let L = uint(promises.len)
-      for promise in promises:
-        promise.then(proc() =
-          if bc.state == bsLoadingImages:
-            for handle in bc.handles:
-              if handle.hasTask(bcLoad):
-                bc.resolveLoad(handle, bc.window.loadedImageNum,
-                  bc.window.remoteImageNum)
-          inc u
-          if u == L:
-            res.resolve()
-        )
-      return res.then(proc(): EmptyPromise =
-        return bc.loadImages()
-      )
-  return newResolvedPromise()
-
 proc rewind(bc: BufferContext; data: InputData; offset: uint64): bool =
   let url = parseURL0("cache:" & $bc.cacheId & "?" & $offset)
   let response = bc.loader.doRequest(newRequest(url))
@@ -808,6 +764,61 @@ proc headlessMustWait(bc: BufferContext): bool =
       (not bc.window.timeouts.empty or bc.checkJobs) or
     bc.loader.hasFds()
 
+proc imagesLoaded(bc: BufferContext) =
+  bc.maybeReshape()
+  bc.state = bsLoaded
+  bc.document.readyState = rsComplete
+  if bc.config.scripting != smFalse:
+    bc.dispatchLoadEvent()
+    for ctx in bc.window.pendingCanvasCtls:
+      ctx.ps.sclose()
+      ctx.ps = nil
+    bc.window.pendingCanvasCtls.setLen(0)
+  for handle in bc.handles:
+    if handle.hasTask(bcGetTitle):
+      handle.resolveTask(bcGetTitle, bc.document.title)
+    if handle.hasTask(bcLoad):
+      if bc.config.headless == hmTrue and bc.headlessMustWait():
+        #TODO might want to move this to handle too
+        bc.headlessLoading = true
+      else:
+        bc.resolveLoad(handle, 0, 0)
+
+proc sheetsLoaded(bc: BufferContext) =
+  if bc.window.loadedImageNum < bc.window.remoteImageNum:
+    bc.maybeReshape()
+    bc.state = bsLoadingImages
+    for handle in bc.handles:
+      if handle.hasTask(bcLoad):
+        bc.resolveLoad(handle, bc.window.loadedImageNum,
+          bc.window.remoteImageNum)
+  else:
+    bc.imagesLoaded()
+
+proc sheetLoaded(bc: RootRef) =
+  let bc = BufferContext(bc)
+  if bc.state == bsLoadingStyle:
+    for handle in bc.handles:
+      if handle.hasTask(bcLoad):
+        bc.resolveLoad(handle, bc.window.loadedSheetNum,
+          bc.window.remoteSheetNum)
+    if bc.window.loadedSheetNum == bc.window.remoteSheetNum:
+      bc.sheetsLoaded()
+
+proc imageLoaded(bc: RootRef) =
+  let bc = BufferContext(bc)
+  for handle in bc.handles:
+    if bc.state == bsLoadingImages and handle.hasTask(bcLoad):
+      bc.resolveLoad(handle, bc.window.loadedImageNum,
+        bc.window.remoteImageNum)
+    if handle.hasTask(bcToggleImages):
+      handle.resolveTask(bcToggleImages, bc.config.images)
+  if bc.window.loadedImageNum == bc.window.remoteImageNum:
+    if bc.state == bsLoadingImages:
+      bc.imagesLoaded()
+    else:
+      bc.maybeReshape()
+
 # Returns:
 # * -1 if loading is done
 # * a positive number for reporting the number of bytes loaded and that the page
@@ -827,7 +838,7 @@ proc load(bc: BufferContext; handle: PagerHandle): LoadResult {.
   of bsLoadingImages:
     n = bc.window.loadedImageNum
     len = bc.window.remoteImageNum
-  of bsLoadingResources:
+  of bsLoadingStyle:
     n = bc.window.loadedSheetNum
     len = bc.window.remoteSheetNum
   of bsLoadingPage:
@@ -873,43 +884,14 @@ proc onload(bc: BufferContext; data: InputData) =
       reprocess = false
     else: # EOF
       bc.finishLoad(data)
-      if bc.window.pendingResources.len > 0:
-        bc.state = bsLoadingResources
+      if bc.window.loadedSheetNum < bc.window.remoteSheetNum:
+        bc.state = bsLoadingStyle
         for handle in bc.handles:
           if handle.hasTask(bcLoad):
             bc.resolveLoad(handle, bc.window.loadedSheetNum,
               bc.window.remoteSheetNum)
-      bc.loadResources().then(proc() =
-        # CSS loaded
-        if bc.window.pendingImages.len > 0:
-          bc.maybeReshape()
-          bc.state = bsLoadingImages
-          for handle in bc.handles:
-            if handle.hasTask(bcLoad):
-              bc.resolveLoad(handle, bc.window.loadedImageNum,
-                bc.window.remoteImageNum)
-        bc.loadImages().then(proc() =
-          # images loaded
-          bc.maybeReshape()
-          bc.state = bsLoaded
-          bc.document.readyState = rsComplete
-          if bc.config.scripting != smFalse:
-            bc.dispatchLoadEvent()
-            for ctx in bc.window.pendingCanvasCtls:
-              ctx.ps.sclose()
-              ctx.ps = nil
-            bc.window.pendingCanvasCtls.setLen(0)
-          for handle in bc.handles:
-            if handle.hasTask(bcGetTitle):
-              handle.resolveTask(bcGetTitle, bc.document.title)
-            if handle.hasTask(bcLoad):
-              if bc.config.headless == hmTrue and bc.headlessMustWait():
-                #TODO might want to move this to handle too
-                bc.headlessLoading = true
-              else:
-                bc.resolveLoad(handle, 0, 0)
-        )
-      )
+      else:
+        bc.sheetsLoaded()
       return # skip incr render
   # incremental rendering: only if we cannot read the entire stream in one
   # pass
@@ -1461,6 +1443,12 @@ proc click(bc: BufferContext; handle: PagerHandle;
     return initClickResult(newRequest(url, hmGet))
   return initClickResult()
 
+proc click0(bc: RootRef; element: HTMLElement) =
+  let bc = BufferContext(bc)
+  #TODO not sure if this is the right behavior for app mode.
+  # (for normal mode it's the right design, I think.)
+  bc.clickResult = bc.click(element)
+
 proc contextMenu(bc: BufferContext; handle: PagerHandle;
     cursorx, cursory: int): bool {.proxy.} =
   var canceled = false
@@ -1664,18 +1652,13 @@ proc toggleImages(bc: BufferContext; handle: PagerHandle): bool {.
   bc.window.svgCache.clear()
   for element in bc.document.descendants:
     if element of HTMLImageElement:
-      bc.window.loadResource(HTMLImageElement(element))
+      bc.window.loadImage(HTMLImageElement(element))
     elif element of SVGSVGElement:
-      bc.window.loadResource(SVGSVGElement(element))
+      bc.window.loadSVG(SVGSVGElement(element))
   bc.savetask = true
-  bc.loadImages().then(proc() =
-    if handle.tasks[bcToggleImages] == 0:
-      # we resolved in then
-      bc.savetask = false
-    else:
-      handle.resolveTask(bcToggleImages, bc.config.images)
+  if not bc.config.images:
+    # if images were enabled, we reshape after imageLoaded
     bc.maybeReshape()
-  )
   return bc.config.images
 
 proc findLeaf(box: CSSBox; element: Element): CSSBox =
@@ -1893,15 +1876,7 @@ proc launchBuffer*(config: BufferConfig; url: URL; attrs: WindowAttributes;
     config.referrer,
     contentType
   )
-  if bc.config.scripting != smFalse:
-    bc.window.navigate = proc(url: URL) = bc.navigate(url)
-    bc.window.click = proc(element: HTMLElement) =
-      #TODO not sure if this is the right behavior for app mode.
-      # (for normal mode it's the right design, I think.)
-      bc.clickResult = bc.click(element)
-    if bc.config.scripting == smApp:
-      bc.window.ensureLayout = proc(element: Element) =
-        bc.maybeReshape(suppressFouc = true)
+  bc.window.bc = bc
   bc.charset = bc.charsetStack.pop()
   istream.setBlocking(false)
   bc.loader.put(InputData(stream: istream))
@@ -1914,5 +1889,12 @@ proc launchBuffer*(config: BufferConfig; url: URL; attrs: WindowAttributes;
   bc.runBuffer()
   bc.cleanup()
   quit(0)
+
+# Forward declaration hack
+sheetLoadedImpl = sheetLoaded
+imageLoadedImpl = imageLoaded
+navigateImpl = navigate
+ensureLayoutImpl = ensureLayout
+clickImpl = click0
 
 {.pop.} # raises: []

@@ -1846,7 +1846,7 @@ const ReTextStart = /\S/gu;
             case "loadingPage":
                 this.setLoadInfo(`${Util.convertSize(n)} loaded`);
                 break;
-            case "loadingResources":
+            case "loadingStyle":
                 this.setLoadInfo(`${n}/${len} stylesheets loaded`);
                 break;
             case "loadingImages":

@@ -222,7 +222,7 @@ proc elementPoppedImpl(builder: ChaDOMBuilder; element: Node) =
     let window = document.window
     if window != nil:
       let svg = SVGSVGElement(element)
-      window.loadResource(svg)
+      window.loadSVG(svg)
   elif element of HTMLStyleElement:
     HTMLStyleElement(element).updateSheet()
 

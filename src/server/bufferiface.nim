@@ -127,7 +127,7 @@ type
 
   BufferState* = enum
     bsLoadingPage = "loadingPage"
-    bsLoadingResources = "loadingResources"
+    bsLoadingStyle = "loadingStyle"
     bsLoadingImages = "loadingImages"
     bsLoaded = "loaded"
 

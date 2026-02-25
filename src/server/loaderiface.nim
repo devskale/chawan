@@ -13,7 +13,6 @@ import io/dynstream
 import io/packetreader
 import io/packetwriter
 import io/poll
-import io/promise
 import server/headers
 import server/request
 import server/response
@@ -234,18 +233,9 @@ proc fetch0(loader: FileLoader; input: Request; finish: FetchFinish;
       redirectNum: redirectNum
     ))
 
-proc legacyFinish(opaque: RootRef; response: Response) =
-  let promise = FetchPromise(opaque)
-  promise.resolve(response)
-
 proc fetch*(loader: FileLoader; input: Request; finish: FetchFinish;
     opaque: RootRef) =
   loader.fetch0(input, finish, opaque, 0)
-
-proc fetch*(loader: FileLoader; input: Request): FetchPromise =
-  let promise = FetchPromise()
-  loader.fetch(input, legacyFinish, promise)
-  return promise
 
 proc suspend*(loader: FileLoader; fds: seq[int]) =
   loader.withPacketWriterFire w:
