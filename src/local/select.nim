@@ -259,7 +259,7 @@ proc cursorPrevMatch(select: Select; regex: REBytecode; wrap: bool) =
 
 proc cursorPrevMatch(ctx: JSContext; select: Select; re: JSValueConst;
     wrap: bool; n: int): Opt[void] {.jsfunc.} =
-  var plen: csize_t
+  var plen: cint
   let p = JS_GetRegExpBytecode(ctx, re, plen)
   if p == nil:
     return err()
@@ -269,7 +269,7 @@ proc cursorPrevMatch(ctx: JSContext; select: Select; re: JSValueConst;
 
 proc cursorNextMatch(ctx: JSContext; select: Select; re: JSValueConst;
     wrap: bool; n: int): Opt[void] {.jsfunc.} =
-  var plen: csize_t
+  var plen: cint
   let p = JS_GetRegExpBytecode(ctx, re, plen)
   if p == nil:
     return err()

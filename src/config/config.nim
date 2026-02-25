@@ -387,7 +387,7 @@ proc remove[T](ctx: JSContext; list: var ConfigList[T]; name: string) =
 
 proc addOmniRule(ctx: JSContext; config: Config; name: string;
     re, fun: JSValueConst): JSValue {.jsfunc.} =
-  var len: csize_t
+  var len: cint
   let p = JS_GetRegExpBytecode(ctx, re, len)
   if p == nil:
     return JS_EXCEPTION

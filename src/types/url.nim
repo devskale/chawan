@@ -286,11 +286,11 @@ proc punyCharDecode(c: char): Opt[uint32] =
   err()
 
 proc punyDecode(s: openArray[char]): Opt[seq[uint32]] =
-  var j = 0u
+  var j = 0
   var res: seq[uint32] = @[]
   for k, c in s:
     if c == '-':
-      j = uint(k)
+      j = k
     res &= uint32(c)
   res.setLen(j)
   if j > 0:
@@ -298,11 +298,11 @@ proc punyDecode(s: openArray[char]): Opt[seq[uint32]] =
   var n = 0x80u32
   var bias = 72u32
   var i = 0u32
-  while j < uint(s.len):
+  while j < s.len:
     let oldi = i
     var w = 1u32
     for k in countup(36u32, uint32.high, 36u32):
-      if j >= uint(s.len):
+      if j >= s.len:
         return err()
       let d = ?punyCharDecode(s[j])
       inc j

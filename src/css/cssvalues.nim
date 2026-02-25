@@ -1077,7 +1077,7 @@ proc resolveLength*(u: CSSUnit; val: float32; attrs: WindowAttributes):
 
 proc parseLength(tok: CSSToken; attrs: WindowAttributes): Opt[CSSLength] =
   if tok.dt in CSSDimensionType(CSSUnit.low)..CSSDimensionType(CSSUnit.high):
-    return ok(resolveLength(tok.dt, tok.num, attrs))
+    return ok(resolveLength(CSSUnit(tok.dt), tok.num, attrs))
   return err()
 
 # The return value is in degrees.

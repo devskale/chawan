@@ -142,19 +142,20 @@ proc toJS*[T](ctx: JSContext; s: set[T]): JSValue =
   return ret
 
 proc toJS*[T: tuple](ctx: JSContext; t: T): JSValue =
-  const L = uint(T.tupleLen)
+  const L = T.tupleLen
   var vals {.noinit.}: array[L, JSValue]
-  var u = 0u
+  var i = 0
+  {.push overflowChecks: off.}
   for it in t.fields:
     let val = ctx.toJS(it)
     if JS_IsException(val):
       break
-    vals[u] = val
-    inc u
-  if u != L:
-    if u > 0:
-      ctx.freeValues(vals.toOpenArray(0, u - 1))
+    vals[i] = val
+    inc i
+  if i != L:
+    ctx.freeValues(vals.toOpenArray(0, i - 1))
     return JS_EXCEPTION
+  {.pop.}
   return ctx.newArrayFrom(vals)
 
 proc toJSP0(ctx: JSContext; p, tp, toRef: pointer; ctor: JSValueConst):

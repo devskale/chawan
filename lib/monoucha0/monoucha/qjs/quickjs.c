@@ -47140,7 +47140,7 @@ static JSRegExp *js_get_regexp(JSContext *ctx, JSValueConst obj, BOOL throw_erro
     return NULL;
 }
 
-uint8_t *JS_GetRegExpBytecode(JSContext *ctx, JSValueConst obj, size_t *plen)
+uint8_t *JS_GetRegExpBytecode(JSContext *ctx, JSValueConst obj, int *plen)
 {
     JSRegExp *re;
 

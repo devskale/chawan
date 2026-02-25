@@ -1,7 +1,6 @@
 {.push raises: [].}
 
 import std/options
-import std/posix
 import std/tables
 
 import chagashi/charset
@@ -1185,7 +1184,7 @@ proc findNextLink(ctx: JSContext; iface: BufferInterface; x, y, n: int): JSValue
 
 proc findNextMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
     x, y: int; wrap: bool; n: int): JSValue {.jsfunc.} =
-  var bytecodeLen: csize_t
+  var bytecodeLen: cint
   let p = JS_GetRegExpBytecode(ctx, re, bytecodeLen)
   if p == nil:
     return JS_EXCEPTION
@@ -1245,7 +1244,7 @@ proc findPrevLink(ctx: JSContext; iface: BufferInterface; x, y, n: int):
 
 proc findPrevMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
     x, y: int; wrap: bool; n: int): JSValue {.jsfunc.} =
-  var bytecodeLen: csize_t
+  var bytecodeLen: cint
   let p = JS_GetRegExpBytecode(ctx, re, bytecodeLen)
   if p == nil:
     return JS_EXCEPTION
@@ -1546,7 +1545,7 @@ proc matchFirst(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
     y: int): JSValue {.jsfunc.} =
   if not iface.lineLoaded(y):
     return ctx.toJS((-1, -1))
-  var plen: csize_t
+  var plen: cint
   let p = JS_GetRegExpBytecode(ctx, re, plen)
   if p == nil:
     return JS_EXCEPTION
