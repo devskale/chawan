@@ -898,8 +898,7 @@ Pager.prototype.dupeBuffer2 = function(buffer, url) {
         this.alert("Failed to duplicate buffer.");
         return;
     }
-    const buffer2 = new Buffer(init2, this.tab);
-    buffer2.iface = iface;
+    const buffer2 = new Buffer(init2, this.tab, iface);
     buffer2.currentSelection = buffer.currentSelection;
     this.addBuffer(buffer2);
     return buffer2;
@@ -1576,12 +1575,15 @@ const ReTextStart = /\S/gu;
     /* private BufferInit */ init;
     /* private Tab */ tab;
 
-    /* private */ constructor(init, tab) {
+    /* private */ constructor(init, tab, iface = null) {
         if (!(init instanceof BufferInit) || !(tab instanceof Tab))
             throw new TypeError("invalid arguments");
         this.init = init;
         this.tab = tab;
-        init.connected = this.#connected.bind(this);
+        if (iface != null)
+            this.#connected("connected", iface);
+        else
+            init.connected = this.#connected.bind(this);
     }
 
     /* private */ get acursorx() {
