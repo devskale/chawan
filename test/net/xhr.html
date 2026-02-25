@@ -13,6 +13,7 @@ function myFunction(event) {
 	assert(event.isTrusted);
 }
 x.onreadystatechange = myFunction;
+assertEquals(x.status, 0);
 assertEquals(myFunction, x.onreadystatechange);
 assertEquals(x.readyState, XMLHttpRequest.UNSENT);
 assertEquals(x.UNSENT, XMLHttpRequest.UNSENT);

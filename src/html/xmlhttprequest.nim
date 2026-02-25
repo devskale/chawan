@@ -85,7 +85,8 @@ proc newXMLHttpRequest(ctx: JSContext): XMLHttpRequest {.jsctor.} =
   return XMLHttpRequest(
     upload: upload,
     headers: newHeaders(hgRequest),
-    responseObject: JS_UNDEFINED
+    responseObject: JS_UNDEFINED,
+    response: makeNetworkError()
   )
 
 proc finalize(rt: JSRuntime; this: XMLHttpRequest) {.jsfin.} =
