@@ -36,7 +36,7 @@ type
     # We send all messages through this.
     controlStream*: SocketStream
 
-  ConnectDataState = enum
+  ConnectDataState* = enum
     cdsBeforeResult, cdsBeforeStatus
 
   MapData* = ref object of RootObj
