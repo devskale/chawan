@@ -5,6 +5,7 @@ unreleased
 * support DEC special graphics in ASCII mode
 * support all VP8L indexed color transforms
 * support color, width, align, noshade properties on HR element
+* support Element#getAttributeNames
 * add status.format-mode (sets formatting of status bar)
 * add toggleLinkHintsAutoClick command (by Arthur Jacquin)
 * add saveScreen, editScreen commands; rename sourceEdit to editSource
@@ -26,12 +27,17 @@ unreleased
 * fix color blending over body bgcolor
 * fix matching of nested subsequent sibling combinator
 * fix various CSS image sizing bugs
+* fix inline pre/nowrap not being flushed to the next line on overflow
 * fix bugs in our libregexp UTF-8 patch
 * fix various proxy authentication bugs
 * fix [attr|=value] and :lang() pseudo-class bugs
 * fix localStorage.key function
 * fix gotoLine malfunctioning in select menu
 * fix bug in negation of the minimum layout unit value
+* fix crash on Storage#key overflow on 32-bit targets
+* fix crash on calling status getter for unsent XHR
+* fix various charset decoder bugs
+* fix TypedArray handling
 
 0.3.0 (2025.11.21)
 
