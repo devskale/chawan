@@ -63,6 +63,7 @@ type
     onReshapeImmediately: bool
     prevHover: Element
     next: PagerHandle
+    hoverText: array[HoverType, string]
 
   BufferContext = ref object of RootObj
     firstBufferRead: bool
@@ -80,7 +81,6 @@ type
     charsetStack: seq[Charset]
     config: BufferConfig
     ctx: TextDecoderContext
-    hoverText: array[HoverType, string]
     htmlParser: HTML5ParserWrapper
     images: seq[PosBitmap]
     linkHintChars: ref seq[uint32]
@@ -658,9 +658,9 @@ proc updateHover(bc: BufferContext; handle: PagerHandle;
         oldHover.add(element)
     for ht in HoverType:
       let s = HoverFun[ht](bc, thisNode)
-      if bc.hoverText[ht] != s:
+      if handle.hoverText[ht] != s:
         hover.add((ht, s))
-        bc.hoverText[ht] = s
+        handle.hoverText[ht] = s
     for element in thisNode.branchElems:
       if not element.hover:
         element.setHover(true)
