@@ -107,12 +107,6 @@ var errorImpl*: proc(ctx: JSContext; ss: varargs[string]) {.
 var getEnvSettingsImpl*: proc(ctx: JSContext): EnvironmentSettings {.
   nimcall, raises: [].}
 
-proc toJS*(ctx: JSContext; val: ScriptingMode): JSValue =
-  case val
-  of smTrue: return JS_TRUE
-  of smFalse: return JS_FALSE
-  of smApp: return JS_NewString(ctx, "app")
-
 proc free*(script: Script) =
   let record = script.record
   let rt = script.rt

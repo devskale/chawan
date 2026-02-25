@@ -421,6 +421,12 @@ proc toJS*(ctx: JSContext; headless: HeadlessMode): JSValue =
   of hmFalse: return JS_FALSE
   of hmDump: return JS_NewString(ctx, "dump")
 
+proc toJS*(ctx: JSContext; val: ScriptingMode): JSValue =
+  case val
+  of smTrue: return JS_TRUE
+  of smFalse: return JS_FALSE
+  of smApp: return JS_NewString(ctx, "app")
+
 proc toJS*(ctx: JSContext; p: ChaPathResolved): JSValue =
   ctx.toJS($p)
 
