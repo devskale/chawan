@@ -826,7 +826,6 @@ proc nextDisplayedElement(element: Element): Element
 proc outerHTML(element: Element): string
 proc postConnectionSteps(element: Element)
 proc previousElementSibling*(element: Element): Element
-proc reflectAttr(element: Element; name: CAtom; value: Option[string])
 proc scriptingEnabled(element: Element): bool
 proc shadowRoot(this: Element): ShadowRoot
 proc tagName(element: Element): string
@@ -4190,14 +4189,13 @@ proc getter(ctx: JSContext; this: DOMTokenList; atom: JSAtom): JSValue
   of fiStr: JS_UNINITIALIZED
   of fiErr: JS_EXCEPTION
 
-proc reflectTokens(this: DOMTokenList; value: Option[string]) =
+proc reflectTokens(this: DOMTokenList; value: string) =
   this.toks.setLen(0)
-  if value.isSome:
-    for x in value.get.split(AsciiWhitespace):
-      if x != "":
-        let a = x.toAtom()
-        if a notin this:
-          this.toks.add(a)
+  for x in value.split(AsciiWhitespace):
+    if x != "":
+      let a = x.toAtom()
+      if a notin this:
+        this.toks.add(a)
 
 # DOMStringMap
 proc delete(ctx: JSContext; map: DOMStringMap; name: string): bool {.jsfunc.} =
@@ -5106,8 +5104,8 @@ proc clientHeight(element: Element): int32 {.jsfget.} =
 
 const WindowEvents* = [satError, satLoad, satFocus, satBlur]
 
-proc reflectScriptAttr(element: Element; name: StaticAtom;
-    value: Option[string]): bool =
+proc reflectScriptAttr(element: Element; name: StaticAtom; value: string):
+    bool =
   let document = element.document
   const ScriptEventMap = {
     satOnclick: satClick,
@@ -5128,29 +5126,29 @@ proc reflectScriptAttr(element: Element; name: StaticAtom;
       if element.tagType == TAG_BODY and t in WindowEvents:
         target = document.window
         target2 = option(EventTarget(element))
-      document.reflectEvent(target, n, t, value.get(""), target2)
+      document.reflectEvent(target, n, t, value, target2)
       return true
   false
 
-proc reflectLocalAttr(element: Element; name: StaticAtom;
-    value: Option[string]) =
+proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
+    value: string) =
   case element.tagType
   of TAG_INPUT:
     let input = HTMLInputElement(element)
     case name
-    of satValue: input.setValue(value.get(""))
-    of satChecked: input.setChecked(value.isSome)
+    of satValue: input.setValue(value)
+    of satChecked: input.setChecked(has)
     of satType:
-      input.inputType = parseEnumNoCase[InputType](value.get("")).get(itText)
+      input.inputType = parseEnumNoCase[InputType](value).get(itText)
     else: discard
   of TAG_OPTION:
     let option = HTMLOptionElement(element)
     if name == satSelected:
-      option.selected = value.isSome
+      option.selected = has
   of TAG_BUTTON:
     let button = HTMLButtonElement(element)
     if name == satType:
-      button.ctype = parseEnumNoCase[ButtonType](value.get("")).get(btSubmit)
+      button.ctype = parseEnumNoCase[ButtonType](value).get(btSubmit)
   of TAG_LINK:
     let link = HTMLLinkElement(element)
     if name == satRel:
@@ -5159,7 +5157,7 @@ proc reflectLocalAttr(element: Element; name: StaticAtom;
     let connected = link.isConnected()
     if name == satDisabled:
       let wasDisabled = link.isDisabled()
-      link.enabled = some(value.isNone)
+      link.enabled = some(not has)
       let disabled = link.isDisabled()
       if wasDisabled != disabled:
         for sheet in link.sheets:
@@ -5215,23 +5213,40 @@ proc reflectLocalAttr(element: Element; name: StaticAtom;
         window.loadImage(image)
   else: discard
 
-proc reflectAttr(element: Element; name: CAtom; value: Option[string]) =
+# Called whenever an attribute changes on the element.
+# If `has' is false, then value is "".  Otherwise, value is the new
+# attribute value.
+proc reflectAttr(element: Element; name: CAtom; has: bool; value: string) =
   let name = name.toStaticAtom()
   case name
-  of satId: element.id = value.toAtom()
-  of satName: element.name = value.toAtom()
+  of satId:
+    if has:
+      element.id = value.toAtom()
+    else:
+      element.id = CAtomNull
+  of satName:
+    if has:
+      element.name = value.toAtom()
+    else:
+      element.name = CAtomNull
   of satClass: element.classList.reflectTokens(value)
   #TODO internalNonce
   of satStyle:
-    if value.isSome:
-      element.cachedStyle = newCSSStyleDeclaration(element, value.get)
+    if has:
+      element.cachedStyle = newCSSStyleDeclaration(element, value)
     else:
       element.cachedStyle = nil
   of satUnknown: discard # early return
   elif element.scriptingEnabled and element.reflectScriptAttr(name, value):
     discard
   else:
-    element.reflectLocalAttr(name, value)
+    element.reflectLocalAttr(name, has, value)
+
+proc reflectAttrDel(element: Element; name: CAtom) =
+  element.reflectAttr(name, false, "")
+
+proc reflectAttr(element: Element; name: CAtom; value: string) =
+  element.reflectAttr(name, true, value)
 
 proc elIndex*(this: Element): int =
   if this.parentNode == nil:
@@ -5561,7 +5576,7 @@ proc delAttr(ctx: JSContext; element: Element; i: int) =
       attr.dataIdx = 0
       map.attrlist.del(j) # ordering does not matter
   element.attrs.delete(i) # ordering matters
-  element.reflectAttr(name, none(string))
+  element.reflectAttrDel(name)
   element.document.invalidateCollections()
   element.invalidate()
 
@@ -5586,7 +5601,7 @@ proc attr*(element: Element; name: CAtom; value: sink string) =
       qualifiedName: name,
       value: value
     ), i)
-  element.reflectAttr(name, some(element.attrs[i].value))
+  element.reflectAttr(name, element.attrs[i].value)
   element.document.invalidateCollections()
   element.invalidate()
 
@@ -5595,16 +5610,17 @@ proc attr*(element: Element; name: StaticAtom; value: sink string) =
 
 proc attrns0(element: Element; namespace, localName, qualifiedName: CAtom;
     value: sink string) =
-  let i = element.findAttrNS(namespace, localName)
+  var i = element.findAttrNS(namespace, localName)
   if i != -1:
     element.attrs[i].value = value
   else:
+    i = element.attrs.upperBound(qualifiedName, cmpAttrName)
     element.attrs.insert(AttrData(
       namespace: namespace,
       qualifiedName: qualifiedName,
       value: value
-    ), element.attrs.upperBound(qualifiedName, cmpAttrName))
-  element.reflectAttr(qualifiedName, some(value))
+    ), i)
+  element.reflectAttr(qualifiedName, element.attrs[i].value)
   element.document.invalidateCollections()
   element.invalidate()
 
