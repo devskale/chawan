@@ -24,13 +24,7 @@ const x = document.getElementById("x");
 	assertEquals(ua, "user-agent: chawan");
 }
 {
-	let ok = false;
-	try {
-		await fetch("file:///tmp/should-throw");
-	} catch (e) {
-		ok = true;
-	}
-	assert(ok);
+	await assertThrowsAsync(() => fetch("file:///tmp/should-throw"), TypeError);
 }
 x.textContent = "Success";
 </script>

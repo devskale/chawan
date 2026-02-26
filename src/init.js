@@ -1721,8 +1721,15 @@ const ReTextStart = /\S/gu;
                 if (text == null)
                     return this.init.closeMailcap();
                 const path = Util.unquote(text, Util.getcwd());
-                if (path != null && pager.saveTo(this.init, path))
-                    break;
+                if (path != null) {
+                    if (Util.isFile(path)) {
+                        const x = await pager.ask(`Override file ${path}?`);
+                        if (!x)
+                            continue;
+                    }
+                    if (pager.saveTo(this.init, path))
+                        break;
+                }
                 const x = await pager.ask(`Cannot save to ${path}.  Retry?`);
                 if (!x)
                     return this.init.closeMailcap();

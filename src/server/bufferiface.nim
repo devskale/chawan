@@ -264,7 +264,7 @@ type
     marks: seq[Mark]
     init*: BufferInit
 
-  BufferInit* = ref object
+  BufferInit* = ref object of MapData
     config*: BufferConfig
     loaderConfig*: LoaderClientConfig
     filterCmd*: string # filter command (called on load)
@@ -288,6 +288,7 @@ type
     redirectDepth {.jsget.}: int
     width* {.jsgetset.}: int
     height* {.jsgetset.}: int
+    connectionState*: ConnectDataState
     flags*: set[BufferInitFlag]
     #TODO this is inaccurate, because charsetStack can desync
     charset*: Charset
@@ -359,7 +360,8 @@ proc newBufferInit*(config: BufferConfig; loaderConfig: LoaderClientConfig;
     loadInfo: loadInfo,
     refreshMillis: -1,
     filterCmd: filterCmd,
-    istreamOutputId: -1
+    istreamOutputId: -1,
+    ostreamOutputId: -1
   )
 
 proc newBufferInit*(url: URL; init: BufferInit): BufferInit {.jsctor.} =
@@ -377,7 +379,8 @@ proc newBufferInit*(url: URL; init: BufferInit): BufferInit {.jsctor.} =
     request: init.request,
     charsetStack: init.charsetStack,
     refreshMillis: -1,
-    istreamOutputId: -1
+    istreamOutputId: -1,
+    ostreamOutputId: -1
   )
 
 proc copyCursorPos(ctx: JSContext; this: BufferInit; val: JSValueConst):

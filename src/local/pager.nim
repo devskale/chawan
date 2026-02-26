@@ -77,14 +77,6 @@ type
     pasAlertOn = "alertOn"
     pasLoadInfo = "loadInfo"
 
-  BufferConnectionState = enum
-    bcsBeforeResult, bcsBeforeStatus
-
-  ConnectingBuffer = ref object of MapData
-    state: BufferConnectionState
-    init: BufferInit
-    outputId: int
-
   SurfaceType = enum
     stDisplay, stStatus
 
@@ -108,12 +100,13 @@ type
     dumpConsoleFile: bool
     feedNext {.jsgetset.}: bool
     updateStatus: UpdateStatusState
-    consoleCacheId {.jsget.}: int # private
-    consoleFile: string
     alertState {.jsgetset.}: PagerAlertState # private
     # current number prefix (when vi-numeric-prefix is true)
     precnum {.jsgetset.}: int32 # private
     arg0 {.jsget.}: int32 # private
+    bufferAtom: JSAtom
+    consoleCacheId {.jsget.}: int # private
+    consoleFile: string
     alerts: seq[string]
     askCursor: int
     askPrompt: string
@@ -145,7 +138,6 @@ type
     mimeTypes: MimeTypes
     bufferInit {.jsget.}: BufferInit # visible BufferInit (may != iface.init)
     bufferIface {.jsget.}: BufferInterface # visible BufferInterface
-    bufferAtom: JSAtom
 
   CheckMailcapFlag = enum
     cmfConnect, cmfHTML, cmfRedirected, cmfPrompt, cmfNeedsstyle,
@@ -331,6 +323,19 @@ proc onFinishCookieStream(response: Response; success: bool) =
   let pager = CookieStreamOpaque(response.opaque).pager
   pager.alert("Error: cookie stream broken")
 
+proc initCookieStream(opaque: RootRef; response: Response) =
+  let pager = Pager(opaque)
+  if response == nil:
+    pager.alert("failed to open cookie stream")
+    return
+  # ugly hack, so that the cookie stream does not keep headless
+  # instances running
+  dec pager.loader.mapFds
+  response.opaque = CookieStreamOpaque(pager: pager)
+  response.onRead = onReadCookieStream
+  response.onFinish = onFinishCookieStream
+  response.resume()
+
 proc initLoader(pager: Pager) =
   let clientConfig = LoaderClientConfig(
     defaultHeaders: pager.config.network.defaultHeaders,
@@ -340,18 +345,7 @@ proc initLoader(pager: Pager) =
   let loader = pager.loader
   discard loader.addClient(loader.clientPid, clientConfig, isPager = true)
   let request = newRequest("about:cookie-stream")
-  loader.fetch(request).then(proc(response: Response) =
-    if response == nil:
-      pager.alert("failed to open cookie stream")
-      return
-    # ugly hack, so that the cookie stream does not keep headless
-    # instances running
-    dec loader.mapFds
-    response.opaque = CookieStreamOpaque(pager: pager)
-    response.onRead = onReadCookieStream
-    response.onFinish = onFinishCookieStream
-    response.resume()
-  )
+  loader.fetch(request, initCookieStream, pager)
 
 proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
@@ -1225,9 +1219,10 @@ proc copyLoadInfo(pager: Pager; init: BufferInit) {.jsfunc.} =
     pager.updateStatus = ussSkip
 
 proc initBuffer(pager: Pager; bufferConfig: BufferConfig;
-    loaderConfig: LoaderClientConfig; request: Request; url: URL; title = "";
-    redirectDepth = 0; flags: set[BufferInitFlag] = {}; contentType = "";
-    filterCmd = ""; charsetStack: seq[Charset] = @[]): BufferInit =
+    loaderConfig: LoaderClientConfig; request: Request; url: URL;
+    contentType, filterCmd: string; title = ""; redirectDepth = 0;
+    flags: set[BufferInitFlag] = {}; charsetStack: seq[Charset] = @[]):
+    BufferInit =
   let stream = pager.loader.startRequest(request, loaderConfig)
   if stream == nil:
     pager.alert("failed to start request for " & $request.url)
@@ -1236,11 +1231,8 @@ proc initBuffer(pager: Pager; bufferConfig: BufferConfig;
   let init = newBufferInit(bufferConfig, loaderConfig, url, request,
     pager.attrs, title, redirectDepth, flags, contentType, filterCmd,
     charsetStack)
-  pager.loader.put(ConnectingBuffer(
-    state: bcsBeforeResult,
-    init: init,
-    stream: stream
-  ))
+  init.stream = stream
+  pager.loader.put(init)
   return init
 
 # private
@@ -1251,9 +1243,9 @@ proc initBufferFrom(pager: Pager; init: BufferInit;
     init.loaderConfig,
     newRequest("cache:" & $init.cacheId),
     init.url,
-    contentType = contentType,
-    charsetStack = init.charsetStack,
-    filterCmd = filterCmd
+    contentType,
+    filterCmd,
+    charsetStack = init.charsetStack
   )
 
 proc bufferPackets(opaque: RootRef; stream: PosixStream) =
@@ -1317,22 +1309,12 @@ proc unregisterBufferIface(pager: Pager; iface: BufferInterface) {.jsfunc.} =
   stream.sclose()
   iface.dead = true
 
-proc findBufferInit(pager: Pager; init: BufferInit): ConnectingBuffer =
-  #TODO eliminate this search
-  for item in pager.loader.data:
-    if item of ConnectingBuffer:
-      let item = ConnectingBuffer(item)
-      if item.init == init:
-        return item
-  return nil
-
 # private
 proc unregisterBufferInit(pager: Pager; init: BufferInit) {.jsfunc.} =
-  let item = pager.findBufferInit(init)
-  if item != nil:
+  if init.stream != nil:
     # connecting to URL
-    let stream = item.stream
-    pager.loader.unregister(item)
+    pager.loader.unregister(init)
+    let stream = move(init.stream)
     stream.sclose()
 
 template myExec(cmd: string) =
@@ -1631,9 +1613,9 @@ proc gotoURL0(pager: Pager; request: Request; save, history: bool;
     flags.incl(bifSave)
   if history and bufferConfig.history:
     flags.incl(bifHistory)
+  let url = if url != nil: url else: request.url
   let init = pager.initBuffer(bufferConfig, loaderConfig, request,
-    if url != nil: url else: request.url, title, redirectDepth, flags,
-    contentType, filterCmd)
+    url, contentType, filterCmd, title, redirectDepth, flags)
   if init == nil:
     return nil
   inc pager.numload
@@ -2157,8 +2139,9 @@ proc connected2(pager: Pager; init: BufferInit): Opt[void] {.jsfunc.} =
   var arg0 = JS_UNDEFINED
   let cres = if bifSave in init.flags:
     dec pager.numload
-    # resume the ostream
-    loader.resume(init.ostreamOutputId)
+    if init.ostreamOutputId != -1:
+      # resume the ostream
+      loader.resume(init.ostreamOutputId)
     bcrSave
   elif bifMailcapCancel in init.flags:
     dec pager.numload
@@ -2324,23 +2307,21 @@ proc connected(pager: Pager; init: BufferInit; response: Response): Opt[void] =
     JS_FreeValue(ctx, res)
     return ok()
 
-proc handleRead(pager: Pager; item: ConnectingBuffer): Opt[void] =
-  let init = item.init
-  let stream = item.stream
-  case item.state
-  of bcsBeforeResult:
+proc handleRead(pager: Pager; init: BufferInit): Opt[void] =
+  case init.connectionState
+  of cdsBeforeResult:
     var res = int(ceLoaderGone)
     var msg: string
-    stream.withPacketReaderFire r:
+    init.stream.withPacketReaderFire r:
       r.sread(res)
       if res == 0: # continue
-        r.sread(item.outputId)
-        inc item.state
+        r.sread(init.istreamOutputId)
+        init.connectionState = cdsBeforeStatus
         let host = init.url.host
         if host == "":
           init.loadInfo = "Loading " & $init.url
         else:
-          init.loadInfo = "Connected to " & host & ". Downloading..."
+          init.loadInfo = "Connected to " & host & ".  Downloading..."
         pager.copyLoadInfo(init)
       else:
         r.sread(msg)
@@ -2348,13 +2329,13 @@ proc handleRead(pager: Pager; item: ConnectingBuffer): Opt[void] =
       if msg == "":
         msg = getLoaderErrorMessage(res)
       return pager.fail(init, msg)
-  of bcsBeforeStatus:
-    let response = newResponse(init.request, stream, item.outputId)
+  of cdsBeforeStatus:
+    pager.loader.unregister(init)
+    let stream = move(init.stream)
+    let response = newResponse(init.request, stream, init.istreamOutputId)
     stream.withPacketReaderFire r:
       r.sread(response.status)
       r.sread(response.headers)
-    # done
-    pager.loader.unregister(item)
     init.applyResponse(response, pager.mimeTypes.t)
     let redirect = response.getRedirect(init.request)
     let ctx = pager.jsctx
@@ -2421,8 +2402,8 @@ proc handleRead(pager: Pager; fd: cint): Opt[bool] =
   elif fd in pager.loader.unregistered:
     discard # ignore (see handleError)
   elif (let data = pager.loader.get(fd); data != nil):
-    if data of ConnectingBuffer:
-      ?pager.handleRead(ConnectingBuffer(data))
+    if data of BufferInit:
+      ?pager.handleRead(BufferInit(data))
     elif data of BufferInterface:
       let iface = BufferInterface(data)
       let ctx = pager.jsctx
@@ -2475,9 +2456,9 @@ proc handleError(pager: Pager; fd: cint): Opt[bool] =
     # next one.
     discard
   elif (let data = pager.loader.get(fd); data != nil):
-    if data of ConnectingBuffer:
-      let item = ConnectingBuffer(data)
-      ?pager.fail(item.init, "loader died while loading")
+    if data of BufferInit:
+      let init = BufferInit(data)
+      ?pager.fail(init, "loader died while loading")
     elif data of BufferInterface:
       let iface = BufferInterface(data)
       let isConsole = iface.init == pager.consoleInit

@@ -22,6 +22,24 @@ function assertThrows(fun, error) {
 	throw new TypeError("Assertion failed: expected " + error + ", got " + me + " for: " + fun);
 }
 
+async function assertThrowsAsync(fun, error) {
+	if (typeof fun == "string") {
+		const x = fun;
+		fun = async () => eval(x);
+	}
+	if (!(fun instanceof Function))
+		throw new TypeError("error expected to be Function");
+	let me;
+	try {
+		await fun();
+	} catch (e) {
+		if (e instanceof error)
+			return;
+		me = e;
+	}
+	throw new TypeError("Assertion failed: expected " + error + ", got " + me + " for: " + fun);
+}
+
 function assertEquals(a, b) {
 	if (a !== b)
 		throw new TypeError("Assertion failed: expected " + b + " but got " + a);

@@ -5,11 +5,13 @@ import std/posix
 
 import config/chapath
 import io/dynstream
+import monoucha/fromjs
 import monoucha/jsbind
 import monoucha/jsutils
 import monoucha/quickjs
 import monoucha/tojs
 import types/blob
+import types/jsopt
 import types/opt
 import types/url
 import utils/myposix
@@ -36,9 +38,15 @@ proc openFile(path: string): cint {.jsstfunc: "Util".} =
     return -1
   return ps.fd
 
-proc isFile(fd: cint): bool {.jsstfunc: "Util".} =
-  var stats: Stat
-  return fstat(fd, stats) == 0 and not S_ISDIR(stats.st_mode)
+proc isFile(ctx: JSContext; val: JSValueConst): Opt[bool] {.jsstfunc: "Util".} =
+  if JS_IsNumber(val):
+    var fd: cint
+    ?ctx.fromJS(val, fd)
+    var stats: Stat
+    return ok(fstat(fd, stats) == 0 and not S_ISDIR(stats.st_mode))
+  var path: string
+  ?ctx.fromJS(val, path)
+  return ok(fileExists(path))
 
 proc closeFile(fd: cint) {.jsstfunc: "Util".} =
   discard close(fd)
