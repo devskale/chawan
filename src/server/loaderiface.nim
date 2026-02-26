@@ -476,8 +476,8 @@ proc addAuth*(loader: FileLoader; url: URL) =
     w.swrite(lcAddAuth)
     w.swrite(url)
 
-proc addClient*(loader: FileLoader; pid: int; config: LoaderClientConfig;
-    isPager = false): SocketStream =
+proc addClient*(loader: FileLoader; pid: int; config: LoaderClientConfig):
+    SocketStream =
   loader.withPacketWriter w:
     w.swrite(lcAddClient)
     w.swrite(pid)
@@ -488,9 +488,9 @@ proc addClient*(loader: FileLoader; pid: int; config: LoaderClientConfig;
   var fd: cint
   loader.withPacketReaderFire r:
     r.sread(success)
-    if success and not isPager:
+    if success:
       fd = r.recvFd()
-  if success and not isPager:
+  if success:
     return newSocketStream(fd)
   return nil
 

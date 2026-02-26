@@ -335,17 +335,6 @@ proc initCookieStream(opaque: RootRef; response: Response) =
   response.onFinish = onFinishCookieStream
   response.resume()
 
-proc initLoader(pager: Pager) =
-  let clientConfig = LoaderClientConfig(
-    defaultHeaders: pager.config.network.defaultHeaders,
-    proxy: pager.config.network.proxy,
-    allowAllSchemes: true
-  )
-  let loader = pager.loader
-  discard loader.addClient(loader.clientPid, clientConfig, isPager = true)
-  let request = newRequest("about:cookie-stream")
-  loader.fetch(request, initCookieStream, pager)
-
 proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
   return js_strdup(ctx, name)
@@ -395,7 +384,8 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
   let rt = JS_GetRuntime(ctx)
   JS_SetModuleLoaderFunc(rt, normalizeModuleName, loadJSModule, nil)
   JS_SetInterruptHandler(rt, interruptHandler, nil)
-  pager.initLoader()
+  let request = newRequest("about:cookie-stream")
+  pager.loader.fetch(request, initCookieStream, pager)
   block history:
     let hist = newHistory(pager.config.external.historySize, getTime().toUnix())
     let ps = newPosixStream($pager.config.external.historyFile)

@@ -53,6 +53,12 @@ proc loadConfig*(forkserver: ForkServer; config: Config): int =
       bookmark: $config.external.bookmark,
       maxNetConnections: config.network.maxNetConnections
     ))
+    # client config for pager
+    w.swrite(LoaderClientConfig(
+      defaultHeaders: config.network.defaultHeaders,
+      proxy: config.network.proxy,
+      allowAllSchemes: true
+    ))
   do:
     return -1
   var process = -1
@@ -87,7 +93,8 @@ proc forkBuffer*(forkserver: ForkServer; config: BufferConfig; url: URL;
   return (bufferPid, newSocketStream(sv[0]))
 
 proc forkLoader(ctx: var ForkServerContext; config: LoaderConfig;
-    loaderStream: SocketStream): (int, SocketStream) =
+    loaderStream: SocketStream; pagerPid: int; pagerConfig: LoaderClientConfig):
+    (int, SocketStream) =
   # loaderStream is a connection between main process <-> loader, but we
   # also need a connection between fork server <-> loader.
   # The naming here is very confusing, sorry about that.
@@ -103,7 +110,7 @@ proc forkLoader(ctx: var ForkServerContext; config: LoaderConfig;
     discard close(sv[0])
     let forkStream = newSocketStream(sv[1])
     setProcessTitle("cha loader")
-    runFileLoader(config, loaderStream, forkStream)
+    runFileLoader(config, loaderStream, forkStream, pagerPid, pagerConfig)
     exitnow(1)
   else:
     discard close(sv[1])
@@ -226,16 +233,18 @@ proc setupForkServerEnv(config: LoaderConfig): Opt[void] =
   ?twtstr.setEnv("CHA_BOOKMARK", config.bookmark)
   ok()
 
-proc runForkServer*(controlStream, loaderStream: SocketStream) =
+proc runForkServer*(controlStream, loaderStream: SocketStream; pagerPid: int) =
   setProcessTitle("cha forkserver")
   var ctx = ForkServerContext(stream: controlStream)
   discard myposix.signal(SIGCHLD, myposix.SIG_IGN)
   discard myposix.signal(SIGPIPE, myposix.SIG_IGN)
   ctx.stream.withPacketReader r:
     var config: LoaderConfig
+    var clientConfig: LoaderClientConfig
     r.sread(isCJKAmbiguous)
     r.sread(ctx.linkHintChars)
     r.sread(config)
+    r.sread(clientConfig)
     # for CGI
     if setupForkServerEnv(config).isErr:
       quit(1)
@@ -243,7 +252,8 @@ proc runForkServer*(controlStream, loaderStream: SocketStream) =
       ctx.schemes.add(key.until(':'))
     # returns a new stream that connects fork server <-> loader and
     # gives away main process <-> loader
-    var (pid, loaderStream) = ctx.forkLoader(config, loaderStream)
+    var (pid, loaderStream) = ctx.forkLoader(config, loaderStream, pagerPid,
+      clientConfig)
     ctx.stream.withPacketWriter w:
       w.swrite(pid)
     do:

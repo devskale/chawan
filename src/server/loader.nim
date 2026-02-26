@@ -345,6 +345,13 @@ proc sendStatus(ctx: var LoaderContext; handle: InputHandle; status: uint16;
     return pbrUnregister
   pbrDone
 
+proc sendConnectedStatus(ctx: var LoaderContext; handle: InputHandle;
+    status: uint16; headers: Headers): PushBufferResult =
+  case ctx.sendResult(handle, 0)
+  of pbrDone: discard
+  of pbrUnregister: return pbrUnregister
+  ctx.sendStatus(handle, status, headers)
+
 proc write(ps: PosixStream; buffer: LoaderBuffer; si = 0): int {.inline.} =
   let len = buffer.len - si
   if len == 0:
@@ -684,11 +691,9 @@ proc parseHeaders0(ctx: var LoaderContext; handle: InputHandle;
     data: openArray[char]): int =
   let parser = handle.parser
   for i, c in data:
-    template die =
+    if parser.crSeen and c != '\n':
       handle.parser = nil
       return -1
-    if parser.crSeen and c != '\n':
-      die
     parser.crSeen = false
     if c == '\r':
       parser.crSeen = true
@@ -699,7 +704,9 @@ proc parseHeaders0(ctx: var LoaderContext; handle: InputHandle;
           # yet.
           case ctx.sendResult(handle, 0)
           of pbrDone: discard
-          of pbrUnregister: die
+          of pbrUnregister:
+            handle.parser = nil
+            return -1
         let res = ctx.sendStatus(handle, parser.status, parser.headers)
         handle.parser = nil
         return case res
@@ -710,14 +717,17 @@ proc parseHeaders0(ctx: var LoaderContext; handle: InputHandle;
         case ctx.handleFirstLine(handle, parser.lineBuffer)
         of crDone: parser.state = hpsControlDone
         of crContinue: parser.state = hpsAfterFirstLine
-        of crError: die
+        of crError:
+          handle.parser = nil
+          return -1
       of hpsAfterFirstLine:
         case handle.handleControlLine(parser.lineBuffer)
         of crDone: parser.state = hpsControlDone
         of crContinue: discard
         of crError:
           discard ctx.sendStatus(handle, 500, parser.headers)
-          die
+          handle.parser = nil
+          return -1
       of hpsControlDone:
         handle.handleLine(parser.lineBuffer)
       parser.lineBuffer = ""
@@ -1151,21 +1161,14 @@ proc loadFromCache(ctx: var LoaderContext; client: ClientHandle;
       ctx.rejectHandle(handle, ceFileNotInCache)
       client.cacheMap.del(n)
       return
-    case ctx.sendResult(handle, 0)
-    of pbrDone: discard
+    case ctx.sendConnectedStatus(handle, 200, newHeaders(hgResponse))
+    of pbrDone:
+      handle.output.stream.setBlocking(false)
+      let cachedHandle = ctx.findCachedHandle(id)
+      ctx.loadStreamRegular(handle, cachedHandle)
     of pbrUnregister:
       client.cacheMap.del(n)
       ctx.close(handle)
-      return
-    case ctx.sendStatus(handle, 200, newHeaders(hgResponse))
-    of pbrDone: discard
-    of pbrUnregister:
-      client.cacheMap.del(n)
-      ctx.close(handle)
-      return
-    handle.output.stream.setBlocking(false)
-    let cachedHandle = ctx.findCachedHandle(id)
-    ctx.loadStreamRegular(handle, cachedHandle)
   else:
     ctx.rejectHandle(handle, ceURLNotInCache)
 
@@ -1181,12 +1184,8 @@ proc finishOutputSend(ctx: var LoaderContext; output: OutputHandle) =
 # Moved back into loader from CGI, because data URLs can get extremely long
 # and thus no longer fit into the environment.
 proc loadDataSend(ctx: var LoaderContext; handle: InputHandle; s, ct: string) =
-  case ctx.sendResult(handle, 0)
-  of pbrDone: discard
-  of pbrUnregister:
-    ctx.close(handle)
-    return
-  case ctx.sendStatus(handle, 200, newHeaders(hgResponse, {"Content-Type": ct}))
+  let headers = newHeaders(hgResponse, {"Content-Type": ct})
+  case ctx.sendConnectedStatus(handle, 200, headers)
   of pbrDone: discard
   of pbrUnregister:
     ctx.close(handle)
@@ -1346,17 +1345,11 @@ proc loadCookieStream(ctx: var LoaderContext; handle: InputHandle;
   if ctx.cookieStream != nil:
     ctx.rejectHandle(handle, ceCookieStreamExists)
     return
-  case ctx.sendResult(handle, 0)
-  of pbrDone: discard
+  case ctx.sendConnectedStatus(handle, 200, newHeaders(hgResponse))
+  of pbrDone:
+    ctx.cookieStream = handle
   of pbrUnregister:
     ctx.close(handle)
-    return
-  case ctx.sendStatus(handle, 200, newHeaders(hgResponse))
-  of pbrDone: discard
-  of pbrUnregister:
-    ctx.close(handle)
-    return
-  ctx.cookieStream = handle
 
 proc loadAbout(ctx: var LoaderContext; handle: InputHandle; request: Request) =
   let url = request.url
@@ -1378,12 +1371,7 @@ proc loadAbout(ctx: var LoaderContext; handle: InputHandle; request: Request) =
 
 proc loadGetCookie(ctx: var LoaderContext; client: ClientHandle;
     handle: InputHandle) =
-  case ctx.sendResult(handle, 0)
-  of pbrDone: discard
-  of pbrUnregister:
-    ctx.close(handle)
-    return
-  case ctx.sendStatus(handle, 200, newHeaders(hgResponse))
+  case ctx.sendConnectedStatus(handle, 200, newHeaders(hgResponse))
   of pbrDone: discard
   of pbrUnregister:
     ctx.close(handle)
@@ -1400,12 +1388,7 @@ proc loadGetCookie(ctx: var LoaderContext; client: ClientHandle;
 
 proc loadSetCookie(ctx: var LoaderContext; client: ClientHandle;
     handle: InputHandle; request: Request) =
-  case ctx.sendResult(handle, 0)
-  of pbrDone: discard
-  of pbrUnregister:
-    ctx.close(handle)
-    return
-  case ctx.sendStatus(handle, 200, newHeaders(hgResponse))
+  case ctx.sendConnectedStatus(handle, 200, newHeaders(hgResponse))
   of pbrDone: discard
   of pbrUnregister:
     ctx.close(handle)
@@ -1966,7 +1949,8 @@ proc loaderLoop(ctx: var LoaderContext) =
     ctx.finishCycle()
   ctx.exitLoader()
 
-proc runFileLoader*(config: LoaderConfig; stream, forkStream: SocketStream) =
+proc runFileLoader*(config: LoaderConfig; stream, forkStream: SocketStream;
+    pagerPid: int; pagerConfig: LoaderClientConfig) =
   var ctx {.global.}: LoaderContext
   ctx = LoaderContext(
     config: config,
@@ -1979,24 +1963,11 @@ proc runFileLoader*(config: LoaderConfig; stream, forkStream: SocketStream) =
   for dir in ctx.config.cgiDir.mitems:
     if dir.len > 0 and dir[^1] != '/':
       dir &= '/'
-  var fail = false
-  stream.withPacketReader r:
-    var cmd: LoaderCommand
-    r.sread(cmd)
-    doAssert cmd == lcAddClient
-    var pid: int
-    var config: LoaderClientConfig
-    r.sread(pid)
-    r.sread(config)
-    stream.withPacketWriter w:
-      w.swrite(true)
-    do:
-      fail = true
-    ctx.pagerClient = ClientHandle(stream: stream, pid: pid, config: config)
-  do:
-    fail = true
-  if fail:
-    quit(1)
+  ctx.pagerClient = ClientHandle(
+    stream: stream,
+    pid: pagerPid,
+    config: pagerConfig
+  )
   ctx.register(ctx.pagerClient)
   ctx.put(ctx.pagerClient)
   ctx.loaderLoop()
