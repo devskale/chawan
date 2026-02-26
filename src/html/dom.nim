@@ -6440,8 +6440,11 @@ proc getImageRect(this: HTMLImageElement): tuple[w, h: float64] =
     let objs = getClientRectsImpl(this, firstOnly = true, blockOnly = false)
     if objs.len > 0:
       return (objs[0].width, objs[0].height)
-  let width = float64(this.attrul(satWidth).get(uint32(this.bitmap.width)))
-  let height = float64(this.attrul(satHeight).get(uint32(this.bitmap.height)))
+  let bitmap = this.bitmap
+  if bitmap == nil:
+    return (0, 0)
+  let width = float64(this.attrul(satWidth).get(uint32(bitmap.width)))
+  let height = float64(this.attrul(satHeight).get(uint32(bitmap.height)))
   return (width, height)
 
 proc width(this: HTMLImageElement): uint32 {.jsfget.} =
