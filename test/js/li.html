@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<title>List item test</title>
+<div id=x>Fail</div>
+<ol id=ol>
+<li id=y>first
+<li id=z value=10>second
+<li id=a value=-1>third
+<li id=b value=2147483648>fourth
+<li id=c value=-2147483650>fourth
+</ol>
+<script src=asserts.js></script>
+<script>
+const y = document.getElementById("y");
+const z = document.getElementById("z");
+const a = document.getElementById("a");
+const b = document.getElementById("b");
+const c = document.getElementById("c");
+assertEquals(y.value, 0);
+assertEquals(z.value, 10);
+assertEquals(a.value, -1);
+assertEquals(b.value, 0);
+assertEquals(c.value, 0);
+document.getElementById("ol").remove();
+document.getElementById("x").textContent = "Success";
+</script>

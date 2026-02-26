@@ -539,7 +539,6 @@ type
   HTMLOListElement = ref object of HTMLElement
 
   HTMLLIElement* = ref object of HTMLElement
-    value* {.jsget.}: Option[int32]
 
   SheetElement = ref object of HTMLElement
     sheetHead: CSSStylesheet
@@ -932,6 +931,18 @@ proc makeb(attrname, funcname: StaticAtom; ts: varargs[TagType]):
 proc makeb(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
   makeb(name, name, ts)
 
+proc makel(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
+    ReflectEntryTag =
+  ReflectEntryTag(
+    tags: @ts,
+    e: ReflectEntry(
+      attrname: name,
+      funcname: name,
+      t: rtLong,
+      u: default
+    )
+  )
+
 proc makeul(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
     ReflectEntryTag =
   ReflectEntryTag(
@@ -1020,6 +1031,7 @@ const ReflectMap0 = [
   makes(satTarget, TAG_A, TAG_AREA, TAG_LABEL, TAG_LINK),
   makes(satHref, TAG_LINK),
   makes(satValue, TAG_BUTTON, TAG_DATA),
+  makel(satValue, TAG_LI),
   makeb(satRequired, TAG_INPUT, TAG_SELECT, TAG_TEXTAREA),
   makes(satName, TAG_A, TAG_INPUT, TAG_SELECT, TAG_TEXTAREA, TAG_META,
     TAG_IFRAME, TAG_FRAME, TAG_IMG, TAG_OBJECT, TAG_PARAM, TAG_OBJECT, TAG_MAP,
