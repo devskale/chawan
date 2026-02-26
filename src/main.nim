@@ -83,7 +83,7 @@ Options:
     -C, --config <file>         Override config path
     -I, --input-charset <enc>   Specify document charset
     -M, --monochrome            Set color-mode to 'monochrome'
-    -O, --display-charset <enc> Specify display charset
+    -O, --output-charset <enc>  Specify display charset
     -T, --type <type>           Specify content mime type
     -V, --visual                Visual startup mode
 """
