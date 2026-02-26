@@ -57981,7 +57981,7 @@ static JSValue js_typed_array_sort(JSContext *ctx, JSValueConst this_val,
             tsc.elt_size = elt_size;
             rqsort(array_idx, len, sizeof(array_idx[0]),
                    js_TA_cmp_generic, &tsc);
-            if (tsc.exception) {
+            if (tsc.exception || p->u.array.count < len) {
                 if (tsc.exception == 1)
                     goto fail;
                 /* detached typed array during the sort: no error */
