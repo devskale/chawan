@@ -816,7 +816,7 @@ proc imageLoaded(bc: RootRef) =
   if bc.window.loadedImageNum == bc.window.remoteImageNum:
     if bc.state == bsLoadingImages:
       bc.imagesLoaded()
-    else:
+    elif bc.state == bsLoaded:
       bc.maybeReshape()
 
 # Returns:
