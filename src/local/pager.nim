@@ -1276,14 +1276,10 @@ proc initBufferFrom(pager: Pager; init: BufferInit;
     charsetStack = init.charsetStack
   )
 
-proc bufferPackets(opaque: RootRef; stream: PosixStream) =
-  let loader = FileLoader(opaque)
-  loader.pollData.unregister(stream.fd)
-  loader.pollData.register(stream.fd, POLLIN or POLLOUT)
-
 proc addInterface(pager: Pager; init: BufferInit; stream: SocketStream;
     phandle: ProcessHandle): BufferInterface =
-  let iface = newBufferInterface(stream, bufferPackets, pager.loader, phandle,
+  stream.setBlocking(false)
+  let iface = newBufferInterface(stream, pager.loader, phandle,
     addr pager.attrs, init)
   pager.loader.register(iface, POLLIN)
   return iface
@@ -2461,14 +2457,8 @@ proc handleWrite(pager: Pager; fd: cint): bool =
     discard # ignore (see handleError)
   else:
     let iface = BufferInterface(pager.loader.get(fd))
-    # this might just do an unregister/register/unregister/register sequence,
-    # but with poll this is basically free so it's fine
-    pager.loader.pollData.unregister(fd)
-    pager.loader.pollData.register(fd, POLLIN)
     # if flushWrite errors out, then poll will notify us anyway
-    iface.stream.setBlocking(false)
     discard iface.flushWrite()
-    iface.stream.setBlocking(true)
   true
 
 proc handleError(pager: Pager; fd: cint): Opt[bool] =
