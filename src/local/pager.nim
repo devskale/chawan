@@ -1283,7 +1283,6 @@ proc bufferPackets(opaque: RootRef; stream: PosixStream) =
 
 proc addInterface(pager: Pager; init: BufferInit; stream: SocketStream;
     phandle: ProcessHandle): BufferInterface =
-  stream.setBlocking(false)
   let iface = newBufferInterface(stream, bufferPackets, pager.loader, phandle,
     addr pager.attrs, init)
   pager.loader.register(iface, POLLIN)
@@ -2467,7 +2466,9 @@ proc handleWrite(pager: Pager; fd: cint): bool =
     pager.loader.pollData.unregister(fd)
     pager.loader.pollData.register(fd, POLLIN)
     # if flushWrite errors out, then poll will notify us anyway
+    iface.stream.setBlocking(false)
     discard iface.flushWrite()
+    iface.stream.setBlocking(true)
   true
 
 proc handleError(pager: Pager; fd: cint): Opt[bool] =

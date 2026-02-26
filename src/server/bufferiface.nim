@@ -1107,8 +1107,16 @@ proc initPacketWriter(iface: BufferInterface; cmd: BufferCommand):
   result.swrite(cmd)
   result.swrite(iface.packetid)
 
+proc flush(iface: BufferInterface; w: var PacketWriter): bool =
+  if iface.dead:
+    return false
+  iface.stream.setBlocking(false)
+  let res = iface.packetBuffer.flush(w, iface.stream)
+  iface.stream.setBlocking(true)
+  res
+
 proc flush(ctx: JSContext; iface: BufferInterface; w: var PacketWriter): bool =
-  if iface.dead or not iface.packetBuffer.flush(w, iface.stream):
+  if not iface.flush(w):
     JS_ThrowTypeError(ctx, "buffer %d disconnected", cint(iface.phandle.process))
     return false
   return true
@@ -1124,7 +1132,7 @@ template withPacketWriter(iface: BufferInterface; cmd: BufferCommand;
     w, body, fallback: untyped) =
   var w = iface.initPacketWriter(cmd)
   body
-  if iface.dead or not iface.packetBuffer.flush(w, iface.stream):
+  if not iface.flush(w):
     fallback
 
 template withPacketWriterSync(iface: BufferInterface; cmd: BufferCommand;
