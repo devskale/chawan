@@ -6,8 +6,6 @@ import types/opt
 
 type
   DynStream* = ref object of RootObj
-    isend*: bool
-    closed: bool
 
 # Semantics of this function are those of POSIX read(3): that is, it
 # may return a result that is lower than `len`, and that does not mean
@@ -24,15 +22,8 @@ method write*(s: DynStream; buffer: pointer; len: int): int {.base.} =
   result = 0
   doAssert false
 
-method seek*(s: DynStream; off: int64): int64 {.base.} =
-  result = 0
-  doAssert false
-
 method sclose*(s: DynStream) {.base.} =
   doAssert false
-
-method flush*(s: DynStream): Opt[void] {.base.} =
-  ok()
 
 proc read*(s: DynStream; buffer: var openArray[uint8]): int {.inline.} =
   return s.read(addr buffer[0], buffer.len)
@@ -85,14 +76,12 @@ proc writeLoop*(s: DynStream; buffer: openArray[char]): Opt[void] =
     return s.writeLoop(unsafeAddr buffer[0], buffer.len)
   ok()
 
-proc setEnd(s: DynStream) =
-  assert not s.isend
-  s.isend = true
-
 type
   PosixStream* = ref object of DynStream
     fd*: cint
     blocking*: bool
+    isend*: bool
+    closed: bool
 
 proc readAll*(s: PosixStream; buffer: var string): bool =
   assert s.blocking
@@ -116,13 +105,14 @@ proc readAll*(s: PosixStream): string =
 method read*(s: PosixStream; buffer: pointer; len: int): int =
   let n = read(s.fd, buffer, len)
   if n == 0:
-    s.setEnd()
+    assert not s.isend
+    s.isend = true
   return n
 
 method write*(s: PosixStream; buffer: pointer; len: int): int =
   return write(s.fd, buffer, len)
 
-method setBlocking*(s: PosixStream; blocking: bool) {.base.} =
+proc setBlocking*(s: PosixStream; blocking: bool) =
   s.blocking = blocking
   let ofl = fcntl(s.fd, F_GETFL, 0)
   if blocking:
@@ -130,7 +120,7 @@ method setBlocking*(s: PosixStream; blocking: bool) {.base.} =
   else:
     discard fcntl(s.fd, F_SETFL, ofl or O_NONBLOCK)
 
-method seek*(s: PosixStream; off: int64): int64 =
+proc seek*(s: PosixStream; off: int64): int64 =
   return int64(lseek(s.fd, Off(off), SEEK_SET))
 
 method sclose*(s: PosixStream) =
@@ -328,9 +318,7 @@ proc setCloseOnExec*(ps: PosixStream) =
   let ofd = fcntl(ps.fd, F_GETFD)
   discard fcntl(ps.fd, ofd or F_SETFD, FD_CLOEXEC)
 
-type SocketStream* = ref object of PosixStream
-
-proc sendMsg*(s: SocketStream; buffer: openArray[uint8];
+proc sendMsg*(s: PosixStream; buffer: openArray[uint8];
     fds: openArray[cint]): int =
   assert buffer.len > 0
   var iov = IOVec(iov_base: unsafeAddr buffer[0], iov_len: csize_t(buffer.len))
@@ -351,7 +339,7 @@ proc sendMsg*(s: SocketStream; buffer: openArray[uint8];
     copyMem(CMSG_DATA(cmsg), unsafeAddr fds[0], fdSize)
   return sendmsg(SocketHandle(s.fd), addr hdr, 0)
 
-proc recvMsg*(s: SocketStream; buffer: var openArray[uint8];
+proc recvMsg*(s: PosixStream; buffer: var openArray[uint8];
     fdbuf: var openArray[cint]; numFds: var int): int =
   assert buffer.len > 0
   var iov = IOVec(iov_base: addr buffer[0], iov_len: csize_t(buffer.len))
@@ -389,12 +377,5 @@ proc recvMsg*(s: SocketStream; buffer: var openArray[uint8];
       assert false
     cmsg = CMSG_NXTHDR(addr hdr, cmsg)
   return n
-
-method seek*(s: SocketStream; off: int64): int64 =
-  result = 0
-  doAssert false
-
-proc newSocketStream*(fd: cint): SocketStream =
-  return SocketStream(fd: fd, blocking: true)
 
 {.pop.} # raises: []

@@ -1266,7 +1266,7 @@ proc initBufferFrom(pager: Pager; init: BufferInit;
     charsetStack = init.charsetStack
   )
 
-proc addInterface(pager: Pager; init: BufferInit; stream: SocketStream;
+proc addInterface(pager: Pager; init: BufferInit; stream: PosixStream;
     phandle: ProcessHandle): BufferInterface =
   stream.setBlocking(false)
   let iface = newBufferInterface(stream, pager.loader, phandle,
@@ -1284,7 +1284,7 @@ proc clone(pager: Pager; iface: BufferInterface; init: BufferInit; url: URL):
   if res.isErr:
     return nil
   let fd = sv[0]
-  let stream = newSocketStream(fd)
+  let stream = newPosixStream(fd)
   # add a reference to parent's cached source; it will be removed when the
   # buffer is deleted
   let loader = pager.loader

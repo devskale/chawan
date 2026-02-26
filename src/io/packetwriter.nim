@@ -75,7 +75,7 @@ proc flush*(w: var PacketWriter; stream: DynStream): bool =
     return false
   if w.fds.len > 0:
     w.fds.reverse()
-    let n = SocketStream(stream).sendMsg([0u8], w.fds)
+    let n = PosixStream(stream).sendMsg([0u8], w.fds)
     if n < 1:
       return false
   w.closeFds()
@@ -104,7 +104,7 @@ proc flush2(w: var PacketWriter; stream: PosixStream): FlushResult =
   w.buffer = @[]
   if w.fds.len > 0:
     w.fds.reverse()
-    let n = SocketStream(stream).sendMsg([0u8], w.fds)
+    let n = stream.sendMsg([0u8], w.fds)
     assert n != 0
     if n < 0:
       let e = errno

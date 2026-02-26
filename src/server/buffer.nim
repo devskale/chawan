@@ -720,7 +720,7 @@ proc cloneCmd(bc: BufferContext; handle: PagerHandle; r: var PacketReader;
     packetid: int): CommandResult =
   var newurl: URL
   r.sread(newurl)
-  let pstream = newSocketStream(r.recvFd())
+  let pstream = newPosixStream(r.recvFd())
   bc.addPagerHandle(pstream)
   let target = bc.document.findAnchor(newurl.hash)
   bc.document.setTarget(target)
@@ -1840,9 +1840,8 @@ proc cleanup(bc: BufferContext) =
 
 proc launchBuffer*(config: BufferConfig; url: URL; attrs: WindowAttributes;
     ishtml: bool; charsetStack: seq[Charset]; loader: FileLoader;
-    pstream, istream: SocketStream; urandom: PosixStream; cacheId: int;
-    contentType: string; linkHintChars: sink seq[uint32];
-    schemes: sink seq[string]) =
+    pstream, istream, urandom: PosixStream; cacheId: int; contentType: string;
+    linkHintChars: sink seq[uint32]; schemes: sink seq[string]) =
   let confidence = if config.charsetOverride == CHARSET_UNKNOWN:
     ccTentative
   else:

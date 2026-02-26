@@ -538,7 +538,7 @@ proc applyResponse*(init: BufferInit; response: Response;
   init.refreshMillis = refresh.n
 
 # BufferInterface
-proc newBufferInterface*(stream: SocketStream; loader: FileLoader;
+proc newBufferInterface*(stream: PosixStream; loader: FileLoader;
     phandle: ProcessHandle; attrsp: ptr WindowAttributes; init: BufferInit):
     BufferInterface =
   inc phandle.refc
@@ -1500,8 +1500,6 @@ proc readCanceled(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
 
 proc readSuccess(ctx: JSContext; iface: BufferInterface; s: string; fd: cint):
     JSValue {.jsfunc.} =
-  if iface.stream.flush().isErr:
-    return JS_UNDEFINED
   ctx.withPacketWriter iface, bcReadSuccess, w:
     w.swrite(s)
     let hasfd = fd != -1

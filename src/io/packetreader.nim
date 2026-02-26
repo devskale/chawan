@@ -47,7 +47,7 @@ proc initReader*(stream: DynStream; r: var PacketReader; len, nfds: int): bool =
     #TODO just use recvmsg for both?
     var dummy {.noinit.}: array[1, uint8]
     var numFds = 0
-    let stream = SocketStream(stream)
+    let stream = PosixStream(stream)
     let n = stream.recvMsg(dummy, r.fds, numFds)
     if n < dummy.len:
       return false
@@ -102,7 +102,6 @@ proc initPartialReader*(stream: PosixStream; pr: var PartialPacketReader):
   if pr.numFds < pr.r.fds.len:
     var dummy {.noinit.}: array[1, uint8]
     var numFds = 0
-    let stream = SocketStream(stream)
     let n = stream.recvMsg(dummy,
       pr.r.fds.toOpenArray(pr.numFds, pr.r.fds.high), numFds)
     if n < 0:

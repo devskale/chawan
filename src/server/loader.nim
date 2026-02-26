@@ -140,7 +140,7 @@ type
   LoaderContext = object
     pid: int
     pagerClient: ClientHandle
-    forkStream: SocketStream # handle to the fork server
+    forkStream: PosixStream # handle to the fork server
     config: LoaderConfig
     handleMap: seq[LoaderHandle]
     pollData: PollData
@@ -1488,7 +1488,7 @@ proc load(ctx: var LoaderContext; request: Request; client: ClientHandle;
       fail = true
       w.swrite(false)
   if not fail:
-    let stream = newSocketStream(pipev[1])
+    let stream = newPosixStream(pipev[1])
     stream.setBlocking(false)
     let credentials = config.includeCredentials(request, request.url)
     let handle = ctx.newInputHandle(stream, client, request.url, credentials)
@@ -1541,7 +1541,7 @@ proc addClientCmd(ctx: var LoaderContext; rclient: ClientHandle;
   var res = cmdrDone
   rclient.withPacketWriter w:
     if socketpair(AF_UNIX, SOCK_STREAM, IPPROTO_IP, sv) == 0:
-      let stream = newSocketStream(sv[0])
+      let stream = newPosixStream(sv[0])
       let client = ClientHandle(stream: stream, pid: pid, config: config)
       ctx.register(client)
       ctx.put(client)
@@ -1718,7 +1718,7 @@ proc teeCmd(ctx: var LoaderContext; rclient: ClientHandle; r: var PacketReader):
   var pipev {.noinit.}: array[2, cint]
   var res = cmdrDone
   if target != nil and outputIn != nil and pipe(pipev) == 0:
-    let ostream = newSocketStream(pipev[1])
+    let ostream = newPosixStream(pipev[1])
     ostream.setBlocking(false)
     let output = ctx.tee(outputIn, ostream, target)
     rclient.withPacketWriter w:
@@ -1949,7 +1949,7 @@ proc loaderLoop(ctx: var LoaderContext) =
     ctx.finishCycle()
   ctx.exitLoader()
 
-proc runFileLoader*(config: LoaderConfig; stream, forkStream: SocketStream;
+proc runFileLoader*(config: LoaderConfig; stream, forkStream: PosixStream;
     pagerPid: int; pagerConfig: LoaderClientConfig) =
   var ctx {.global.}: LoaderContext
   ctx = LoaderContext(

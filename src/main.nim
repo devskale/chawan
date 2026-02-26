@@ -300,14 +300,14 @@ proc forkForkServer(loaderSockVec: array[2, cint]; pagerPid: int): ForkServer =
     discard close(pipeFdErr[0]) # close read
     discard close(sockVec[0])
     discard close(loaderSockVec[0])
-    let controlStream = newSocketStream(sockVec[1])
-    let loaderStream = newSocketStream(loaderSockVec[1])
+    let controlStream = newPosixStream(sockVec[1])
+    let loaderStream = newPosixStream(loaderSockVec[1])
     runForkServer(controlStream, loaderStream, pagerPid)
     exitnow(1)
   else:
     discard close(sockVec[1])
     discard close(loaderSockVec[1])
-    let stream = newSocketStream(sockVec[0])
+    let stream = newPosixStream(sockVec[0])
     stream.setCloseOnExec()
     let estream = newPosixStream(pipeFdErr[0])
     estream.setCloseOnExec()
@@ -426,7 +426,7 @@ proc main() =
   var ctx = ParamParseContext(jsctx: jsctx, params: commandLineParams(), i: 0)
   if ctx.parse().isErr:
     die(jsctx.getExceptionMsg())
-  let loaderControl = newSocketStream(loaderSockVec[0])
+  let loaderControl = newPosixStream(loaderSockVec[0])
   loaderControl.setCloseOnExec()
   let loader = newFileLoader(pagerPid, loaderControl)
   let client = newClient(forkserver, loader, jsctx, urandom)
