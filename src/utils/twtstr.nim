@@ -534,6 +534,14 @@ proc stripAndCollapse*(s: openArray[char]): string =
     space = cspace
   move(res)
 
+proc until*(s: openArray[char]; cc: char; starti = 0): string =
+  result = ""
+  for i in starti ..< s.len:
+    let c = s[i]
+    if c == cc:
+      break
+    result &= c
+
 proc until*(s: openArray[char]; cc: set[char]; starti = 0): string =
   result = ""
   for i in starti ..< s.len:
@@ -541,6 +549,14 @@ proc until*(s: openArray[char]; cc: set[char]; starti = 0): string =
     if c in cc:
       break
     result &= c
+
+proc untilLower*(s: openArray[char]; cc: char; starti = 0): string =
+  result = ""
+  for i in starti ..< s.len:
+    let c = s[i]
+    if c == cc:
+      break
+    result &= c.toLowerAscii()
 
 proc untilLower*(s: openArray[char]; cc: set[char]; starti = 0): string =
   result = ""
@@ -550,11 +566,11 @@ proc untilLower*(s: openArray[char]; cc: set[char]; starti = 0): string =
       break
     result &= c.toLowerAscii()
 
-proc until*(s: openArray[char]; c: char; starti = 0): string =
-  return s.until({c}, starti)
-
-proc untilLower*(s: openArray[char]; c: char; starti = 0): string =
-  return s.untilLower({c}, starti)
+proc after*(s: string; c: char): string =
+  let i = s.find(c)
+  if i != -1:
+    return s.substr(i + 1)
+  return ""
 
 proc after*(s: string; c: set[char]): string =
   let i = s.find(c)
@@ -562,29 +578,29 @@ proc after*(s: string; c: set[char]): string =
     return s.substr(i + 1)
   return ""
 
-proc after*(s: string; c: char): string = s.after({c})
-
-proc afterLast*(s: string; c: set[char]; n = 1): string =
-  var j = 0
-  for i in countdown(s.high, 0):
-    if s[i] in c:
-      inc j
-      if j == n:
-        return s.substr(i + 1)
+proc afterLast*(s: string; c: char): string =
+  let i = s.rfind(c)
+  if i >= 0:
+    return s.substr(i + 1)
   return s
 
-proc afterLast*(s: string; c: char; n = 1): string = s.afterLast({c}, n)
-
-proc untilLast*(s: string; c: set[char]; n = 1): string =
-  var j = 0
-  for i in countdown(s.high, 0):
-    if s[i] in c:
-      inc j
-      if j == n:
-        return s.substr(0, i)
+proc afterLast*(s: string; c: set[char]): string =
+  let i = s.rfind(c)
+  if i >= 0:
+    return s.substr(i + 1)
   return s
 
-proc untilLast*(s: string; c: char; n = 1): string = s.untilLast({c}, n)
+proc untilLast*(s: string; c: char): string =
+  let i = s.rfind(c)
+  if i >= 0:
+    return s.substr(0, i - 1)
+  return s
+
+proc untilLast*(s: string; c: set[char]): string =
+  let i = s.rfind(c)
+  if i >= 0:
+    return s.substr(0, i - 1)
+  return s
 
 proc snprintf(str: cstring; size: csize_t; format: cstring): cint
   {.header: "<stdio.h>", importc, varargs}
