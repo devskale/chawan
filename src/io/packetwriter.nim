@@ -27,9 +27,6 @@ type
   PacketBuffer* = object
     ws: seq[PacketWriter]
     wi: int # index into ws
-    opaque: RootRef
-    register: BufferPacketFun
-    registered*: bool
 
 proc swrite*(w: var PacketWriter; n: SomeNumber)
 proc swrite*[T](w: var PacketWriter; s: set[T])
@@ -57,9 +54,8 @@ proc initPacketWriter*(): PacketWriter =
     bufLen: InitLen
   )
 
-proc initPacketBuffer*(register: BufferPacketFun; opaque: RootRef):
-    PacketBuffer =
-  PacketBuffer(register: register, opaque: opaque)
+proc initPacketBuffer*(): PacketBuffer =
+  PacketBuffer()
 
 proc writeSize*(w: var PacketWriter) =
   # subtract the length field's size
@@ -79,14 +75,14 @@ proc flush*(w: var PacketWriter; stream: DynStream): bool =
     return false
   if w.fds.len > 0:
     w.fds.reverse()
-    let n = SocketStream(stream).sendMsg([0u8], w.fds)
+    let n = PosixStream(stream).sendMsg([0u8], w.fds)
     if n < 1:
       return false
   w.closeFds()
   w.bufLen = 0
   true
 
-type FlushResult = enum
+type FlushResult* = enum
   frEOF, frBuffer, frDone
 
 proc flush2(w: var PacketWriter; stream: PosixStream): FlushResult =
@@ -108,7 +104,7 @@ proc flush2(w: var PacketWriter; stream: PosixStream): FlushResult =
   w.buffer = @[]
   if w.fds.len > 0:
     w.fds.reverse()
-    let n = SocketStream(stream).sendMsg([0u8], w.fds)
+    let n = stream.sendMsg([0u8], w.fds)
     assert n != 0
     if n < 0:
       let e = errno
@@ -120,24 +116,18 @@ proc flush2(w: var PacketWriter; stream: PosixStream): FlushResult =
     w.closeFds()
   frDone
 
-proc flush*(b: var PacketBuffer; stream: PosixStream): bool =
-  if b.registered:
-    return true
+proc flush*(b: var PacketBuffer; stream: PosixStream): FlushResult =
   while b.wi < b.ws.len:
-    case b.ws[b.wi].flush2(stream)
-    of frDone:
-      inc b.wi
-    of frBuffer:
-      b.register(b.opaque, stream)
-      b.registered = true
-      return true
-    of frEOF: return false
+    let r = b.ws[b.wi].flush2(stream)
+    if r != frDone:
+      return r
+    inc b.wi
   b.wi = 0
   b.ws.setLen(0)
-  true
+  frDone
 
 proc flush*(b: var PacketBuffer; w: var PacketWriter; stream: PosixStream):
-    bool =
+    FlushResult =
   w.writeSize()
   b.ws.add(move(w))
   b.flush(stream)
@@ -178,9 +168,7 @@ proc swrite*[T: enum](w: var PacketWriter; x: T) =
   w.swrite(int(x))
 
 proc swrite*[T](w: var PacketWriter; s: set[T]) =
-  w.swrite(s.card)
-  for e in s:
-    w.swrite(e)
+  w.writeData(unsafeAddr s, sizeof(s))
 
 proc swrite*(w: var PacketWriter; s: string) =
   w.swrite(s.len)

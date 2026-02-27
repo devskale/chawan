@@ -1,3 +1,5 @@
+test
+one
 atest 
 [48;2;0;128;0mbtest ctest[49m
 dtest
@@ -5,7 +7,7 @@ next
 atest [48;2;0;128;0mbtest ctest[49m
 dtest
 atest [48;2;0;128;0mbtest ctest[49m dtest
-test1 
+test1
 [48;2;0;128;0mtest2 test3[49mtest
 test4
 test 

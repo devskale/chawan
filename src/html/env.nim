@@ -20,7 +20,6 @@ import html/xmlhttprequest
 import io/chafile
 import io/console
 import io/dynstream
-import io/promise
 import io/timeout
 import monoucha/fromjs
 import monoucha/jsbind
@@ -236,18 +235,6 @@ proc finalize(rt: JSRuntime; window: Window) {.jsfin.} =
 proc mark(rt: JSRuntime; window: Window; markFunc: JS_MarkFunc) {.jsmark.} =
   for it in window.weakMap:
     JS_MarkValue(rt, it, markFunc)
-
-proc isSameOrigin(window: Window; origin: Origin): bool =
-  if window.dangerAlwaysSameOrigin: # for client
-    return true
-  return window.settings.origin.isSameOrigin(origin)
-
-proc fetch0(window: Window; input: JSRequest): FetchPromise =
-  #TODO cors requests?
-  if input.request.url.schemeType != stData and
-      not window.isSameOrigin(input.request.url.origin):
-    return newResolvedPromise[Response](nil)
-  return window.loader.fetch(input.request)
 
 proc throwNetworkError(ctx: JSContext): JSValue =
   return JS_ThrowTypeError(ctx,
@@ -609,7 +596,6 @@ proc newWindow*(scripting: ScriptingMode; images, styling, autofocus: bool;
   return window
 
 # Forward declaration hack
-fetchImpl = fetch0
 getConsoleImpl = getConsole
 
 {.pop.} # raises: []

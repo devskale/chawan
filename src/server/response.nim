@@ -6,7 +6,6 @@ import chagashi/charset
 import chagashi/decoder
 import config/mimetypes
 import io/dynstream
-import io/promise
 import monoucha/fromjs
 import monoucha/jsbind
 import monoucha/jsutils
@@ -33,6 +32,9 @@ type
   ResponseFlag* = enum
     rfAborted
 
+  ResponseFinish* = proc(response: Response; success: bool) {.
+    nimcall, raises: [].}
+
   Response* = ref object
     body*: PosixStream
     flags*: set[ResponseFlag]
@@ -43,7 +45,7 @@ type
     url*: URL #TODO should be urllist?
     resumeFun*: proc(outputId: int)
     onRead*: proc(response: Response) {.nimcall, raises: [].}
-    onFinish*: proc(response: Response; success: bool) {.nimcall, raises: [].}
+    onFinish*: ResponseFinish
     outputId*: int
     opaque*: RootRef
 
@@ -51,24 +53,18 @@ type
     isOk*: bool
     get*: string
 
-  FetchPromise* = Promise[Response] # response may be nil
-
   BlobFinish* = proc(opaque: BlobOpaque; blob: Blob) {.nimcall, raises: [].}
 
-  BlobOpaque = ref object of RootObj
+  BlobOpaque* = ref object of RootObj
     p: pointer
     len: int
     size: int
-    finish: BlobFinish
-    contentType: string
+    contentType*: string
 
   JSBlobOpaque = ref object of BlobOpaque
     ctx: JSContext
     resolve: pointer # JSObject *
     reject: pointer # JSObject *
-
-  NimBlobOpaque = ref object of BlobOpaque
-    opaque: RootRef
 
 jsDestructor(Response)
 
@@ -195,7 +191,7 @@ proc onReadBlob(response: Response) =
       break
     opaque.len += n
 
-proc onFinishBlob(response: Response; success: bool) =
+proc onFinishBlob*(response: Response; success: bool): Blob =
   let opaque = BlobOpaque(response.opaque)
   if success:
     let p = opaque.p
@@ -204,43 +200,27 @@ proc onFinishBlob(response: Response; success: bool) =
       newEmptyBlob(opaque.contentType)
     else:
       newBlob(p, opaque.len, opaque.contentType, deallocBlob)
-    opaque.finish(opaque, blob)
-  else:
-    if opaque.p != nil:
-      dealloc(opaque.p)
-      opaque.p = nil
-    opaque.finish(opaque, nil)
+    return blob
+  if opaque.p != nil:
+    dealloc(opaque.p)
+    opaque.p = nil
+  return nil
 
 proc blob*(response: Response; opaque: BlobOpaque) =
+  response.opaque = opaque
   if response.bodyUsed:
-    opaque.finish(opaque, nil)
+    response.onFinish(response, false)
     return
   if response.body == nil:
     response.bodyUsed = true
-    opaque.finish(opaque, newEmptyBlob())
+    response.onFinish(response, true)
     return
   opaque.contentType = response.getContentType()
   opaque.p = alloc(BufferSize)
   opaque.size = BufferSize
-  response.opaque = opaque
   response.onRead = onReadBlob
-  response.onFinish = onFinishBlob
   response.bodyUsed = true
   response.resume()
-
-proc legacyBlobFinish(opaque: BlobOpaque; blob: Blob) =
-  let opaque = NimBlobOpaque(opaque)
-  let promise = Promise[Blob](opaque.opaque)
-  promise.resolve(blob)
-
-proc blob*(response: Response): Promise[Blob] =
-  let promise = Promise[Blob]()
-  let opaque = NimBlobOpaque(
-    finish: legacyBlobFinish,
-    opaque: promise
-  )
-  response.blob(opaque)
-  return promise
 
 proc jsFinish0(opaque: JSBlobOpaque; val: JSValue) =
   let ctx = opaque.ctx
@@ -258,8 +238,9 @@ proc jsFinish0(opaque: JSBlobOpaque; val: JSValue) =
   JS_FreeValue(ctx, reject)
   JS_FreeContext(ctx)
 
-proc jsBlobFinish(opaque: BlobOpaque; blob: Blob) =
-  let opaque = JSBlobOpaque(opaque)
+proc jsBlobFinish(response: Response; success: bool) =
+  let blob = response.onFinishBlob(success)
+  let opaque = JSBlobOpaque(response.opaque)
   let ctx = opaque.ctx
   let val = if blob != nil:
     ctx.toJS(blob)
@@ -267,7 +248,8 @@ proc jsBlobFinish(opaque: BlobOpaque; blob: Blob) =
     JS_ThrowTypeError(ctx, "error reading response body")
   jsFinish0(opaque, val)
 
-proc blob0(ctx: JSContext; response: Response; finish: BlobFinish): JSValue =
+proc blob0(ctx: JSContext; response: Response; finish: ResponseFinish):
+    JSValue =
   var funs {.noinit.}: array[2, JSValue]
   let res = ctx.newPromiseCapability(funs)
   if JS_IsException(res):
@@ -275,24 +257,18 @@ proc blob0(ctx: JSContext; response: Response; finish: BlobFinish): JSValue =
   let opaque = JSBlobOpaque(
     ctx: JS_DupContext(ctx),
     resolve: JS_VALUE_GET_PTR(funs[0]),
-    reject: JS_VALUE_GET_PTR(funs[1]),
-    finish: finish
+    reject: JS_VALUE_GET_PTR(funs[1])
   )
+  response.onFinish = finish
   response.blob(opaque)
   return res
 
 proc blob(ctx: JSContext; response: Response): JSValue {.jsfunc.} =
   return ctx.blob0(response, jsBlobFinish)
 
-proc text*(response: Response): Promise[TextResult] =
-  return response.blob().then(proc(blob: Blob): TextResult =
-    if blob == nil:
-      return TextResult.err()
-    TextResult.ok(blob.toOpenArray().toValidUTF8())
-  )
-
-proc jsTextFinish(opaque: BlobOpaque; blob: Blob) =
-  let opaque = JSBlobOpaque(opaque)
+proc onFinishText(response: Response; success: bool) =
+  let blob = response.onFinishBlob(success)
+  let opaque = JSBlobOpaque(response.opaque)
   let ctx = opaque.ctx
   let val = if blob != nil:
     ctx.toJS(blob.toOpenArray().toValidUTF8())
@@ -301,39 +277,11 @@ proc jsTextFinish(opaque: BlobOpaque; blob: Blob) =
   jsFinish0(opaque, val)
 
 proc text(ctx: JSContext; response: Response): JSValue {.jsfunc.} =
-  return ctx.blob0(response, jsTextFinish)
+  return ctx.blob0(response, onFinishText)
 
-proc cssDecode(iq: openArray[char]; fallback: Charset): string =
-  var charset = fallback
-  var offset = 0
-  const charsetRule = "@charset \""
-  if iq.startsWith("\xFE\xFF"):
-    charset = CHARSET_UTF_16_BE
-    offset = 2
-  elif iq.startsWith("\xFF\xFE"):
-    charset = CHARSET_UTF_16_LE
-    offset = 2
-  elif iq.startsWith("\xEF\xBB\xBF"):
-    charset = CHARSET_UTF_8
-    offset = 3
-  elif iq.startsWith(charsetRule):
-    let s = iq.toOpenArray(charsetRule.len, min(1024, iq.high)).until('"')
-    let n = charsetRule.len + s.len
-    if n >= 0 and n + 1 < iq.len and iq[n] == '"' and iq[n + 1] == ';':
-      charset = getCharset(s)
-      if charset in {CHARSET_UTF_16_LE, CHARSET_UTF_16_BE}:
-        charset = CHARSET_UTF_8
-  iq.toOpenArray(offset, iq.high).decodeAll(charset)
-
-proc cssText*(response: Response; fallback: Charset): Promise[TextResult] =
-  return response.blob().then(proc(blob: Blob): TextResult =
-    if blob == nil:
-      return TextResult.err()
-    TextResult.ok(blob.toOpenArray().cssDecode(fallback))
-  )
-
-proc jsJsonFinish(opaque: BlobOpaque; blob: Blob) =
-  let opaque = JSBlobOpaque(opaque)
+proc onFinishJSON(response: Response; success: bool) =
+  let blob = response.onFinishBlob(success)
+  let opaque = JSBlobOpaque(response.opaque)
   let ctx = opaque.ctx
   let val = if blob != nil:
     let s = blob.toOpenArray().toValidUTF8()
@@ -343,7 +291,7 @@ proc jsJsonFinish(opaque: BlobOpaque; blob: Blob) =
   jsFinish0(opaque, val)
 
 proc json(ctx: JSContext; this: Response): JSValue {.jsfunc.} =
-  return ctx.blob0(this, jsJsonFinish)
+  return ctx.blob0(this, onFinishJSON)
 
 proc addResponseModule*(ctx: JSContext): JSClassID =
   return ctx.registerType(Response)

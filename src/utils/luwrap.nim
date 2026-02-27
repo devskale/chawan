@@ -7,7 +7,7 @@ import monoucha/libregexp
 import utils/twtstr
 
 proc passRealloc(opaque, p: pointer; size: csize_t): pointer {.cdecl.} =
-  return realloc(p, size)
+  return realloc(p, cast[int](size))
 
 proc normalize*(rs: openArray[uint32]; form = UNICODE_NFC): seq[uint32] =
   if rs.len <= 0:
@@ -18,7 +18,7 @@ proc normalize*(rs: openArray[uint32]; form = UNICODE_NFC): seq[uint32] =
     passRealloc)
   if out_len <= 0:
     return @[]
-  var rs = newSeqUninit[uint32](out_len)
+  var rs = newSeqUninit[uint32](int(out_len))
   copyMem(addr rs[0], outbuf, out_len * sizeof(uint32))
   dealloc(outbuf)
   return rs

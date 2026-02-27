@@ -7,10 +7,17 @@ import io/dynstream
 import types/color
 import types/opt
 
-type PacketReader* = object
-  buffer: seq[uint8]
-  bufIdx: int
-  fds: seq[cint]
+type
+  PacketReader* = object
+    buffer: seq[uint8]
+    bufIdx: int
+    fds: seq[cint]
+
+  PartialPacketReader* = object
+    idx: int
+    numFds: int
+    lens: array[2 * sizeof(int), uint8]
+    r*: PacketReader
 
 proc sread*(r: var PacketReader; n: var SomeNumber)
 proc sread*[T](r: var PacketReader; s: var set[T])
@@ -36,10 +43,11 @@ proc initReader*(stream: DynStream; r: var PacketReader; len, nfds: int): bool =
   if stream.readLoop(r.buffer).isErr:
     return false
   if nfds > 0:
-    # bufwriter added ancillary data.
+    # packetwriter added ancillary data.
+    #TODO just use recvmsg for both?
     var dummy {.noinit.}: array[1, uint8]
     var numFds = 0
-    let stream = SocketStream(stream)
+    let stream = PosixStream(stream)
     let n = stream.recvMsg(dummy, r.fds, numFds)
     if n < dummy.len:
       return false
@@ -54,6 +62,58 @@ proc initPacketReader*(stream: DynStream; r: var PacketReader): bool =
   if stream.readLoop(addr len[0], sizeof(len)).isErr:
     return false
   return stream.initReader(r, len[0], len[1])
+
+type PartialReaderCode* = enum
+  prcEOF, prcDone, prcBuffer
+
+proc initPartialReader*(stream: PosixStream; pr: var PartialPacketReader):
+    PartialReaderCode =
+  if pr.r.bufIdx == pr.r.buffer.len and pr.r.fds.len == 0:
+    # reset
+    pr.idx = 0
+    pr.numFds = 0
+  if pr.idx < pr.lens.len:
+    let n = stream.read(addr pr.lens[pr.idx], pr.lens.len - pr.idx)
+    if n < 0:
+      let e = errno
+      if e == EAGAIN or e == EWOULDBLOCK or e == EINTR:
+        return prcBuffer
+      return prcEOF
+    pr.idx += n
+    if pr.idx < pr.lens.len:
+      return prcBuffer
+    var lens {.noinit.}: array[2, int]
+    copyMem(addr lens[0], addr pr.lens[0], sizeof(lens))
+    pr.r = PacketReader(
+      buffer: newSeqUninit[uint8](lens[0]),
+      fds: newSeqUninit[cint](lens[1])
+    )
+  let dataIdx = pr.idx - pr.lens.len
+  if dataIdx < pr.r.buffer.len:
+    let n = stream.read(pr.r.buffer.toOpenArray(dataIdx, pr.r.buffer.high))
+    if n < 0:
+      let e = errno
+      if e == EAGAIN or e == EWOULDBLOCK or e == EINTR:
+        return prcBuffer
+      return prcEOF
+    pr.idx += n
+    if pr.idx - pr.lens.len < pr.r.buffer.len:
+      return prcBuffer
+  if pr.numFds < pr.r.fds.len:
+    var dummy {.noinit.}: array[1, uint8]
+    var numFds = 0
+    let n = stream.recvMsg(dummy,
+      pr.r.fds.toOpenArray(pr.numFds, pr.r.fds.high), numFds)
+    if n < 0:
+      let e = errno
+      if e == EAGAIN or e == EWOULDBLOCK or e == EINTR:
+        return prcBuffer
+    if n <= 0:
+      return prcEOF
+    pr.numFds += numFds
+    if pr.numFds < pr.r.fds.len:
+      return prcBuffer
+  return prcDone
 
 proc assertEmpty(r: var PacketReader) =
   assert r.bufIdx == r.buffer.len and r.fds.len == 0
@@ -81,6 +141,10 @@ proc readData*(r: var PacketReader; buffer: pointer; len: int) =
 proc recvFd*(r: var PacketReader): cint =
   return r.fds.pop()
 
+proc closeFds*(r: var PacketReader) =
+  for fd in r.fds:
+    discard close(fd)
+
 proc sread*(r: var PacketReader; n: var SomeNumber) =
   n = 0
   r.readData(addr n, sizeof(n))
@@ -91,13 +155,7 @@ proc sread*[T: enum](r: var PacketReader; x: var T) =
   x = cast[T](i)
 
 proc sread*[T](r: var PacketReader; s: var set[T]) =
-  var len {.noinit.}: int
-  r.sread(len)
-  s = {}
-  for i in 0 ..< len:
-    var x: T
-    r.sread(x)
-    s.incl(x)
+  r.readData(addr s, sizeof(s))
 
 proc sread*(r: var PacketReader; s: var string) =
   var len {.noinit.}: int

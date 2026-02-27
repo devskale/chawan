@@ -24,7 +24,6 @@ import io/dynstream
 import io/packetreader
 import io/packetwriter
 import io/poll
-import io/promise
 import io/timeout
 import local/lineEdit
 import local/select
@@ -336,17 +335,6 @@ proc initCookieStream(opaque: RootRef; response: Response) =
   response.onFinish = onFinishCookieStream
   response.resume()
 
-proc initLoader(pager: Pager) =
-  let clientConfig = LoaderClientConfig(
-    defaultHeaders: pager.config.network.defaultHeaders,
-    proxy: pager.config.network.proxy,
-    allowAllSchemes: true
-  )
-  let loader = pager.loader
-  discard loader.addClient(loader.clientPid, clientConfig, isPager = true)
-  let request = newRequest("about:cookie-stream")
-  loader.fetch(request, initCookieStream, pager)
-
 proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
   return js_strdup(ctx, name)
@@ -396,7 +384,8 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
   let rt = JS_GetRuntime(ctx)
   JS_SetModuleLoaderFunc(rt, normalizeModuleName, loadJSModule, nil)
   JS_SetInterruptHandler(rt, interruptHandler, nil)
-  pager.initLoader()
+  let request = newRequest("about:cookie-stream")
+  pager.loader.fetch(request, initCookieStream, pager)
   block history:
     let hist = newHistory(pager.config.external.historySize, getTime().toUnix())
     let ps = newPosixStream($pager.config.external.historyFile)
@@ -891,6 +880,125 @@ proc getTempFile(pager: Pager; ext = ""): string {.jsfunc.} =
     result &= ext
   inc pager.tmpfSeq
 
+type CachedImageEnv = ref object of RootObj
+  pager: Pager
+  cachedImage: CachedImage
+  iface: BufferInterface
+  cacheId: int
+
+proc loadCachedImage3(opaque: RootRef; response: Response) =
+  let env = CachedImageEnv(opaque)
+  let pager = env.pager
+  let cachedImage = env.cachedImage
+  let loader = pager.loader
+  # remove previous step
+  loader.removeCachedItem(env.cacheId)
+  if response == nil:
+    return
+  loader.close(response)
+  let cacheId = response.outputId
+  if cachedImage.state == cisCanceled:
+    loader.removeCachedItem(cacheId)
+    return
+  let ps = loader.openCachedItem(cacheId)
+  if ps == nil:
+    loader.removeCachedItem(cacheId)
+    return
+  let mem = ps.mmap()
+  ps.sclose()
+  if mem == nil:
+    loader.removeCachedItem(env.cacheId)
+    return
+  let blob = newBlob(mem.p, mem.len, "image/x-sixel",
+    (proc(opaque, p: pointer) =
+      deallocMem(cast[MaybeMappedMemory](opaque))
+    ), mem
+  )
+  env.iface.queueDraw()
+  cachedImage.data = blob
+  cachedImage.state = cisLoaded
+  cachedImage.cacheId = cacheId
+  cachedImage.transparent =
+    response.headers.getFirst("Cha-Image-Sixel-Transparent") == "1"
+  let plens = response.headers.getFirst("Cha-Image-Sixel-Prelude-Len")
+  cachedImage.preludeLen = parseIntP(plens).get(0)
+
+proc loadCachedImage2(env: CachedImageEnv; response: Response) =
+  let pager = env.pager
+  let cachedImage = env.cachedImage
+  if response == nil:
+    return
+  let cacheId = response.outputId
+  env.cacheId = cacheId
+  let loader = pager.loader
+  if cachedImage.state == cisCanceled:
+    loader.removeCachedItem(cacheId)
+    return
+  let headers = newHeaders(hgRequest, {
+    "Cha-Image-Dimensions": $cachedImage.width & 'x' & $cachedImage.height
+  })
+  var url: URL = nil
+  case pager.term.imageMode
+  of imSixel:
+    url = parseURL0("img-codec+x-sixel:encode")
+    headers.add("Cha-Image-Sixel-Halfdump", "1")
+    headers.add("Cha-Image-Sixel-Palette", $pager.term.sixelRegisterNum)
+    headers.add("Cha-Image-Offset", $cachedImage.offx & 'x' & $cachedImage.erry)
+    headers.add("Cha-Image-Crop-Width", $cachedImage.dispw)
+  of imKitty:
+    url = parseURL0("img-codec+png:encode")
+  of imNone: assert false
+  let request = newRequest(
+    url,
+    httpMethod = hmPost,
+    headers = headers,
+    body = RequestBody(t: rbtCache, cacheId: cacheId),
+    tocache = true
+  )
+  loader.fetch(request, loadCachedImage3, env)
+  loader.close(response)
+
+proc loadCachedImageResize(opaque: RootRef; response: Response) =
+  let env = CachedImageEnv(opaque)
+  # we must remove the previous cached item, but only after resize is done
+  env.pager.loader.removeCachedItem(env.cacheId)
+  env.loadCachedImage2(response)
+
+proc loadCachedImage0(opaque: RootRef; response: Response) =
+  let env = CachedImageEnv(opaque)
+  let pager = env.pager
+  let cachedImage = env.cachedImage
+  let bmp = cachedImage.bmp
+  # remove previous step
+  pager.loader.removeCachedItem(bmp.cacheId)
+  if response == nil:
+    return
+  let cacheId = response.outputId # set by loader in tocache
+  if cachedImage.state == cisCanceled: # container is no longer visible
+    pager.loader.removeCachedItem(cacheId)
+    return
+  if cachedImage.width == bmp.width and cachedImage.height == bmp.height:
+    # skip resize
+    env.loadCachedImage2(response)
+    return
+  # resize
+  # use a temp file, so that img-resize can mmap its output
+  let headers = newHeaders(hgRequest, {
+    "Cha-Image-Dimensions": $bmp.width & 'x' & $bmp.height,
+    "Cha-Image-Target-Dimensions": $cachedImage.width & 'x' &
+      $cachedImage.height
+  })
+  let request = newRequest(
+    "cgi-bin:resize",
+    httpMethod = hmPost,
+    headers = headers,
+    body = RequestBody(t: rbtCache, cacheId: cacheId),
+    tocache = true
+  )
+  env.cacheId = cacheId
+  pager.loader.fetch(request, loadCachedImageResize, env)
+  pager.loader.close(response)
+
 proc loadCachedImage(pager: Pager; iface: BufferInterface; bmp: NetworkBitmap;
     width, height, offx, erry, dispw: int) =
   let cachedImage = CachedImage(
@@ -905,108 +1013,18 @@ proc loadCachedImage(pager: Pager; iface: BufferInterface; bmp: NetworkBitmap;
       iface.process):
     pager.alert("Error: received incorrect cache ID from buffer")
     return
-  let imageMode = pager.term.imageMode
-  pager.loader.fetch(newRequest(
+  let request = newRequest(
     "img-codec+" & bmp.contentType.after('/') & ":decode",
     httpMethod = hmPost,
     body = RequestBody(t: rbtCache, cacheId: bmp.cacheId),
     tocache = true
-  )).then(proc(response: Response): FetchPromise =
-    # remove previous step
-    pager.loader.removeCachedItem(bmp.cacheId)
-    if response == nil:
-      return nil
-    let cacheId = response.outputId # set by loader in tocache
-    if cachedImage.state == cisCanceled: # container is no longer visible
-      pager.loader.removeCachedItem(cacheId)
-      return nil
-    if width == bmp.width and height == bmp.height:
-      # skip resize
-      return newResolvedPromise(response)
-    # resize
-    # use a temp file, so that img-resize can mmap its output
-    let headers = newHeaders(hgRequest, {
-      "Cha-Image-Dimensions": $bmp.width & 'x' & $bmp.height,
-      "Cha-Image-Target-Dimensions": $width & 'x' & $height
-    })
-    let p = pager.loader.fetch(newRequest(
-      "cgi-bin:resize",
-      httpMethod = hmPost,
-      headers = headers,
-      body = RequestBody(t: rbtCache, cacheId: cacheId),
-      tocache = true
-    )).then(proc(res: Response): FetchPromise =
-      # ugh. I must remove the previous cached item, but only after
-      # resize is done...
-      pager.loader.removeCachedItem(cacheId)
-      return newResolvedPromise(res)
-    )
-    pager.loader.close(response)
-    return p
-  ).then(proc(response: Response) =
-    if response == nil:
-      return
-    let cacheId = response.outputId
-    if cachedImage.state == cisCanceled:
-      pager.loader.removeCachedItem(cacheId)
-      return
-    let headers = newHeaders(hgRequest, {
-      "Cha-Image-Dimensions": $width & 'x' & $height
-    })
-    var url: URL = nil
-    case imageMode
-    of imSixel:
-      url = parseURL0("img-codec+x-sixel:encode")
-      headers.add("Cha-Image-Sixel-Halfdump", "1")
-      headers.add("Cha-Image-Sixel-Palette", $pager.term.sixelRegisterNum)
-      headers.add("Cha-Image-Offset", $offx & 'x' & $erry)
-      headers.add("Cha-Image-Crop-Width", $dispw)
-    of imKitty:
-      url = parseURL0("img-codec+png:encode")
-    of imNone: assert false
-    let request = newRequest(
-      url,
-      httpMethod = hmPost,
-      headers = headers,
-      body = RequestBody(t: rbtCache, cacheId: cacheId),
-      tocache = true
-    )
-    let r = pager.loader.fetch(request)
-    pager.loader.close(response)
-    r.then(proc(response: Response) =
-      # remove previous step
-      pager.loader.removeCachedItem(cacheId)
-      if response == nil:
-        return
-      pager.loader.close(response)
-      let cacheId = response.outputId
-      if cachedImage.state == cisCanceled:
-        pager.loader.removeCachedItem(cacheId)
-        return
-      let ps = pager.loader.openCachedItem(cacheId)
-      if ps == nil:
-        pager.loader.removeCachedItem(cacheId)
-        return
-      let mem = ps.mmap()
-      ps.sclose()
-      if mem == nil:
-        pager.loader.removeCachedItem(cacheId)
-        return
-      let blob = newBlob(mem.p, mem.len, "image/x-sixel",
-        (proc(opaque, p: pointer) =
-          deallocMem(cast[MaybeMappedMemory](opaque))
-        ), mem
-      )
-      iface.queueDraw()
-      cachedImage.data = blob
-      cachedImage.state = cisLoaded
-      cachedImage.cacheId = cacheId
-      cachedImage.transparent =
-        response.headers.getFirst("Cha-Image-Sixel-Transparent") == "1"
-      let plens = response.headers.getFirst("Cha-Image-Sixel-Prelude-Len")
-      cachedImage.preludeLen = parseIntP(plens).get(0)
-    )
   )
+  let opaque = CachedImageEnv(
+    pager: pager,
+    cachedImage: cachedImage,
+    iface: iface
+  )
+  pager.loader.fetch(request, loadCachedImage0, opaque)
   iface.addCachedImage(cachedImage)
 
 proc initImages(pager: Pager; iface: BufferInterface) =
@@ -1248,15 +1266,10 @@ proc initBufferFrom(pager: Pager; init: BufferInit;
     charsetStack = init.charsetStack
   )
 
-proc bufferPackets(opaque: RootRef; stream: PosixStream) =
-  let loader = FileLoader(opaque)
-  loader.pollData.unregister(stream.fd)
-  loader.pollData.register(stream.fd, POLLIN or POLLOUT)
-
-proc addInterface(pager: Pager; init: BufferInit; stream: SocketStream;
+proc addInterface(pager: Pager; init: BufferInit; stream: PosixStream;
     phandle: ProcessHandle): BufferInterface =
   stream.setBlocking(false)
-  let iface = newBufferInterface(stream, bufferPackets, pager.loader, phandle,
+  let iface = newBufferInterface(stream, pager.loader, phandle,
     addr pager.attrs, init)
   pager.loader.register(iface, POLLIN)
   return iface
@@ -1271,7 +1284,7 @@ proc clone(pager: Pager; iface: BufferInterface; init: BufferInit; url: URL):
   if res.isErr:
     return nil
   let fd = sv[0]
-  let stream = newSocketStream(fd)
+  let stream = newPosixStream(fd)
   # add a reference to parent's cached source; it will be removed when the
   # buffer is deleted
   let loader = pager.loader
@@ -2434,10 +2447,6 @@ proc handleWrite(pager: Pager; fd: cint): bool =
     discard # ignore (see handleError)
   else:
     let iface = BufferInterface(pager.loader.get(fd))
-    # this might just do an unregister/register/unregister/register sequence,
-    # but with poll this is basically free so it's fine
-    pager.loader.pollData.unregister(fd)
-    pager.loader.pollData.register(fd, POLLIN)
     # if flushWrite errors out, then poll will notify us anyway
     discard iface.flushWrite()
   true

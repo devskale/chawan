@@ -89,8 +89,13 @@ type
     of srtImportMapParse:
       discard #TODO
 
+  ModuleType* = enum
+    mtJavascript = "javascript"
+    mtJson = "json"
+    mtCss = "css"
+
   ModuleMapEntry = object
-    key: tuple[url, moduleType: string]
+    key: tuple[url: string; moduleType: ModuleType]
     value*: ScriptResult
 
   ModuleMap* = seq[ModuleMapEntry]
@@ -101,12 +106,6 @@ var errorImpl*: proc(ctx: JSContext; ss: varargs[string]) {.
   nimcall, raises: [].}
 var getEnvSettingsImpl*: proc(ctx: JSContext): EnvironmentSettings {.
   nimcall, raises: [].}
-
-proc toJS*(ctx: JSContext; val: ScriptingMode): JSValue =
-  case val
-  of smTrue: return JS_TRUE
-  of smFalse: return JS_FALSE
-  of smApp: return JS_NewString(ctx, "app")
 
 proc free*(script: Script) =
   let record = script.record
@@ -122,7 +121,7 @@ proc clear*(moduleMap: var ModuleMap; rt: JSRuntime) =
       it.value.script.free()
   moduleMap.setLen(0)
 
-proc find(moduleMap: ModuleMap; url: URL; moduleType: string): int =
+proc find(moduleMap: ModuleMap; url: URL; moduleType: ModuleType): int =
   let surl = $url
   for i, entry in moduleMap.mypairs:
     if entry.key.moduleType == moduleType and entry.key.url == surl:
@@ -148,14 +147,15 @@ proc clone*(value: ScriptResult): ScriptResult =
   of srtImportMapParse:
     return ScriptResult(t: srtImportMapParse)
 
-proc get*(moduleMap: ModuleMap; url: URL; moduleType: string): ScriptResult =
+proc get*(moduleMap: ModuleMap; url: URL; moduleType: ModuleType):
+    ScriptResult =
   let i = moduleMap.find(url, moduleType)
   if i == -1:
     return nil
   return moduleMap[i].value.clone()
 
-proc set*(moduleMap: var ModuleMap; url: URL; moduleType: string;
-    value: ScriptResult; ctx: JSContext) =
+proc set*(moduleMap: var ModuleMap; url: URL; moduleType: ModuleType;
+    value: ScriptResult) =
   let i = moduleMap.find(url, moduleType)
   if i != -1:
     let ovalue = moduleMap[i].value
@@ -165,11 +165,11 @@ proc set*(moduleMap: var ModuleMap; url: URL; moduleType: string;
   else:
     moduleMap.add(ModuleMapEntry(key: ($url, moduleType), value: value))
 
-proc moduleTypeToRequestDest*(moduleType: string; default: RequestDestination):
-    RequestDestination =
-  if moduleType == "json":
+proc moduleTypeToRequestDest*(moduleType: ModuleType;
+    default: RequestDestination): RequestDestination =
+  if moduleType == mtJson:
     return rdJson
-  if moduleType == "css":
+  if moduleType == mtCss:
     return rdStyle
   return default
 

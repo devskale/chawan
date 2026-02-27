@@ -1420,13 +1420,17 @@ proc prepareSpace(fstate: var FlowState; ibox: InlineBox; width: LUnit): bool =
   let wbox = move(fstate.lbstate.whitespaceBox)
   let widthSum = width + shift.toLUnit() * fstate.cellSize.w
   let nowrapHead = fstate.lbstate.nowrapHead
-  if nowrapHead != nil and ibox.computed.nowrap and fstate.shouldWrap(widthSum):
+  if ibox.computed.nowrap and fstate.lbstate.atomsHead != nil and
+      fstate.shouldWrap(widthSum):
     # flush nowrap
     fstate.lbstate.nowrapHead = nil
     let nowrapTail = move(fstate.lbstate.nowrapTail)
     let nowrapWidth = fstate.lbstate.nowrapWidth
     fstate.finishLine(ibox, wrap = true)
     fstate.initLine()
+    if nowrapTail == nil:
+      # new line introduced by this atom; recompute the shift.
+      shift = fstate.lbstate.computeShift(ibox)
     fstate.lbstate.nowrapHead = nowrapHead
     fstate.lbstate.nowrapTail = nowrapTail
     fstate.lbstate.nowrapWidth = nowrapWidth

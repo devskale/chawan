@@ -83,7 +83,7 @@ Options:
     -C, --config <file>         Override config path
     -I, --input-charset <enc>   Specify document charset
     -M, --monochrome            Set color-mode to 'monochrome'
-    -O, --display-charset <enc> Specify display charset
+    -O, --output-charset <enc>  Specify display charset
     -T, --type <type>           Specify content mime type
     -V, --visual                Visual startup mode
 """
@@ -280,7 +280,7 @@ proc initConfig(ctx: ParamParseContext; warnings: var seq[string];
 
 const libexecPath {.strdefine.} = "$CHA_BIN_DIR/../libexec/chawan"
 
-proc forkForkServer(loaderSockVec: array[2, cint]): ForkServer =
+proc forkForkServer(loaderSockVec: array[2, cint]; pagerPid: int): ForkServer =
   var sockVec {.noinit.}: array[2, cint] # stdin in forkserver
   var pipeFdErr {.noinit.}: array[2, cint] # stderr in forkserver
   if socketpair(AF_UNIX, SOCK_STREAM, IPPROTO_IP, sockVec) != 0:
@@ -300,14 +300,14 @@ proc forkForkServer(loaderSockVec: array[2, cint]): ForkServer =
     discard close(pipeFdErr[0]) # close read
     discard close(sockVec[0])
     discard close(loaderSockVec[0])
-    let controlStream = newSocketStream(sockVec[1])
-    let loaderStream = newSocketStream(loaderSockVec[1])
-    runForkServer(controlStream, loaderStream)
+    let controlStream = newPosixStream(sockVec[1])
+    let loaderStream = newPosixStream(loaderSockVec[1])
+    runForkServer(controlStream, loaderStream, pagerPid)
     exitnow(1)
   else:
     discard close(sockVec[1])
     discard close(loaderSockVec[1])
-    let stream = newSocketStream(sockVec[0])
+    let stream = newPosixStream(sockVec[0])
     stream.setCloseOnExec()
     let estream = newPosixStream(pipeFdErr[0])
     estream.setCloseOnExec()
@@ -417,7 +417,8 @@ proc main() =
   var loaderSockVec {.noinit.}: array[2, cint]
   if socketpair(AF_UNIX, SOCK_STREAM, IPPROTO_IP, loaderSockVec) != 0:
     die("failed to set up initial socket pair")
-  let forkserver = forkForkServer(loaderSockVec)
+  let pagerPid = getCurrentProcessId()
+  let forkserver = forkForkServer(loaderSockVec, pagerPid)
   let urandom = newPosixStream("/dev/urandom", O_RDONLY, 0)
   urandom.setCloseOnExec()
   let jsrt = newGlobalJSRuntime()
@@ -425,10 +426,9 @@ proc main() =
   var ctx = ParamParseContext(jsctx: jsctx, params: commandLineParams(), i: 0)
   if ctx.parse().isErr:
     die(jsctx.getExceptionMsg())
-  let clientPid = getCurrentProcessId()
-  let loaderControl = newSocketStream(loaderSockVec[0])
+  let loaderControl = newPosixStream(loaderSockVec[0])
   loaderControl.setCloseOnExec()
-  let loader = newFileLoader(clientPid, loaderControl)
+  let loader = newFileLoader(pagerPid, loaderControl)
   let client = newClient(forkserver, loader, jsctx, urandom)
   var warnings = newSeq[string]()
   let cres = ctx.initConfig(warnings, jsctx)

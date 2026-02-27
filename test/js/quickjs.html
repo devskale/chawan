@@ -11,6 +11,25 @@ function testNumberLiterals() {
     assertEquals(0o1.a, undefined);
     assertThrows('0.a', SyntaxError);
 }
-testNumberLiterals()
+
+function testArrayBuffer() {
+	/* https://github.com/bellard/quickjs/issues/478 */
+	const rab = new ArrayBuffer(10, {maxByteLength: 10});
+	const src = new Uint8Array(rab, 0);
+	const EvilConstructor = new Proxy(function() {}, {
+	    get: function(target, prop, receiver) {
+		if (prop === 'prototype') {
+		    rab.resize(0);
+		    return Uint8Array.prototype;
+		}
+		return Reflect.get(target, prop, receiver);
+	    }
+	});
+	assertThrows(() => Reflect.construct(Uint8Array, [src], EvilConstructor), RangeError);
+}
+
+testNumberLiterals();
+testArrayBuffer();
+
 document.getElementById("x").textContent = "Success";
 </script>

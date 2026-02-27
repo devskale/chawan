@@ -27,7 +27,6 @@ import html/performance
 import html/script
 import io/console
 import io/dynstream
-import io/promise
 import io/timeout
 import monoucha/fromjs
 import monoucha/jsbind
@@ -133,17 +132,21 @@ type
   Location = ref object
     window: Window
 
-  CachedURLImage = ref object
+  CachedURLImage = ref object of RootObj
+    window: Window
     expiry: int64
     loading: bool
     shared: seq[HTMLImageElement]
     bmp: NetworkBitmap
+    cacheId: int
+    t: string
 
   WindowWeakMap* = enum
     wwmChildren, wwmChildNodes, wwmSelectedOptions, wwmTBodies, wwmCells,
     wwmDataset, wwmAttributes
 
   Window* = ref object of EventTarget
+    bc*: RootRef # backref to BufferContext
     console*: Console
     navigator* {.jsget.}: Navigator
     screen* {.jsget.}: Screen
@@ -158,9 +161,6 @@ type
     jsctx*: JSContext
     document* {.jsufget.}: Document
     timeouts*: TimeoutState
-    navigate*: proc(url: URL)
-    ensureLayout*: proc(element: Element)
-    click*: proc(element: HTMLElement)
     importMapsAllowed*: bool
     inMicrotaskCheckpoint: bool
     dangerAlwaysSameOrigin*: bool # for client, insecure if Window sets true
@@ -168,8 +168,6 @@ type
     loadedSheetNum*: uint32
     remoteImageNum*: uint32
     loadedImageNum*: uint32
-    pendingResources*: seq[EmptyPromise]
-    pendingImages*: seq[EmptyPromise]
     imageURLCache: Table[string, CachedURLImage]
     svgCache*: Table[string, SVGSVGElement]
     # ID of the next image
@@ -261,6 +259,27 @@ type
 
   CollectionMatchFun = proc(ctx: JSContext; this: Collection; node: Node):
     Opt[bool] {.nimcall, raises: [].}
+
+  LoadSheetEnv = ref object of BlobOpaque
+    window: Window
+    this: SheetElement
+    url: URL
+    finish: LoadSheetFinish
+    charset: Charset
+    layer: CAtom
+    i: int
+    parseEnv: ParseSheetEnv
+
+  ParseSheetEnv = ref object
+    sheet: CSSStylesheet
+    sheets: seq[LoadSheetResult]
+    loaded: int
+    finish: LoadSheetFinish
+    parent: ParseSheetEnv
+    i: int
+
+  LoadSheetFinish = proc(window: Window; this: SheetElement;
+    res: LoadSheetResult; env: ParseSheetEnv; i: int) {.  nimcall, raises: [].}
 
   CollectionObj = object of RootObj
     childonly: bool
@@ -520,7 +539,6 @@ type
   HTMLOListElement = ref object of HTMLElement
 
   HTMLLIElement* = ref object of HTMLElement
-    value* {.jsget.}: Option[int32]
 
   SheetElement = ref object of HTMLElement
     sheetHead: CSSStylesheet
@@ -712,8 +730,8 @@ jsDestructor(CustomElementRegistry)
 jsDestructor(ShadowRoot)
 
 # Forward declarations
-proc loadSheet(window: Window; url: URL; charset: Charset; layer: CAtom):
-  Promise[LoadSheetResult]
+proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
+  layer: CAtom; finish: LoadSheetFinish; i: int; parseEnv: ParseSheetEnv)
 
 proc newCDATASection(document: Document; data: string): CDATASection
 proc newComment(document: Document; data: sink string): Comment
@@ -807,7 +825,6 @@ proc nextDisplayedElement(element: Element): Element
 proc outerHTML(element: Element): string
 proc postConnectionSteps(element: Element)
 proc previousElementSibling*(element: Element): Element
-proc reflectAttr(element: Element; name: CAtom; value: Option[string])
 proc scriptingEnabled(element: Element): bool
 proc shadowRoot(this: Element): ShadowRoot
 proc tagName(element: Element): string
@@ -822,6 +839,8 @@ proc resetFormOwner(element: FormAssociatedElement)
 proc insertSheet(this: SheetElement)
 proc removeSheet(this: SheetElement)
 proc updateSheet(this: SheetElement; head, tail: CSSStylesheet)
+proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
+  contentType = "image/png"; quality = none(float64))
 proc getImageRect(this: HTMLImageElement): tuple[w, h: float64]
 proc checked*(input: HTMLInputElement): bool {.inline.}
 proc setChecked*(input: HTMLInputElement; b: bool)
@@ -847,12 +866,16 @@ var matchesImpl*: proc(element: Element; cxsels: SelectorList): bool {.nimcall,
 var parseHTMLFragmentImpl*: proc(element: Element; s: string): seq[Node]
   {.nimcall, raises: [].}
 var parseDocumentWriteChunkImpl*: proc(wrapper: RootRef) {.nimcall, raises: [].}
-# set in html/env
-var fetchImpl*: proc(window: Window; input: JSRequest): FetchPromise {.
-  nimcall, raises: [].}
 var applyStyleImpl*: proc(element: Element) {.nimcall, raises: [].}
 var getClientRectsImpl*: proc(element: Element; firstOnly, blockOnly: bool):
   seq[DOMRect] {.nimcall, raises: [].}
+# set in server/buffer
+var sheetLoadedImpl*: proc(bc: RootRef) {.nimcall, raises: [].}
+var imageLoadedImpl*: proc(bc: RootRef) {.nimcall, raises: [].}
+var navigateImpl*: proc(bc: RootRef; url: URL) {.nimcall, raises: [].}
+var ensureLayoutImpl*: proc(bc: RootRef; element: Element) {.
+  nimcall, raises: [].}
+var clickImpl*: proc(bc: RootRef; element: HTMLElement) {.nimcall, raises: [].}
 
 # Reflected attributes.
 type
@@ -907,6 +930,18 @@ proc makeb(attrname, funcname: StaticAtom; ts: varargs[TagType]):
 
 proc makeb(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
   makeb(name, name, ts)
+
+proc makel(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
+    ReflectEntryTag =
+  ReflectEntryTag(
+    tags: @ts,
+    e: ReflectEntry(
+      attrname: name,
+      funcname: name,
+      t: rtLong,
+      u: default
+    )
+  )
 
 proc makeul(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
     ReflectEntryTag =
@@ -996,6 +1031,7 @@ const ReflectMap0 = [
   makes(satTarget, TAG_A, TAG_AREA, TAG_LABEL, TAG_LINK),
   makes(satHref, TAG_LINK),
   makes(satValue, TAG_BUTTON, TAG_DATA),
+  makel(satValue, TAG_LI),
   makeb(satRequired, TAG_INPUT, TAG_SELECT, TAG_TEXTAREA),
   makes(satName, TAG_A, TAG_INPUT, TAG_SELECT, TAG_TEXTAREA, TAG_META,
     TAG_IFRAME, TAG_FRAME, TAG_IMG, TAG_OBJECT, TAG_PARAM, TAG_OBJECT, TAG_MAP,
@@ -1384,32 +1420,44 @@ proc getWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
   JS_FreeValue(ctx, jsThis)
   return res
 
-proc corsFetch(window: Window; input: Request): FetchPromise =
-  if not window.settings.images and input.url.scheme.startsWith("img-codec+"):
-    return newResolvedPromise[Response](nil)
-  return window.loader.fetch(input)
+proc isSameOrigin*(window: Window; origin: Origin): bool =
+  if window.dangerAlwaysSameOrigin: # for client
+    return true
+  return window.settings.origin.isSameOrigin(origin)
 
-proc parseStylesheet(window: Window; s: string; baseURL: URL; charset: Charset;
-    layer: CAtom): Promise[LoadSheetResult] =
-  let sheet = s.parseStylesheet(baseURL, addr window.settings, coAuthor, layer)
-  var promises: seq[EmptyPromise] = @[]
-  var sheets = newSeq[LoadSheetResult](sheet.s.importList.len)
-  for i, it in sheet.s.importList.mypairs:
-    let url = it.url
-    let layer = it.layer
-    (proc(i: int) =
-      inc window.remoteSheetNum
-      let p = window.loadSheet(url, charset, layer).then(
-        proc(res: LoadSheetResult) =
-          inc window.loadedSheetNum
-          sheets[i] = res
-      )
-      promises.add(p)
-    )(i)
-  return promises.all().then(proc(): LoadSheetResult =
-    var head: CSSStylesheet = sheet
-    var tail: CSSStylesheet = sheet
-    for res in sheets:
+proc fetch*(window: Window; input: JSRequest; finish: FetchFinish;
+    opaque: RootRef) =
+  #TODO cors requests?
+  if input.request.url.schemeType != stData and
+      not window.isSameOrigin(input.request.url.origin):
+    return
+  window.loader.fetch(input.request, finish, opaque)
+
+proc corsFetch(window: Window; input: Request; finish: FetchFinish;
+    opaque: RootRef) =
+  if not window.settings.images and input.url.scheme.startsWith("img-codec+"):
+    finish(opaque, nil)
+    return
+  window.loader.fetch(input, finish, opaque)
+
+proc sheetLoaded(window: Window) =
+  inc window.loadedSheetNum
+  if window.bc != nil:
+    sheetLoadedImpl(window.bc)
+
+proc imageLoaded(window: Window) =
+  inc window.loadedImageNum
+  if window.bc != nil:
+    imageLoadedImpl(window.bc)
+
+proc importSheetFinish(window: Window; this: SheetElement;
+    res: LoadSheetResult; env: ParseSheetEnv; i: int) =
+  env.sheets[i] = res
+  inc env.loaded
+  if env.loaded == env.sheets.len:
+    var head: CSSStylesheet = env.sheet
+    var tail: CSSStylesheet = env.sheet
+    for res in env.sheets:
       if res.head != nil:
         #TODO check import media query here
         if tail == nil:
@@ -1417,31 +1465,119 @@ proc parseStylesheet(window: Window; s: string; baseURL: URL; charset: Charset;
         else:
           tail.next = res.head
         tail = res.tail
-    return LoadSheetResult(head: head, tail: tail)
+    env.finish(window, this, LoadSheetResult(head: head, tail: tail),
+      env.parent, env.i)
+  window.sheetLoaded()
+
+proc parseStylesheet(window: Window; this: SheetElement; s: string;
+    baseURL: URL; charset: Charset; layer: CAtom; finish: LoadSheetFinish;
+    parseEnv: ParseSheetEnv; i: int) =
+  let sheet = s.parseStylesheet(baseURL, addr window.settings, coAuthor, layer)
+  if sheet.s.importList.len == 0:
+    let res = LoadSheetResult(head: sheet, tail: sheet)
+    finish(window, this, res, parseEnv, i)
+  else:
+    var env = ParseSheetEnv(
+      sheet: sheet,
+      sheets: newSeq[LoadSheetResult](sheet.s.importList.len),
+      finish: finish,
+      parent: parseEnv,
+      i: i
+    )
+    for i, it in sheet.s.importList.mypairs:
+      let url = it.url
+      let layer = it.layer
+      inc window.remoteSheetNum
+      window.loadSheet(this, url, charset, layer, importSheetFinish, i, env)
+
+proc cssDecode(iq: openArray[char]; fallback: Charset): string =
+  var charset = fallback
+  var offset = 0
+  const charsetRule = "@charset \""
+  if iq.startsWith("\xFE\xFF"):
+    charset = CHARSET_UTF_16_BE
+    offset = 2
+  elif iq.startsWith("\xFF\xFE"):
+    charset = CHARSET_UTF_16_LE
+    offset = 2
+  elif iq.startsWith("\xEF\xBB\xBF"):
+    charset = CHARSET_UTF_8
+    offset = 3
+  elif iq.startsWith(charsetRule):
+    let s = iq.toOpenArray(charsetRule.len, min(1024, iq.high)).until('"')
+    let n = charsetRule.len + s.len
+    if n >= 0 and n + 1 < iq.len and iq[n] == '"' and iq[n + 1] == ';':
+      charset = getCharset(s)
+      if charset in {CHARSET_UTF_16_LE, CHARSET_UTF_16_BE}:
+        charset = CHARSET_UTF_8
+  iq.toOpenArray(offset, iq.high).decodeAll(charset)
+
+proc onFinishCSSText(response: Response; success: bool) =
+  let blob = response.onFinishBlob(success)
+  let env = LoadSheetEnv(response.opaque)
+  let window = env.window
+  let this = env.this
+  let finish = env.finish
+  if blob != nil:
+    let charset = env.charset
+    let s = blob.toOpenArray().cssDecode(charset)
+    window.parseStylesheet(this, s, env.url, charset, env.layer, finish,
+      env.parseEnv, env.i)
+  else:
+    finish(window, this, LoadSheetResult(), env.parseEnv, env.i)
+
+proc loadSheet0(opaque: RootRef; response: Response) =
+  let env = LoadSheetEnv(opaque)
+  let window = env.window
+  if response != nil:
+    if response.getContentType().equalsIgnoreCase("text/css"):
+      response.onFinish = onFinishCSSText
+      response.blob(env)
+      return
+    window.loader.close(response)
+  env.finish(window, env.this, LoadSheetResult(), env.parseEnv, env.i)
+
+proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
+    layer: CAtom; finish: LoadSheetFinish; i: int; parseEnv: ParseSheetEnv) =
+  let env = LoadSheetEnv(
+    window: window,
+    this: this,
+    url: url,
+    charset: charset,
+    layer: layer,
+    parseEnv: parseEnv,
+    i: i,
+    finish: finish
   )
+  window.corsFetch(newRequest(url), loadSheet0, env)
 
-proc loadSheet(window: Window; url: URL; charset: Charset; layer: CAtom):
-    Promise[LoadSheetResult] =
-  return window.corsFetch(
-    newRequest(url)
-  ).then(proc(response: Response): Promise[TextResult] =
-    if response != nil:
-      if response.getContentType().equalsIgnoreCase("text/css"):
-        return response.cssText(charset)
-      window.loader.close(response)
-    return newResolvedPromise(TextResult.err())
-  ).then(proc(s: TextResult): Promise[LoadSheetResult] =
-    if s.isErr:
-      return newResolvedPromise(LoadSheetResult())
-    return window.parseStylesheet(s.get, url, charset, layer)
-  )
+proc loadSheet(window: Window; this: SheetElement; url: URL;
+    finish: LoadSheetFinish) =
+  let charset = this.getCharset()
+  window.loadSheet(this, url, charset, CAtomNull, finish, 0, nil)
 
-proc loadSheet(window: Window; link: HTMLLinkElement; url: URL):
-    Promise[LoadSheetResult] =
-  let charset = link.getCharset()
-  return window.loadSheet(url, charset, CAtomNull)
+proc loadLinkFinish(window: Window; this: SheetElement;
+    res: LoadSheetResult; env: ParseSheetEnv; i: int) =
+  let link = HTMLLinkElement(this)
+  let media = link.attr(satMedia)
+  var applies = true
+  if media != "":
+    var ctx = initCSSParser(media)
+    let media = ctx.parseMediaQueryList(window.settings.attrsp)
+    applies = media.applies(addr window.settings)
+  # Note: we intentionally load all sheets first and *then* check
+  # whether media applies, to prevent media query based tracking.
+  #TODO should we really keep the current sheet if the result is nil?
+  if res.head != nil:
+    link.updateSheet(res.head, res.tail)
+    let disabled = link.isDisabled()
+    for sheet in link.sheets:
+      sheet.disabled = disabled
+      sheet.applies = applies
+      sheet.media = media
+  window.sheetLoaded()
 
-proc loadResource(window: Window; link: HTMLLinkElement) =
+proc loadLink(window: Window; link: HTMLLinkElement) =
   if not window.settings.styling or
       not link.relList.containsIgnoreCase(satStylesheet) or
       link.fetchStarted or link.isDisabled():
@@ -1451,27 +1587,8 @@ proc loadResource(window: Window; link: HTMLLinkElement) =
   if href == "":
     return
   if url := parseURL(href, window.document.url):
-    let media = link.attr(satMedia)
-    var applies = true
-    if media != "":
-      var ctx = initCSSParser(media)
-      let media = ctx.parseMediaQueryList(window.settings.attrsp)
-      applies = media.applies(addr window.settings)
     inc window.remoteSheetNum
-    let p = window.loadSheet(link, url).then(proc(res: LoadSheetResult) =
-      # Note: we intentionally load all sheets first and *then* check
-      # whether media applies, to prevent media query based tracking.
-      #TODO should we really keep the current sheet if the result is nil?
-      if res.head != nil:
-        link.updateSheet(res.head, res.tail)
-        let disabled = link.isDisabled()
-        for sheet in link.sheets:
-          sheet.disabled = disabled
-          sheet.applies = applies
-          sheet.media = media
-      inc window.loadedSheetNum
-    )
-    window.pendingResources.add(p)
+    window.loadSheet(link, url, loadLinkFinish)
 
 proc getImageId(window: Window): int =
   result = window.imageId
@@ -1486,7 +1603,102 @@ proc fireEvent*(window: Window; name: StaticAtom; target: EventTarget;
   event.isTrusted = trusted
   window.fireEvent(event, target)
 
-proc loadResource*(window: Window; image: HTMLImageElement) =
+proc loadImageFinish(opaque: RootRef; response: Response) =
+  let cachedURL = CachedURLImage(opaque)
+  let window = cachedURL.window
+  if response == nil:
+    window.imageLoaded()
+    return
+  # close immediately; all data we're interested in is in the headers.
+  window.loader.close(response)
+  let headers = response.headers
+  let dims = headers.getFirst("Cha-Image-Dimensions")
+  let width = parseIntP(dims.until('x')).get(-1)
+  let height = parseIntP(dims.after('x')).get(-1)
+  if width < 0 or height < 0:
+    window.console.error("wrong Cha-Image-Dimensions in", $response.url)
+    window.imageLoaded()
+    return
+  let bmp = NetworkBitmap(
+    width: width,
+    height: height,
+    cacheId: cachedURL.cacheId,
+    imageId: window.getImageId(),
+    contentType: "image/" & cachedURL.t,
+    vector: cachedURL.t == "image/svg+xml"
+  )
+  cachedURL.bmp = bmp
+  for share in cachedURL.shared:
+    share.bitmap = bmp
+    share.invalidate()
+    #TODO fire error on error
+    if window.settings.scripting != smFalse:
+      window.fireEvent(satLoad, share, bubbles = false,
+        cancelable = false, trusted = true)
+  window.imageLoaded()
+
+proc loadImage0(opaque: RootRef; response: Response) =
+  let cachedURL = CachedURLImage(opaque)
+  let window = cachedURL.window
+  if response == nil:
+    window.imageLoaded()
+    return
+  let contentType = response.getContentType("image/x-unknown")
+  if not contentType.startsWith("image/"):
+    window.imageLoaded()
+    return
+  var t = contentType.after('/')
+  if t == "x-unknown":
+    let ext = response.url.pathname.getFileExt()
+    # Note: imageTypes is taken from mime.types.
+    # To avoid fingerprinting, we
+    # a) always download the entire image (through addCacheFile) -
+    #    this prevents the server from knowing what content type
+    #    is supported
+    # b) prevent mime.types extensions for images defined by
+    #    ourselves
+    # In fact, a) would by itself be enough, but I'm not sure if
+    # it's the best way, so I added b) as a fallback measure.
+    t = window.imageTypes.getOrDefault(ext, "x-unknown")
+  cachedURL.cacheId = window.loader.addCacheFile(response.outputId)
+  let url = parseURL0("img-codec+" & t & ":decode")
+  if url == nil:
+    window.imageLoaded()
+    return
+  let request = newRequest(
+    url,
+    httpMethod = hmPost,
+    headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
+    body = RequestBody(t: rbtOutput, outputId: response.outputId),
+  )
+  cachedURL.t = t
+  window.corsFetch(request, loadImageFinish, opaque)
+  window.loader.close(response)
+  var expiry = -1i64
+  for s in response.headers.getAllCommaSplit("Cache-Control"):
+    if s.startsWithIgnoreCase("max-age="):
+      let i = s.skipBlanks("max-age=".len)
+      let s = s.until(NonDigit, i)
+      if pi := parseInt64(s):
+        expiry = getTime().toUnix() + pi
+      break
+  cachedURL.loading = false
+  cachedURL.expiry = expiry
+
+proc loadImageFromCache(window: Window; image: HTMLImageElement; surl: string):
+    bool =
+  let cachedURL = window.imageURLCache.getOrDefault(surl)
+  if cachedURL == nil:
+    return false
+  if cachedURL.expiry > getTime().toUnix():
+    image.bitmap = cachedURL.bmp
+    return true
+  if cachedURL.loading:
+    cachedURL.shared.add(image)
+    return true
+  false
+
+proc loadImage*(window: Window; image: HTMLImageElement) =
   if not window.settings.images:
     if image.bitmap != nil:
       image.invalidate()
@@ -1499,101 +1711,67 @@ proc loadResource*(window: Window; image: HTMLImageElement) =
   let src = image.attr(satSrc)
   if src == "":
     return
-  if url := parseURL(src, window.document.url):
-    if window.document.url.schemeType == stHttps and url.schemeType == stHttp:
-      # mixed content :/
-      #TODO maybe do this in loader?
-      url.setProtocol("https")
-    let surl = $url
-    window.imageURLCache.withValue(surl, p):
-      if p[].expiry > getTime().toUnix():
-        image.bitmap = p[].bmp
-        return
-      elif p[].loading:
-        p[].shared.add(image)
-        return
-    let cachedURL = CachedURLImage(expiry: -1, loading: true)
-    window.imageURLCache[surl] = cachedURL
-    let headers = newHeaders(hgRequest, {"Accept": "*/*"})
-    inc window.remoteImageNum
-    let p = window.corsFetch(newRequest(url, headers = headers)).then(
-      proc(response: Response): EmptyPromise =
-        inc window.loadedImageNum
-        if response == nil:
-          return newResolvedPromise()
-        let contentType = response.getContentType("image/x-unknown")
-        if not contentType.startsWith("image/"):
-          return newResolvedPromise()
-        var t = contentType.after('/')
-        if t == "x-unknown":
-          let ext = response.url.pathname.getFileExt()
-          # Note: imageTypes is taken from mime.types.
-          # To avoid fingerprinting, we
-          # a) always download the entire image (through addCacheFile) -
-          #    this prevents the server from knowing what content type
-          #    is supported
-          # b) prevent mime.types extensions for images defined by
-          #    ourselves
-          # In fact, a) would by itself be enough, but I'm not sure if
-          # it's the best way, so I added b) as a fallback measure.
-          t = window.imageTypes.getOrDefault(ext, "x-unknown")
-        let cacheId = window.loader.addCacheFile(response.outputId)
-        let url = parseURL0("img-codec+" & t & ":decode")
-        if url == nil:
-          return newResolvedPromise()
-        let request = newRequest(
-          url,
-          httpMethod = hmPost,
-          headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
-          body = RequestBody(t: rbtOutput, outputId: response.outputId),
-        )
-        let r = window.corsFetch(request)
-        window.loader.close(response)
-        var expiry = -1i64
-        for s in response.headers.getAllCommaSplit("Cache-Control"):
-          if s.startsWithIgnoreCase("max-age="):
-            let i = s.skipBlanks("max-age=".len)
-            let s = s.until(NonDigit, i)
-            if pi := parseInt64(s):
-              expiry = getTime().toUnix() + pi
-            break
-        cachedURL.loading = false
-        cachedURL.expiry = expiry
-        return r.then(proc(response: Response) =
-          if response == nil:
-            return
-          # close immediately; all data we're interested in is in the headers.
-          window.loader.close(response)
-          let headers = response.headers
-          let dims = headers.getFirst("Cha-Image-Dimensions")
-          let width = parseIntP(dims.until('x')).get(-1)
-          let height = parseIntP(dims.after('x')).get(-1)
-          if width < 0 or height < 0:
-            window.console.error("wrong Cha-Image-Dimensions in", $response.url)
-            return
-          let bmp = NetworkBitmap(
-            width: width,
-            height: height,
-            cacheId: cacheId,
-            imageId: window.getImageId(),
-            contentType: "image/" & t,
-            vector: t == "svg+xml"
-          )
-          image.bitmap = bmp
-          cachedURL.bmp = bmp
-          for share in cachedURL.shared:
-            share.bitmap = bmp
-            share.invalidate()
-          image.invalidate()
-          #TODO fire error on error
-          if window.settings.scripting != smFalse:
-            window.fireEvent(satLoad, image, bubbles = false,
-              cancelable = false, trusted = true)
-        )
-      )
-    window.pendingImages.add(p)
+  let url0 = parseURL(src, window.document.url)
+  if url0.isErr:
+    return
+  let url = url0.get
+  if window.document.url.schemeType == stHttps and url.schemeType == stHttp:
+    # mixed content :/
+    #TODO maybe do this in loader?
+    url.setProtocol("https")
+  let surl = $url
+  if window.loadImageFromCache(image, surl):
+    return
+  let cachedURL = CachedURLImage(
+    cacheId: -1,
+    window: window,
+    expiry: -1,
+    loading: true,
+    shared: @[image]
+  )
+  window.imageURLCache[surl] = cachedURL
+  let headers = newHeaders(hgRequest, {"Accept": "*/*"})
+  inc window.remoteImageNum
+  window.corsFetch(newRequest(url, headers = headers), loadImage0, cachedURL)
 
-proc loadResource*(window: Window; svg: SVGSVGElement) =
+type LoadSVGEnv = ref object of RootObj
+  window: Window
+  svg: SVGSVGElement
+  cacheId: int
+  imageId: int
+
+proc loadSVGFinish(opaque: RootRef; response: Response) =
+  let env = LoadSVGEnv(opaque)
+  let window = env.window
+  let svg = env.svg
+  if response == nil: # no SVG module; give up
+    window.imageLoaded()
+    return
+  let loader = window.loader
+  # close immediately; all data we're interested in is in the headers.
+  loader.close(response)
+  let dims = response.headers.getFirst("Cha-Image-Dimensions")
+  let width = parseIntP(dims.until('x')).get(-1)
+  let height = parseIntP(dims.after('x')).get(-1)
+  if width < 0 or height < 0:
+    window.console.error("wrong Cha-Image-Dimensions in", $response.url)
+    window.imageLoaded()
+    return
+  svg.bitmap = NetworkBitmap(
+    width: width,
+    height: height,
+    cacheId: env.cacheId,
+    imageId: env.imageId,
+    contentType: "image/svg+xml",
+    vector: true
+  )
+  for share in svg.shared:
+    share.bitmap = svg.bitmap
+    share.invalidate()
+  svg.invalidate()
+  window.imageLoaded()
+
+proc loadSVG*(window: Window; svg: SVGSVGElement) =
   if not window.settings.images:
     if svg.bitmap != nil:
       svg.invalidate()
@@ -1619,42 +1797,37 @@ proc loadResource*(window: Window; svg: SVGSVGElement) =
   if ps == nil:
     return
   let cacheId = loader.addCacheFile(svgres.outputId)
-  if ps.writeLoop(s).isErr:
-    ps.sclose()
-    return
+  let res = ps.writeLoop(s)
   ps.sclose()
+  if res.isErr:
+    return
   let request = newRequest(
     "img-codec+svg+xml:decode",
     httpMethod = hmPost,
     headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
     body = RequestBody(t: rbtOutput, outputId: svgres.outputId)
   )
-  let p = loader.fetch(request).then(proc(response: Response) =
-    loader.close(svgres)
-    if response == nil: # no SVG module; give up
-      return
-    # close immediately; all data we're interested in is in the headers.
-    loader.close(response)
-    let dims = response.headers.getFirst("Cha-Image-Dimensions")
-    let width = parseIntP(dims.until('x')).get(-1)
-    let height = parseIntP(dims.after('x')).get(-1)
-    if width < 0 or height < 0:
-      window.console.error("wrong Cha-Image-Dimensions in", $response.url)
-      return
-    svg.bitmap = NetworkBitmap(
-      width: width,
-      height: height,
-      cacheId: cacheId,
-      imageId: imageId,
-      contentType: "image/svg+xml",
-      vector: true
-    )
-    for share in svg.shared:
-      share.bitmap = svg.bitmap
-      share.invalidate()
-    svg.invalidate()
+  let env = LoadSVGEnv(
+    window: window,
+    svg: svg,
+    cacheId: cacheId,
+    imageId: imageId
   )
-  window.pendingImages.add(p)
+  inc window.remoteImageNum
+  loader.fetch(request, loadSVGFinish, env)
+  loader.close(svgres)
+
+proc navigate*(window: Window; url: URL) =
+  if window.bc != nil:
+    navigateImpl(window.bc, url)
+
+proc ensureLayout(window: Window; element: Element) =
+  if window.bc != nil:
+    ensureLayoutImpl(window.bc, element)
+
+proc click(window: Window; element: HTMLElement) =
+  if window.bc != nil:
+    clickImpl(window.bc, element)
 
 proc runJSJobs*(window: Window) =
   let rt = JS_GetRuntime(window.jsctx)
@@ -1670,6 +1843,27 @@ proc performMicrotaskCheckpoint*(window: Window) =
   window.inMicrotaskCheckpoint = true
   window.runJSJobs()
   window.inMicrotaskCheckpoint = false
+
+proc windowChange*(window: Window) =
+  let document = window.document
+  document.ruleMap = nil
+  if document.documentElement != nil:
+    document.documentElement.invalidate()
+  let baseURL = document.baseURL
+  var sheet = document.uaSheetsHead
+  while sheet != nil:
+    sheet.windowChange(baseURL)
+    sheet = sheet.next
+  if document.userSheet != nil:
+    document.userSheet.windowChange(baseURL)
+  sheet = document.authorSheetsHead
+  while sheet != nil:
+    sheet.windowChange(baseURL)
+    if sheet.media != "":
+      var ctx = initCSSParser(sheet.media)
+      let media = ctx.parseMediaQueryList(window.settings.attrsp)
+      sheet.applies = media.applies(addr window.settings)
+    sheet = sheet.next
 
 proc getComputedStyle0*(ctx: JSContext; window: Window; element: Element;
     pseudoElt: JSValueConst): Opt[CSSStyleDeclaration] =
@@ -3729,27 +3923,6 @@ proc getRuleMap*(document: Document): CSSRuleMap =
     document.ruleMap = map
   return document.ruleMap
 
-proc windowChange*(window: Window) =
-  let document = window.document
-  document.ruleMap = nil
-  if document.documentElement != nil:
-    document.documentElement.invalidate()
-  let baseURL = document.baseURL
-  var sheet = document.uaSheetsHead
-  while sheet != nil:
-    sheet.windowChange(baseURL)
-    sheet = sheet.next
-  if document.userSheet != nil:
-    document.userSheet.windowChange(baseURL)
-  sheet = document.authorSheetsHead
-  while sheet != nil:
-    sheet.windowChange(baseURL)
-    if sheet.media != "":
-      var ctx = initCSSParser(sheet.media)
-      let media = ctx.parseMediaQueryList(window.settings.attrsp)
-      sheet.applies = media.applies(addr window.settings)
-    sheet = sheet.next
-
 proc findAnchor*(document: Document; id: string): Element =
   if id.len == 0:
     return nil
@@ -4028,14 +4201,13 @@ proc getter(ctx: JSContext; this: DOMTokenList; atom: JSAtom): JSValue
   of fiStr: JS_UNINITIALIZED
   of fiErr: JS_EXCEPTION
 
-proc reflectTokens(this: DOMTokenList; value: Option[string]) =
+proc reflectTokens(this: DOMTokenList; value: string) =
   this.toks.setLen(0)
-  if value.isSome:
-    for x in value.get.split(AsciiWhitespace):
-      if x != "":
-        let a = x.toAtom()
-        if a notin this:
-          this.toks.add(a)
+  for x in value.split(AsciiWhitespace):
+    if x != "":
+      let a = x.toAtom()
+      if a notin this:
+        this.toks.add(a)
 
 # DOMStringMap
 proc delete(ctx: JSContext; map: DOMStringMap; name: string): bool {.jsfunc.} =
@@ -4944,8 +5116,8 @@ proc clientHeight(element: Element): int32 {.jsfget.} =
 
 const WindowEvents* = [satError, satLoad, satFocus, satBlur]
 
-proc reflectScriptAttr(element: Element; name: StaticAtom;
-    value: Option[string]): bool =
+proc reflectScriptAttr(element: Element; name: StaticAtom; value: string):
+    bool =
   let document = element.document
   const ScriptEventMap = {
     satOnclick: satClick,
@@ -4966,29 +5138,29 @@ proc reflectScriptAttr(element: Element; name: StaticAtom;
       if element.tagType == TAG_BODY and t in WindowEvents:
         target = document.window
         target2 = option(EventTarget(element))
-      document.reflectEvent(target, n, t, value.get(""), target2)
+      document.reflectEvent(target, n, t, value, target2)
       return true
   false
 
-proc reflectLocalAttr(element: Element; name: StaticAtom;
-    value: Option[string]) =
+proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
+    value: string) =
   case element.tagType
   of TAG_INPUT:
     let input = HTMLInputElement(element)
     case name
-    of satValue: input.setValue(value.get(""))
-    of satChecked: input.setChecked(value.isSome)
+    of satValue: input.setValue(value)
+    of satChecked: input.setChecked(has)
     of satType:
-      input.inputType = parseEnumNoCase[InputType](value.get("")).get(itText)
+      input.inputType = parseEnumNoCase[InputType](value).get(itText)
     else: discard
   of TAG_OPTION:
     let option = HTMLOptionElement(element)
     if name == satSelected:
-      option.selected = value.isSome
+      option.selected = has
   of TAG_BUTTON:
     let button = HTMLButtonElement(element)
     if name == satType:
-      button.ctype = parseEnumNoCase[ButtonType](value.get("")).get(btSubmit)
+      button.ctype = parseEnumNoCase[ButtonType](value).get(btSubmit)
   of TAG_LINK:
     let link = HTMLLinkElement(element)
     if name == satRel:
@@ -4997,7 +5169,7 @@ proc reflectLocalAttr(element: Element; name: StaticAtom;
     let connected = link.isConnected()
     if name == satDisabled:
       let wasDisabled = link.isDisabled()
-      link.enabled = some(value.isNone)
+      link.enabled = some(not has)
       let disabled = link.isDisabled()
       if wasDisabled != disabled:
         for sheet in link.sheets:
@@ -5011,7 +5183,7 @@ proc reflectLocalAttr(element: Element; name: StaticAtom;
       link.fetchStarted = false
       let window = document.window
       if window != nil:
-        window.loadResource(link)
+        window.loadLink(link)
   of TAG_A:
     let anchor = HTMLAnchorElement(element)
     if name == satRel:
@@ -5050,26 +5222,43 @@ proc reflectLocalAttr(element: Element; name: StaticAtom;
       image.fetchStarted = false
       let window = image.document.window
       if window != nil:
-        window.loadResource(image)
+        window.loadImage(image)
   else: discard
 
-proc reflectAttr(element: Element; name: CAtom; value: Option[string]) =
+# Called whenever an attribute changes on the element.
+# If `has' is false, then value is "".  Otherwise, value is the new
+# attribute value.
+proc reflectAttr(element: Element; name: CAtom; has: bool; value: string) =
   let name = name.toStaticAtom()
   case name
-  of satId: element.id = value.toAtom()
-  of satName: element.name = value.toAtom()
+  of satId:
+    if has:
+      element.id = value.toAtom()
+    else:
+      element.id = CAtomNull
+  of satName:
+    if has:
+      element.name = value.toAtom()
+    else:
+      element.name = CAtomNull
   of satClass: element.classList.reflectTokens(value)
   #TODO internalNonce
   of satStyle:
-    if value.isSome:
-      element.cachedStyle = newCSSStyleDeclaration(element, value.get)
+    if has:
+      element.cachedStyle = newCSSStyleDeclaration(element, value)
     else:
       element.cachedStyle = nil
   of satUnknown: discard # early return
   elif element.scriptingEnabled and element.reflectScriptAttr(name, value):
     discard
   else:
-    element.reflectLocalAttr(name, value)
+    element.reflectLocalAttr(name, has, value)
+
+proc reflectAttrDel(element: Element; name: CAtom) =
+  element.reflectAttr(name, false, "")
+
+proc reflectAttr(element: Element; name: CAtom; value: string) =
+  element.reflectAttr(name, true, value)
 
 proc elIndex*(this: Element): int =
   if this.parentNode == nil:
@@ -5338,12 +5527,12 @@ proc elementInsertionSteps(element: Element): bool =
       document.sheetTitle = link.attr(satTitle)
     let window = document.window
     if window != nil:
-      window.loadResource(link)
+      window.loadLink(link)
   of TAG_IMG:
     let window = element.document.window
     if window != nil:
       let image = HTMLImageElement(element)
-      window.loadResource(image)
+      window.loadImage(image)
   of TAG_STYLE:
     let style = HTMLStyleElement(element)
     if style.isConnected():
@@ -5399,7 +5588,7 @@ proc delAttr(ctx: JSContext; element: Element; i: int) =
       attr.dataIdx = 0
       map.attrlist.del(j) # ordering does not matter
   element.attrs.delete(i) # ordering matters
-  element.reflectAttr(name, none(string))
+  element.reflectAttrDel(name)
   element.document.invalidateCollections()
   element.invalidate()
 
@@ -5424,7 +5613,7 @@ proc attr*(element: Element; name: CAtom; value: sink string) =
       qualifiedName: name,
       value: value
     ), i)
-  element.reflectAttr(name, some(element.attrs[i].value))
+  element.reflectAttr(name, element.attrs[i].value)
   element.document.invalidateCollections()
   element.invalidate()
 
@@ -5433,16 +5622,17 @@ proc attr*(element: Element; name: StaticAtom; value: sink string) =
 
 proc attrns0(element: Element; namespace, localName, qualifiedName: CAtom;
     value: sink string) =
-  let i = element.findAttrNS(namespace, localName)
+  var i = element.findAttrNS(namespace, localName)
   if i != -1:
     element.attrs[i].value = value
   else:
+    i = element.attrs.upperBound(qualifiedName, cmpAttrName)
     element.attrs.insert(AttrData(
       namespace: namespace,
       qualifiedName: qualifiedName,
       value: value
-    ), element.attrs.upperBound(qualifiedName, cmpAttrName))
-  element.reflectAttr(qualifiedName, some(value))
+    ), i)
+  element.reflectAttr(qualifiedName, element.attrs[i].value)
   element.document.invalidateCollections()
   element.invalidate()
 
@@ -6068,6 +6258,78 @@ proc getContext*(jctx: JSContext; this: HTMLCanvasElement; contextId: string;
     return this.ctx2d
   return nil
 
+type ToBlobEnv = ref object of BlobOpaque
+  ctx: JSContext
+  callback: JSValue
+  isPNG: bool
+  this: HTMLCanvasElement
+  url: URL
+
+proc onFinishToBlob(response: Response; success: bool) =
+  let env = ToBlobEnv(response.opaque)
+  let ctx = env.ctx
+  let callback = env.callback
+  let this = env.this
+  let blob = response.onFinishBlob(success)
+  if blob == nil:
+    JS_FreeValue(ctx, callback)
+    JS_FreeContext(ctx)
+    return
+  let jsBlob = ctx.toJS(blob)
+  if JS_IsException(jsBlob):
+    JS_FreeValue(ctx, callback)
+    JS_FreeContext(ctx)
+    return
+  let window = this.document.window
+  let res = ctx.callSinkFree(callback, JS_UNDEFINED, jsBlob)
+  if JS_IsException(res):
+    window.console.error("Exception in canvas toBlob:",
+      ctx.getExceptionMsg())
+  else:
+    JS_FreeValue(ctx, res)
+  JS_FreeContext(ctx)
+
+proc toBlob1(opaque: RootRef; response: Response) =
+  let env = ToBlobEnv(opaque)
+  let ctx = env.ctx
+  let callback = env.callback
+  let this = env.this
+  if response == nil:
+    if not env.isPNG:
+      # redo as PNG.
+      # Note: this sounds dumb, and is dumb, but also standard mandated so
+      # whatever.
+      ctx.toBlob(this, callback, "image/png") # PNG doesn't understand quality
+    else: # the png encoder doesn't work...
+      let window = this.document.window
+      window.console.error("missing/broken PNG encoder")
+    JS_FreeValue(ctx, callback)
+    JS_FreeContext(ctx)
+  else:
+    response.onFinish = onFinishToBlob
+    response.blob(env)
+
+proc toBlob0(opaque: RootRef; response: Response) =
+  let env = ToBlobEnv(opaque)
+  let ctx = env.ctx
+  if response == nil:
+    JS_FreeValue(ctx, env.callback)
+    JS_FreeContext(ctx)
+    return
+  let this = env.this
+  let headers = newHeaders(hgRequest, {
+    "Cha-Image-Dimensions": $this.bitmap.width & 'x' & $this.bitmap.height
+  })
+  let request = newRequest(
+    env.url,
+    httpMethod = hmPost,
+    headers = headers,
+    body = RequestBody(t: rbtOutput, outputId: response.outputId)
+  )
+  let window = this.document.window
+  window.corsFetch(request, toBlob1, env)
+  window.loader.close(response)
+
 # Note: the standard says quality should be converted in a strange way for
 # backwards compat, but I don't care.
 proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
@@ -6087,49 +6349,20 @@ proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
     headers.add("Cha-Image-Quality", dtoa(quality))
   # callback will go out of scope when we return, so capture a new reference.
   let callback = JS_DupValue(ctx, callback)
-  let window = this.document.window
-  window.corsFetch(newRequest(
+  let request = newRequest(
     "img-codec+x-cha-canvas:decode",
     httpMethod = hmPost,
     body = RequestBody(t: rbtCache, cacheId: this.bitmap.cacheId)
-  )).then(proc(response: Response): FetchPromise =
-    if response == nil:
-      return newResolvedPromise(response)
-    let p = window.corsFetch(newRequest(
-      url,
-      httpMethod = hmPost,
-      headers = headers,
-      body = RequestBody(t: rbtOutput, outputId: response.outputId)
-    ))
-    window.loader.close(response)
-    return p
-  ).then(proc(res: Response) =
-    if res == nil:
-      if contentType != "image/png":
-        # redo as PNG.
-        # Note: this sounds dumb, and is dumb, but also standard mandated so
-        # whatever.
-        ctx.toBlob(this, callback, "image/png") # PNG doesn't understand quality
-      else: # the png encoder doesn't work...
-        window.console.error("missing/broken PNG encoder")
-      JS_FreeValue(ctx, callback)
-      return
-    res.blob().then(proc(blob: Blob) =
-      if blob == nil:
-        JS_FreeValue(ctx, callback)
-        return
-      let jsBlob = ctx.toJS(blob)
-      if JS_IsException(jsBlob):
-        JS_FreeValue(ctx, callback)
-        return
-      let res = ctx.callSinkFree(callback, JS_UNDEFINED, jsBlob)
-      if JS_IsException(res):
-        window.console.error("Exception in canvas toBlob:",
-          ctx.getExceptionMsg())
-      else:
-        JS_FreeValue(ctx, res)
-    )
   )
+  let env = ToBlobEnv(
+    ctx: JS_DupContext(ctx),
+    callback: JS_DupValue(ctx, callback),
+    isPNG: contentType == "image/png",
+    this: this,
+    url: url
+  )
+  let window = this.document.window
+  window.corsFetch(request, toBlob0, env)
 
 # <form>
 proc canSubmitImplicitly*(form: HTMLFormElement): bool =
@@ -6235,8 +6468,11 @@ proc getImageRect(this: HTMLImageElement): tuple[w, h: float64] =
     let objs = getClientRectsImpl(this, firstOnly = true, blockOnly = false)
     if objs.len > 0:
       return (objs[0].width, objs[0].height)
-  let width = float64(this.attrul(satWidth).get(uint32(this.bitmap.width)))
-  let height = float64(this.attrul(satHeight).get(uint32(this.bitmap.height)))
+  let bitmap = this.bitmap
+  if bitmap == nil:
+    return (0, 0)
+  let width = float64(this.attrul(satWidth).get(uint32(bitmap.width)))
+  let height = float64(this.attrul(satHeight).get(uint32(bitmap.height)))
   return (width, height)
 
 proc width(this: HTMLImageElement): uint32 {.jsfget.} =
@@ -6705,19 +6941,21 @@ proc remove(ctx: JSContext; this: HTMLSelectElement;
   ok()
 
 # <style>
+proc updateSheetFinish(window: Window; this: SheetElement; res: LoadSheetResult;
+    env: ParseSheetEnv; i: int) =
+  this.updateSheet(res.head, res.tail)
+  if this.isConnected():
+    let title = this.attr(satTitle)
+    let document = this.document
+    for sheet in this.sheets:
+      sheet.disabled = title != "" and title != document.sheetTitle
+
 proc updateSheet*(this: HTMLStyleElement) =
   let document = this.document
   let window = document.window
   if window != nil:
-    let p = window.parseStylesheet(this.textContent, document.baseURL,
-        DefaultCharset, CAtomNull).then(proc(res: LoadSheetResult) =
-      this.updateSheet(res.head, res.tail)
-      if this.isConnected():
-        let title = this.attr(satTitle)
-        for sheet in this.sheets:
-          sheet.disabled = title != "" and title != document.sheetTitle
-    )
-    window.pendingResources.add(p)
+    window.parseStylesheet(this, this.textContent, document.baseURL,
+      DefaultCharset, CAtomNull, updateSheetFinish, nil, 0)
 
 # <script>
 proc finalize(element: HTMLScriptElement) {.jsfin.} =
@@ -6828,11 +7066,71 @@ proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
     window.logException(script.baseURL)
   JS_FreeValue(ctx, res)
 
+type
+  FetchModuleEnv = ref object of BlobOpaque
+    window: Window
+    element: HTMLScriptElement
+    settings: EnvironmentSettings
+    url: URL
+    moduleType: ModuleType
+    referrerPolicy: Opt[ReferrerPolicy]
+    onComplete: OnCompleteProc
+    options: ScriptOptions
+
+proc onFinishFetchModule(response: Response; success: bool) =
+  let env = FetchModuleEnv(response.opaque)
+  let url = env.url
+  let window = env.window
+  let settings = env.settings
+  let element = env.element
+  let moduleType = env.moduleType
+  let onComplete = env.onComplete
+  let contentType = env.contentType
+  let ctx = window.jsctx
+  let blob = response.onFinishBlob(success)
+  if blob == nil:
+    let res = ScriptResult(t: srtNull)
+    settings.moduleMap.set(url, moduleType, res)
+    element.onComplete(res)
+    return
+  if contentType.isJavaScriptType():
+    let source = blob.toOpenArray().toValidUTF8()
+    let res = ctx.newJSModuleScript(source, url, env.options)
+    #TODO can't we just return null from newJSModuleScript?
+    if JS_IsException(res.script.record):
+      window.logException(res.script.baseURL)
+      element.onComplete(ScriptResult(t: srtNull))
+    else:
+      if env.referrerPolicy.isOk:
+        res.script.options.referrerPolicy = env.referrerPolicy
+      # set & onComplete both take ownership
+      settings.moduleMap.set(url, moduleType, res.clone())
+      element.onComplete(res)
+  else:
+    #TODO non-JS modules
+    discard
+
+proc fetchSingleModuleResponse(opaque: RootRef; response: Response) =
+  let env = FetchModuleEnv(opaque)
+  let settings = env.settings
+  let url = env.url
+  let moduleType = env.moduleType
+  let element = env.element
+  let onComplete = env.onComplete
+  if response == nil:
+    let res = ScriptResult(t: srtNull)
+    settings.moduleMap.set(url, moduleType, res)
+    element.onComplete(res)
+    return
+  env.referrerPolicy = response.getReferrerPolicy()
+  response.onFinish = onFinishFetchModule
+  response.blob(env)
+
 #TODO settings object
 proc fetchSingleModule(element: HTMLScriptElement; url: URL;
     destination: RequestDestination; options: ScriptOptions;
     referrer: URL; isTopLevel: bool; onComplete: OnCompleteProc) =
-  let moduleType = "javascript"
+  let moduleType = mtJavascript
   #TODO moduleRequest
   let window = element.document.window
   let settings = window.settings
@@ -6860,39 +7158,16 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
   )
   #TODO set up module script request
   #TODO performFetch
-  let p = window.fetchImpl(request)
-  p.then(proc(res: Response) =
-    let ctx = window.jsctx
-    if res == nil:
-      let res = ScriptResult(t: srtNull)
-      settings.moduleMap.set(url, moduleType, res, ctx)
-      element.onComplete(res)
-      return
-    let contentType = res.getContentType()
-    let referrerPolicy = res.getReferrerPolicy()
-    res.text().then(proc(s: TextResult) =
-      if s.isErr:
-        let res = ScriptResult(t: srtNull)
-        settings.moduleMap.set(url, moduleType, res, ctx)
-        element.onComplete(res)
-        return
-      if contentType.isJavaScriptType():
-        let res = ctx.newJSModuleScript(s.get, url, options)
-        #TODO can't we just return null from newJSModuleScript?
-        if JS_IsException(res.script.record):
-          window.logException(res.script.baseURL)
-          element.onComplete(ScriptResult(t: srtNull))
-        else:
-          if referrerPolicy.isOk:
-            res.script.options.referrerPolicy = referrerPolicy
-          # set & onComplete both take ownership
-          settings.moduleMap.set(url, moduleType, res.clone(), ctx)
-          element.onComplete(res)
-      else:
-        #TODO non-JS modules
-        discard
-    )
+  let opaque = FetchModuleEnv(
+    window: window,
+    element: element,
+    url: url,
+    settings: settings,
+    moduleType: moduleType,
+    onComplete: onComplete,
+    options: options,
   )
+  window.fetch(request, fetchSingleModuleResponse, opaque)
 
 proc execute*(element: HTMLScriptElement) =
   let document = element.document

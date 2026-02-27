@@ -11,7 +11,6 @@ import html/domexception
 import html/event
 import html/script
 import io/dynstream
-import io/promise
 import monoucha/fromjs
 import monoucha/jsbind
 import monoucha/jstypes
@@ -86,7 +85,8 @@ proc newXMLHttpRequest(ctx: JSContext): XMLHttpRequest {.jsctor.} =
   return XMLHttpRequest(
     upload: upload,
     headers: newHeaders(hgRequest),
-    responseObject: JS_UNDEFINED
+    responseObject: JS_UNDEFINED,
+    response: makeNetworkError()
   )
 
 proc finalize(rt: JSRuntime; this: XMLHttpRequest) {.jsfin.} =
@@ -296,6 +296,26 @@ proc onFinishXHR(response: Response; success: bool) =
     this.response = makeNetworkError()
     discard window.handleErrors(this, nil)
 
+proc sendAsync(opaque: RootRef; response: Response) =
+  let env = XHROpaque(opaque)
+  let this = env.this
+  let window = env.window
+  if response == nil:
+    this.response = makeNetworkError()
+    discard window.handleErrors(this, nil)
+    return
+  this.response = response
+  this.readyState = xhrsHeadersReceived
+  window.fireReadyStateChangeEvent(this)
+  if this.readyState != xhrsHeadersReceived:
+    return
+  env.len = max(response.getContentLength(), 0)
+  response.opaque = env
+  response.onRead = onReadXHR
+  response.onFinish = onFinishXHR
+  response.resume()
+  #TODO timeout
+
 proc send(ctx: JSContext; this: XMLHttpRequest; body: JSValueConst = JS_NULL):
     Opt[void] {.jsfunc.} =
   ?ctx.checkOpened(this)
@@ -337,23 +357,8 @@ proc send(ctx: JSContext; this: XMLHttpRequest; body: JSValueConst = JS_NULL):
   let window = ctx.getWindow()
   if xhrfSync notin this.flags: # async
     window.fireProgressEvent(this, satLoadstart, 0, 0)
-    window.fetchImpl(jsRequest).then(proc(response: Response) =
-      if response == nil:
-        this.response = makeNetworkError()
-        discard window.handleErrors(this, nil)
-        return
-      this.response = response
-      this.readyState = xhrsHeadersReceived
-      window.fireReadyStateChangeEvent(this)
-      if this.readyState != xhrsHeadersReceived:
-        return
-      let len = max(response.getContentLength(), 0)
-      response.opaque = XHROpaque(this: this, window: window, len: len)
-      response.onRead = onReadXHR
-      response.onFinish = onFinishXHR
-      response.resume()
-      #TODO timeout
-    )
+    let opaque = XHROpaque(this: this, window: window)
+    window.fetch(jsRequest, sendAsync, opaque)
   else: # sync
     #TODO cors requests?
     if window.settings.origin.isSameOrigin(request.url.origin):

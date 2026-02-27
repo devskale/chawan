@@ -13,6 +13,7 @@ import css/render
 import io/dynstream
 import io/packetreader
 import io/packetwriter
+import io/poll
 import local/select
 import monoucha/fromjs
 import monoucha/jsbind
@@ -127,7 +128,7 @@ type
 
   BufferState* = enum
     bsLoadingPage = "loadingPage"
-    bsLoadingResources = "loadingResources"
+    bsLoadingStyle = "loadingStyle"
     bsLoadingImages = "loadingImages"
     bsLoaded = "loaded"
 
@@ -239,7 +240,9 @@ type
   BufferInterface* = ref object of MapData
     map: seq[BufferIfaceItem]
     packetid: int
+    loader: FileLoader
     packetBuffer: PacketBuffer
+    partialReader: PartialPacketReader
     lines: SimpleFlexibleGrid
     lineShift: int
     numLines* {.jsget.}: int
@@ -253,6 +256,7 @@ type
     requestedLines: Slice[int]
     bgcolor*: CellColor
     lastPeek: HoverType
+    registered: bool # registered for write (otherwise only for read)
     redraw*: bool
     refreshStatus*: bool
     dead* {.jsget.}: bool
@@ -312,6 +316,7 @@ proc sendCursorPosition(iface: BufferInterface)
 proc requestLinesFast*(iface: BufferInterface; force = false)
 
 proc finalize(rt: JSRuntime; iface: BufferInterface) {.jsfin.} =
+  iface.partialReader.r.closeFds()
   for it in iface.map:
     if it.fun != nil:
       JS_FreeValueRT(rt, JS_MKPTR(JS_TAG_OBJECT, it.fun))
@@ -533,9 +538,9 @@ proc applyResponse*(init: BufferInit; response: Response;
   init.refreshMillis = refresh.n
 
 # BufferInterface
-proc newBufferInterface*(stream: SocketStream; register: BufferPacketFun;
-    opaque: RootRef; phandle: ProcessHandle; attrsp: ptr WindowAttributes;
-    init: BufferInit): BufferInterface =
+proc newBufferInterface*(stream: PosixStream; loader: FileLoader;
+    phandle: ProcessHandle; attrsp: ptr WindowAttributes; init: BufferInit):
+    BufferInterface =
   inc phandle.refc
   return BufferInterface(
     phandle: phandle,
@@ -546,7 +551,8 @@ proc newBufferInterface*(stream: SocketStream; register: BufferPacketFun;
     init: init,
     pos: CursorState(setx: -1),
     lastPeek: HoverType.high,
-    packetBuffer: initPacketBuffer(register, opaque)
+    packetBuffer: initPacketBuffer(),
+    loader: loader
   )
 
 proc newProcessHandle*(pid: int): ProcessHandle =
@@ -999,9 +1005,10 @@ type IfaceResult* = enum
 # Returns false on I/O error, err on JS error.
 proc handleCommand*(ctx: JSContext; iface: BufferInterface): IfaceResult =
   assert not iface.dead
-  iface.stream.withPacketReader r:
+  case iface.stream.initPartialReader(iface.partialReader)
+  of prcDone:
     var packetid: int
-    r.sread(packetid)
+    iface.partialReader.r.sread(packetid)
     let i = iface.findPromise(packetid)
     var res = irOk
     if i != -1:
@@ -1009,7 +1016,7 @@ proc handleCommand*(ctx: JSContext; iface: BufferInterface): IfaceResult =
       let val = if it.get == nil:
         JS_UNDEFINED
       else:
-        it.get(ctx, iface, r)
+        it.get(ctx, iface, iface.partialReader.r)
       if not JS_IsException(val) and it.fun != nil:
         let fun = JS_MKPTR(JS_TAG_OBJECT, it.fun)
         let ret = ctx.callSinkFree(fun, JS_UNDEFINED, val)
@@ -1021,13 +1028,21 @@ proc handleCommand*(ctx: JSContext; iface: BufferInterface): IfaceResult =
           JS_FreeValue(ctx, JS_MKPTR(JS_TAG_OBJECT, it.fun))
         res = irException
       iface.map.del(i)
-  do:
+  of prcEOF:
     return irEOF
+  of prcBuffer:
+    discard
   irOk
 
 proc flushWrite*(iface: BufferInterface): bool =
-  iface.packetBuffer.registered = false
-  return iface.packetBuffer.flush(iface.stream)
+  case iface.packetBuffer.flush(iface.stream)
+  of frDone:
+    iface.loader.pollData.unregister(iface.stream.fd)
+    iface.loader.pollData.register(iface.stream.fd, POLLIN)
+    iface.registered = false
+  of frBuffer: discard
+  of frEOF: return false
+  true
 
 proc hasPromises(iface: BufferInterface): bool =
   return iface.map.len > 0
@@ -1108,8 +1123,19 @@ proc initPacketWriter(iface: BufferInterface; cmd: BufferCommand):
   result.swrite(cmd)
   result.swrite(iface.packetid)
 
+proc flush(iface: BufferInterface; w: var PacketWriter): bool =
+  if iface.dead:
+    return false
+  case iface.packetBuffer.flush(w, iface.stream)
+  of frEOF: return false
+  of frBuffer:
+    iface.loader.pollData.unregister(iface.stream.fd)
+    iface.loader.pollData.register(iface.stream.fd, POLLIN or POLLOUT)
+  of frDone: discard
+  true
+
 proc flush(ctx: JSContext; iface: BufferInterface; w: var PacketWriter): bool =
-  if iface.dead or not iface.packetBuffer.flush(w, iface.stream):
+  if not iface.flush(w):
     JS_ThrowTypeError(ctx, "buffer %d disconnected", cint(iface.phandle.process))
     return false
   return true
@@ -1125,7 +1151,7 @@ template withPacketWriter(iface: BufferInterface; cmd: BufferCommand;
     w, body, fallback: untyped) =
   var w = iface.initPacketWriter(cmd)
   body
-  if iface.dead or not iface.packetBuffer.flush(w, iface.stream):
+  if not iface.flush(w):
     fallback
 
 template withPacketWriterSync(iface: BufferInterface; cmd: BufferCommand;
@@ -1185,7 +1211,7 @@ proc findNextLink(ctx: JSContext; iface: BufferInterface; x, y, n: int): JSValue
 
 proc findNextMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
     x, y: int; wrap: bool; n: int): JSValue {.jsfunc.} =
-  var bytecodeLen: csize_t
+  var bytecodeLen: cint
   let p = JS_GetRegExpBytecode(ctx, re, bytecodeLen)
   if p == nil:
     return JS_EXCEPTION
@@ -1245,7 +1271,7 @@ proc findPrevLink(ctx: JSContext; iface: BufferInterface; x, y, n: int):
 
 proc findPrevMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
     x, y: int; wrap: bool; n: int): JSValue {.jsfunc.} =
-  var bytecodeLen: csize_t
+  var bytecodeLen: cint
   let p = JS_GetRegExpBytecode(ctx, re, bytecodeLen)
   if p == nil:
     return JS_EXCEPTION
@@ -1474,8 +1500,6 @@ proc readCanceled(ctx: JSContext; iface: BufferInterface): JSValue {.jsfunc.} =
 
 proc readSuccess(ctx: JSContext; iface: BufferInterface; s: string; fd: cint):
     JSValue {.jsfunc.} =
-  if iface.stream.flush().isErr:
-    return JS_UNDEFINED
   ctx.withPacketWriter iface, bcReadSuccess, w:
     w.swrite(s)
     let hasfd = fd != -1
@@ -1546,7 +1570,7 @@ proc matchFirst(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
     y: int): JSValue {.jsfunc.} =
   if not iface.lineLoaded(y):
     return ctx.toJS((-1, -1))
-  var plen: csize_t
+  var plen: cint
   let p = JS_GetRegExpBytecode(ctx, re, plen)
   if p == nil:
     return JS_EXCEPTION

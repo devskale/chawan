@@ -36,14 +36,10 @@ Monoucha is a high-level wrapper to QuickJS, created for the
 [Chawan](https://sr.ht/~bptato/chawan) browser with the primary aim of
 automatically generating bindings to JS APIs.
 
-While Monoucha *is* high-level, it does not try to completely abstract away
-the low-level details.  You will in many cases have to use QuickJS APIs
+Monoucha is high-level, but it does not try to completely abstract away the
+low-level details.  You will in many cases have to use QuickJS APIs
 directly to achieve something; Monoucha only provides abstractions to APIs
 where doing something manually would be tedious and/or error-prone.
-
-Also note that Monoucha is *not* complete, and neither is QuickJS.
-Documented interfaces may break at any new release.  Please pin a specific
-version if you need a stable API.
 
 ### Hello, world
 
@@ -496,10 +492,7 @@ Only one `.jsfin` procedure per reference type is allowed, but parent
 previous versions.)
 
 `.jsfin` also supports a "zeroeth" parameter, but here it must be a
-`JSRuntime`, *not* `JSContext`.  WARNING: this parameter is nil when an
-object that was not bound to a JS value is finalized.  (An object is bound
-to a JS value if toJS is called on it; this happens whenever you return a
-Nim object from a function bound to JS.)
+`JSRuntime`, *not* `JSContext`.
 
 Example:
 

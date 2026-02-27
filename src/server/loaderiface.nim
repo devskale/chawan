@@ -13,7 +13,6 @@ import io/dynstream
 import io/packetreader
 import io/packetwriter
 import io/poll
-import io/promise
 import server/headers
 import server/request
 import server/response
@@ -34,7 +33,7 @@ type
     registerQueue: seq[tuple[data: MapData; events: cshort]]
     # UNIX domain socket to the loader process.
     # We send all messages through this.
-    controlStream*: SocketStream
+    controlStream*: PosixStream
 
   ConnectDataState* = enum
     cdsBeforeResult, cdsBeforeStatus
@@ -118,7 +117,7 @@ template withPacketReaderFire(loader: FileLoader; r, body: untyped) =
 
 # Start a request. This should not block (not for a significant amount
 # of time anyway).
-proc startRequest(loader: FileLoader; request: Request): SocketStream =
+proc startRequest(loader: FileLoader; request: Request): PosixStream =
   loader.withPacketWriter w:
     w.swrite(lcLoad)
     w.swrite(request)
@@ -131,7 +130,7 @@ proc startRequest(loader: FileLoader; request: Request): SocketStream =
     if success:
       fd = r.recvFd()
   if success:
-    let res = newSocketStream(fd)
+    let res = newPosixStream(fd)
     res.setCloseOnExec()
     return res
   return nil
@@ -234,18 +233,9 @@ proc fetch0(loader: FileLoader; input: Request; finish: FetchFinish;
       redirectNum: redirectNum
     ))
 
-proc legacyFinish(opaque: RootRef; response: Response) =
-  let promise = FetchPromise(opaque)
-  promise.resolve(response)
-
 proc fetch*(loader: FileLoader; input: Request; finish: FetchFinish;
     opaque: RootRef) =
   loader.fetch0(input, finish, opaque, 0)
-
-proc fetch*(loader: FileLoader; input: Request): FetchPromise =
-  let promise = FetchPromise()
-  loader.fetch(input, legacyFinish, promise)
-  return promise
 
 proc suspend*(loader: FileLoader; fds: seq[int]) =
   loader.withPacketWriterFire w:
@@ -272,7 +262,7 @@ proc close*(loader: FileLoader; response: Response) =
     response.body.sclose()
     response.body = nil
 
-proc tee*(loader: FileLoader; sourceId, targetPid: int): (SocketStream, int) =
+proc tee*(loader: FileLoader; sourceId, targetPid: int): (PosixStream, int) =
   loader.withPacketWriter w:
     w.swrite(lcTee)
     w.swrite(sourceId)
@@ -286,7 +276,7 @@ proc tee*(loader: FileLoader; sourceId, targetPid: int): (SocketStream, int) =
     if outputId != -1:
       fd = r.recvFd()
   if fd != -1:
-    return (newSocketStream(fd), outputId)
+    return (newPosixStream(fd), outputId)
   return (nil, -1)
 
 proc addCacheFile*(loader: FileLoader; outputId: int): int =
@@ -486,8 +476,8 @@ proc addAuth*(loader: FileLoader; url: URL) =
     w.swrite(lcAddAuth)
     w.swrite(url)
 
-proc addClient*(loader: FileLoader; pid: int; config: LoaderClientConfig;
-    isPager = false): SocketStream =
+proc addClient*(loader: FileLoader; pid: int; config: LoaderClientConfig):
+    PosixStream =
   loader.withPacketWriter w:
     w.swrite(lcAddClient)
     w.swrite(pid)
@@ -498,10 +488,10 @@ proc addClient*(loader: FileLoader; pid: int; config: LoaderClientConfig;
   var fd: cint
   loader.withPacketReaderFire r:
     r.sread(success)
-    if success and not isPager:
+    if success:
       fd = r.recvFd()
-  if success and not isPager:
-    return newSocketStream(fd)
+  if success:
+    return newPosixStream(fd)
   return nil
 
 proc removeClient*(loader: FileLoader; pid: int) =
@@ -539,7 +529,7 @@ proc doPipeRequest*(loader: FileLoader; id: string):
     return (nil, nil)
   return (ps, response)
 
-proc newFileLoader*(clientPid: int; controlStream: SocketStream):
+proc newFileLoader*(clientPid: int; controlStream: PosixStream):
     FileLoader =
   return FileLoader(
     clientPid: clientPid,

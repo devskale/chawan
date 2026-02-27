@@ -176,9 +176,9 @@ non-copying slice.  (Obviously, you should use `substr` if you *need* to
 copy.)
 
 Note that `=` usually copies.  If you're copying a large object a lot, you
-may want to set its type to `ref`.  Alternatively, you can try using `move`,
-but be sure to check the generated code because often times it doesn't work
-in `refc`.
+may want to set its type to `ref`.  For `seq`/`string` you can also try
+using `move`, but be sure to check the generated code because often times
+it doesn't work in `refc`.
 
 Beware of `pairs` on sequences of objects; it copies.  Use `mypairs` if you
 don't need mutation, `mpairs` if you do:
@@ -199,6 +199,25 @@ proc foo(objs: openArray[SomeObj]) =
 These introduce function coloring for little to no benefit.
 
 Just use `proc` without `.noSideEffect`.
+
+### Closures
+
+A closure is an anonymous `proc` that uses ("captures") variables in its
+wrapper `proc`.  These introduce implicit GC'ed environments which are
+often wasteful, and combined with JS they are an easy way to produce memory
+leaks.
+
+To enforce this rule, `proc` variables or members always have a `nimcall`
+(or `cdecl`) pragma.  The environment can be passed explicitly, e.g.:
+
+```nim
+type
+  FooCallback = proc(foo: Foo; opaque: RootRef) {.nimcall, raises: [].}
+
+  Foo = ref object
+    callback: FooCallback
+    opaque: RootRef # add an explicit environment like this if needed
+```
 
 ## Fixing cyclic imports
 

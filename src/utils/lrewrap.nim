@@ -7,11 +7,14 @@ type
 
   REBytecode* = distinct ptr uint8
 
-proc bytecodeToRegex*(p: REBytecode; plen: csize_t): Regex =
-  result = Regex(
-    bytecode: newString(plen)
-  )
-  copyMem(addr result.bytecode[0], cast[ptr uint8](p), plen)
+proc bytecodeToRegex*(p: REBytecode; plen: cint): Regex =
+  let plen = int(plen)
+  when NimMajor >= 2:
+    let p = cast[ptr UncheckedArray[char]](p)
+    result = Regex(bytecode: p.toOpenArray(0, plen - 1).substr())
+  else:
+    result = Regex(bytecode: newString(cast[int](plen)))
+    copyMem(addr result.bytecode[0], cast[ptr uint8](p), plen)
 
 proc compileRegex*(buf: string; flags: LREFlags; regex: var Regex): bool =
   ## Compile a regular expression using QuickJS's libregexp library.
@@ -30,7 +33,7 @@ proc compileRegex*(buf: string; flags: LREFlags; regex: var Regex): bool =
     regex = Regex(bytecode: move(errorMsg))
     return false
   assert plen > 0
-  regex = bytecodeToRegex(cast[REBytecode](bytecode), csize_t(plen))
+  regex = bytecodeToRegex(cast[REBytecode](bytecode), plen)
   dealloc(bytecode)
   true
 
