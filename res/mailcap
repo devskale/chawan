@@ -1,8 +1,0 @@
-# mailcap entries executed after prompting user
-
-image/png;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
-image/jpeg;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
-image/bmp;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
-image/gif;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
-image/webp;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
-image/svg+xml;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage

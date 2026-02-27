@@ -318,8 +318,8 @@ proc setupStartupScript(ctx: JSContext; script: string) =
   let path = ChaPath("$CHA_LIBEXEC_DIR/" & script).unquoteGet()
   let ps = newPosixStream(path)
   if ps != nil:
-    let s = ps.readAll()
-    let obj = JS_ReadObject(ctx, cast[ptr uint8](cstring(s)), csize_t(s.len),
+    let src = ps.readAllOrMmap()
+    let obj = JS_ReadObject(ctx, cast[ptr uint8](src.p), csize_t(src.len),
       JS_READ_OBJ_BYTECODE)
     if JS_IsException(obj):
       die(ctx.getExceptionMsg())

@@ -57,7 +57,7 @@ proc parseMimeTypes*(mimeTypes: var MimeTypes; file: ChaFile): Opt[void] =
       i += ext.len
       if ext.len > 0 and not mimeTypes.t.hasKeyOrPut(ext, t) and
           t.startsWith("image/"):
-        let t = t.after('/')
+        let t = t.substr("image/".len)
         # As a fingerprinting countermeasure: prevent additional
         # extensions for predefined inline image type detection.
         if t notin DefaultImages:

@@ -95,8 +95,7 @@ proc writeCRLine*(file: ChaFile; s: openArray[char]): Opt[void] =
   ?file.write('\r')
   file.writeLine()
 
-proc readLine*(file: ChaFile; s: var string): Opt[bool] =
-  s.setLen(0)
+proc readLineAppend*(file: ChaFile; s: var string): Opt[bool] =
   while (let c = file.fgetc(); c != EOF):
     let cc = cast[char](c)
     if cc == '\n':
@@ -105,6 +104,10 @@ proc readLine*(file: ChaFile; s: var string): Opt[bool] =
   if ferror(file) != 0:
     return err()
   ok(false)
+
+proc readLine*(file: ChaFile; s: var string): Opt[bool] =
+  s.setLen(0)
+  file.readLineAppend(s)
 
 proc readAll*(file: ChaFile; s: var string): Opt[void] =
   s = newString(4096)

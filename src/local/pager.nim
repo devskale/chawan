@@ -94,7 +94,7 @@ type
     askPromise: JSValue # function to resolve on ask finish
 
   Pager* = ref object of RootObj
-    blockTillRelease: bool
+    mailcapLoaded: bool
     hasload: bool # has a page been successfully loaded since startup?
     dumpConsoleFile: bool
     feedNext {.jsgetset.}: bool
@@ -340,17 +340,30 @@ proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
   return js_strdup(ctx, name)
 
 proc loadMailcap(pager: Pager; mailcap: var Mailcap; path: ChaPathResolved) =
-  let ps = newPosixStream($path)
-  if ps != nil:
-    let src = ps.readAllOrMmap()
-    let res = mailcap.parseMailcap(src.toOpenArray(), $path)
-    deallocMem(src)
-    ps.sclose()
-    if res.isErr:
-      pager.alert(res.error)
+  let res = mailcap.parseMailcap($path)
+  if res.isErr:
+    pager.alert(res.error)
 
-const DefaultMailcap = staticRead"res/mailcap"
-const DefaultAutoMailcap = staticRead"res/auto.mailcap"
+# executed after prompting user
+const DefaultMailcap = """
+image/png;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
+image/jpeg;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
+image/bmp;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
+image/gif;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
+image/webp;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
+image/svg+xml;	exec "$CHA_LIBEXEC_DIR"/img2html '%t' '%u'; x-htmloutput; x-needsimage
+"""
+
+# executed automatically
+const DefaultAutoMailcap = """
+text/gopher;	exec "$CHA_LIBEXEC_DIR"/gopher2html -u '%u'; x-htmloutput
+text/gemini;	exec "$CHA_LIBEXEC_DIR"/gmi2html; x-htmloutput
+text/markdown;	exec "$CHA_LIBEXEC_DIR"/md2html; x-htmloutput
+text/x-ansi;	exec "$CHA_LIBEXEC_DIR"/ansi2html -st '%{title}'; x-htmloutput; x-needsstyle
+text/x-dirlist;	exec "$CHA_LIBEXEC_DIR"/dirlist2html -t '%{title}'; x-htmloutput
+text/uri-list;	exec "$CHA_LIBEXEC_DIR"/uri2html '%{title}'; x-htmloutput
+application/xhtml+xml; exec cat; x-htmloutput
+"""
 
 proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
     alerts: seq[string]; loader: FileLoader; loaderPid: int;
@@ -401,11 +414,7 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
         pager.cookieJars.transient = true
         pager.alert("failed to read cookies")
   pager.loadMailcap(pager.autoMailcap, config.external.autoMailcap)
-  doAssert pager.autoMailcap.parseMailcap(DefaultAutoMailcap,
-    "res/auto.mailcap").isOk
-  for p in config.external.mailcap:
-    pager.loadMailcap(pager.mailcap, p)
-  doAssert pager.mailcap.parseMailcap(DefaultMailcap, "res/mailcap").isOk
+  pager.autoMailcap.parseBuiltin(DefaultAutoMailcap)
   for p in config.external.mimeTypes:
     if f := chafile.fopen($p, "r"):
       let res = pager.mimeTypes.parseMimeTypes(f)
@@ -1890,7 +1899,7 @@ proc execPipeSink(pager: Pager; cmd: string; istream: PosixStream):
 # Pipe output of an x-ansioutput mailcap command to the text/x-ansi handler.
 proc ansiDecode(pager: Pager; url: URL; ishtml: bool; istream: PosixStream):
     PosixStream =
-  let i = pager.autoMailcap.findMailcapEntry("text/x-ansi", "", url)
+  let i = pager.autoMailcap.findMailcapEntry("text/x-ansi", url)
   if i == -1:
     pager.alert("No text/x-ansi entry found")
     return nil
@@ -2133,15 +2142,13 @@ proc applyMailcap(ctx: JSContext; pager: Pager; init: BufferInit;
   else:
     var s: string
     ?ctx.fromJS(val, s)
-    var mailcap: Mailcap
-    let res = mailcap.parseMailcap(s, "<input>")
-    if res.isOk and mailcap.len == 1:
-      pager.applyMailcap(init, mailcap[0])
-    elif res.isErr:
-      JS_ThrowTypeError(ctx, "%s", cstring(res.error))
-      return err()
+    var entry: MailcapEntry
+    var state = MailcapParser()
+    let res = state.parseEntry(s, entry)
+    if res.isOk:
+      pager.applyMailcap(init, entry)
     else:
-      JS_ThrowTypeError(ctx, "one mailcap entry expected")
+      JS_ThrowTypeError(ctx, "%s", cstring(state.error))
       return err()
   ok()
 
@@ -2245,10 +2252,13 @@ proc addMailcapEntry(pager: Pager; init: BufferInit; cmd: string;
 # private
 proc findMailcapPrevNext(pager: Pager; init: BufferInit; i: int):
     tuple[prev, next: int] {.jsfunc.} =
-  let prev = pager.mailcap.findPrevMailcapEntry(init.contentType, "",
-    init.url, i)
-  let next = pager.mailcap.findMailcapEntry(init.contentType, "",
-    init.url, i)
+  if not pager.mailcapLoaded:
+    for p in pager.config.external.mailcap:
+      pager.loadMailcap(pager.mailcap, p)
+    pager.mailcap.parseBuiltin(DefaultMailcap)
+    pager.mailcapLoaded = true
+  let prev = pager.mailcap.findPrevMailcapEntry(init.contentType, init.url, i)
+  let next = pager.mailcap.findMailcapEntry(init.contentType, init.url, i)
   return (prev, next)
 
 # private
@@ -2302,12 +2312,12 @@ proc connected(pager: Pager; init: BufferInit; response: Response): Opt[void] =
     return pager.connected2(init)
   if shortContentType.equalsIgnoreCase("text/plain") or bifSave in init.flags:
     return pager.connected2(init)
-  let i = pager.autoMailcap.findMailcapEntry(contentType, "", init.url)
+  let i = pager.autoMailcap.findMailcapEntry(contentType, init.url)
   if i != -1 or pager.config.start.headless != hmFalse:
     pager.applyMailcap(init, pager.autoMailcap[i])
     return pager.connected2(init)
   else:
-    let i = pager.mailcap.findMailcapEntry(contentType, "", init.url)
+    let (_, i) = pager.findMailcapPrevNext(init, -1)
     if i < 0 and shortContentType.isTextType():
       return pager.connected2(init)
     let ctx = pager.jsctx
