@@ -1205,7 +1205,7 @@ proc parseColorComponent(ctx: var CSSParser): Opt[CSSToken] =
     case res.t
     of ccstNumber: return ok(cssNumberToken(res.n))
     of ccstDegree: return ok(cssDimensionToken(res.deg, catDeg))
-    of ccstLength: return ok(cssPercentageToken(res.l.perc))
+    of ccstLength: return ok(cssPercentageToken(res.l.perc * 100))
   of cttNumber, cttPercentage, cttDimension:
     return ok(ctx.consume())
   of cttIdent:
