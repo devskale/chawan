@@ -1760,7 +1760,7 @@ const ReTextStart = /\S/gu;
                 const s = await pager.askMailcap(init, i, sx, prev, next);
                 let mailcapFlag;
                 switch (s) {
-                case '\x03', 'q':
+                case '\x03': case 'q':
                     pager.alert("Canceled");
                     init.closeMailcap();
                     break loop;

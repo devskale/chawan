@@ -158,8 +158,7 @@ proc toJS*[T: tuple](ctx: JSContext; t: T): JSValue =
   {.pop.}
   return ctx.newArrayFrom(vals)
 
-proc toJSP0(ctx: JSContext; p, tp, toRef: pointer; ctor: JSValueConst):
-    JSValue =
+proc toJSP0(ctx: JSContext; p, tp: pointer; ctor: JSValueConst): JSValue =
   let rtOpaque = JS_GetRuntime(ctx).getOpaque()
   rtOpaque.plist.withValue(p, obj):
     # a JSValue already points to this object.
@@ -171,7 +170,7 @@ proc toJSP0(ctx: JSContext; p, tp, toRef: pointer; ctor: JSValueConst):
     # Nim owned the JS value, but now JS wants to own Nim.
     # This means we must release the JS reference, and add a reference
     # to Nim.
-    GC_ref(cast[RootRef](toRef))
+    GC_ref(cast[RootRef](p))
     JS_SetOpaque(val, p)
     return val
   let class = rtOpaque.typemap.getOrDefault(tp, 0)
@@ -185,7 +184,7 @@ proc toJSP0(ctx: JSContext; p, tp, toRef: pointer; ctor: JSValueConst):
     return JS_EXCEPTION
   rtOpaque.plist[p] = JS_VALUE_GET_PTR(jsObj)
   JS_SetOpaque(jsObj, p)
-  GC_ref(cast[RootRef](toRef))
+  GC_ref(cast[RootRef](p))
   return jsObj
 
 when defined(gcDestructors):
@@ -217,7 +216,7 @@ template getTypePtr*[T: ref object](t: typedesc[T]): pointer =
 proc toJSRefObj*(ctx: JSContext; obj: ref object): JSValue =
   let p = cast[pointer](obj)
   let tp = getTypePtr(obj)
-  return ctx.toJSP0(p, tp, p, JS_UNDEFINED)
+  return ctx.toJSP0(p, tp, JS_UNDEFINED)
 
 proc toJS*(ctx: JSContext; obj: ref object): JSValue =
   if obj == nil:
@@ -229,7 +228,7 @@ proc toJSNew*(ctx: JSContext; obj: ref object; ctor: JSValueConst): JSValue =
     return JS_NULL
   let p = cast[pointer](obj)
   let tp = getTypePtr(obj)
-  return ctx.toJSP0(p, tp, p, ctor)
+  return ctx.toJSP0(p, tp, ctor)
 
 proc toJSEnum(ctx: JSContext; enumId: int; n: int; s: string): JSValue =
   let rt = JS_GetRuntime(ctx)

@@ -5,6 +5,7 @@
 import std/os
 import std/posix
 
+import io/chafile
 import io/dynstream
 import types/opt
 import types/url
@@ -12,10 +13,9 @@ import utils/myposix
 import utils/twtstr
 
 type
-  MailcapParser = object
-    at: int
+  MailcapParser* = object
     line: int
-    path: string
+    error*: string
 
   MailcapFlag* = enum
     mfNeedsterminal = "needsterminal"
@@ -54,83 +54,45 @@ proc `$`*(entry: MailcapEntry): string =
   s &= '\n'
   move(s)
 
-proc has(state: MailcapParser; buf: openArray[char]): bool {.inline.} =
-  return state.at < buf.len
-
 template err(state: MailcapParser; msg: string): untyped =
-  err(state.path & '(' & $state.line & "): " & msg)
+  state.error = msg
+  err()
 
-proc reconsume(state: var MailcapParser; buf: openArray[char]) =
-  dec state.at
-  if buf[state.at] == '\n':
-    dec state.line
-
-proc consume(state: var MailcapParser; buf: openArray[char]): char =
-  let c = buf[state.at]
-  inc state.at
-  if c == '\\' and state.at < buf.len:
-    if buf[state.at] != '\n':
-      return '\\'
-    inc state.at
-    inc state.line
-    if state.at >= buf.len:
-      return '\n'
-    let c = buf[state.at]
-    inc state.at
-    if c == '\n':
-      inc state.line
-    return c
-  if c == '\n':
-    inc state.line
-  return c
-
-proc skipBlanks(state: var MailcapParser; buf: openArray[char]) =
-  while state.has(buf):
-    if state.consume(buf) notin AsciiWhitespace - {'\n'}:
-      state.reconsume(buf)
-      break
-
-proc skipLine(state: var MailcapParser; buf: openArray[char]) =
-  while state.has(buf):
-    let c = state.consume(buf)
-    if c == '\n':
-      break
-
-proc consumeTypeField(state: var MailcapParser; buf: openArray[char];
-    outs: var string): Err[string] =
+proc consumeTypeField(state: var MailcapParser; line: openArray[char];
+    outs: var string): Opt[int] =
   var nslash = 0
-  while state.has(buf):
-    let c = state.consume(buf)
+  var n = 0
+  while n < line.len:
+    let c = line[n]
     if c in AsciiWhitespace + {';'}:
-      state.reconsume(buf)
       break
     if c == '/':
       inc nslash
     elif c notin AsciiAlphaNumeric + {'-', '.', '*', '_', '+'}:
       return state.err("invalid character in type field: " & c)
     outs &= c.toLowerAscii()
+    inc n
   if nslash == 0:
     # Accept types without a subtype - RFC calls this "implicit-wild".
     outs &= "/*"
   if nslash > 1:
     return state.err("too many slash characters")
-  state.skipBlanks(buf)
-  if not state.has(buf) or state.consume(buf) != ';':
+  n = line.skipBlanks(n)
+  if n >= line.len or line[n] != ';':
     return state.err("semicolon not found")
-  return ok()
+  ok(n + 1)
 
-proc consumeCommand(state: var MailcapParser; buf: openArray[char];
-    outs: var string): Err[string] =
-  state.skipBlanks(buf)
+proc consumeCommand(state: var MailcapParser; line: string;
+    outs: var string; n: int): Opt[int] =
+  var n = line.skipBlanks(n)
   var quoted = false
-  while state.has(buf):
-    let c = state.consume(buf)
+  while n < line.len:
+    let c = line[n]
     if not quoted:
       if c == '\r':
         continue
-      if c in {';', '\n'}:
-        state.reconsume(buf)
-        return ok()
+      if c == ';':
+        return ok(n)
       if c == '\\':
         quoted = true
         # fall through; backslash will be parsed again in unquoteCommand
@@ -139,28 +101,29 @@ proc consumeCommand(state: var MailcapParser; buf: openArray[char];
     else:
       quoted = false
     outs &= c
-  return ok()
+    inc n
+  ok(n)
 
 type NamedField = enum
   nmTest = "test"
   nmNametemplate = "nametemplate"
   nmEdit = "edit"
 
-proc consumeField(state: var MailcapParser; buf: openArray[char];
-    entry: var MailcapEntry): Result[bool, string] =
-  state.skipBlanks(buf)
+proc consumeField(state: var MailcapParser; line: string;
+    entry: var MailcapEntry; n: int): Opt[int] =
+  var n = line.skipBlanks(n)
   var s = ""
-  var res = false
-  while state.has(buf):
-    case (let c = state.consume(buf); c)
-    of ';', '\n':
-      res = c == ';'
+  while n < line.len:
+    let c = line[n]
+    inc n
+    case c
+    of ';':
       break
     of '\r':
       continue
     of '=':
       var cmd = ""
-      ?state.consumeCommand(buf, cmd)
+      n = ?state.consumeCommand(line, cmd, n)
       while s.len > 0 and s[^1] in AsciiWhitespace:
         s.setLen(s.len - 1)
       if x := parseEnumNoCase[NamedField](s):
@@ -168,7 +131,7 @@ proc consumeField(state: var MailcapParser; buf: openArray[char];
         of nmTest: entry.test = move(cmd)
         of nmNametemplate: entry.nametemplate = move(cmd)
         of nmEdit: entry.edit = move(cmd)
-      return ok(state.has(buf) and state.consume(buf) == ';')
+      return ok(n)
     elif c in Controls:
       return state.err("invalid character in field: " & c)
     else:
@@ -177,28 +140,57 @@ proc consumeField(state: var MailcapParser; buf: openArray[char];
     s.setLen(s.len - 1)
   if x := parseEnumNoCase[MailcapFlag](s):
     entry.flags.incl(x)
-  return ok(res)
+  return ok(n)
 
-proc parseMailcap*(mailcap: var Mailcap; buf: openArray[char]; path: string):
-    Err[string] =
-  var state = MailcapParser(line: 1, path: path)
-  while state.has(buf):
-    if state.consume(buf) == '#':
-      state.skipLine(buf)
+proc parseEntry*(state: var MailcapParser; line: string;
+    entry: var MailcapEntry): Opt[void] =
+  var n = ?state.consumeTypeField(line, entry.t)
+  n = ?state.consumeCommand(line, entry.cmd, n)
+  while n < line.len:
+    n = ?state.consumeField(line, entry, n)
+  ok()
+
+proc parseBuiltin*(mailcap: var Mailcap; buf: openArray[char]) =
+  var state = MailcapParser(line: 1)
+  for line in buf.split('\n'):
+    if line.len <= 0:
       continue
-    state.reconsume(buf)
-    state.skipBlanks(buf)
-    if state.consume(buf) in {'\n', '\r'}:
-      continue
-    state.reconsume(buf)
-    var entry = MailcapEntry()
-    ?state.consumeTypeField(buf, entry.t)
-    ?state.consumeCommand(buf, entry.cmd)
-    if state.has(buf) and state.consume(buf) == ';':
-      while ?state.consumeField(buf, entry):
-        discard
+    var entry: MailcapEntry
+    let res = state.parseEntry(line, entry)
+    doAssert res.isOk, state.error
     mailcap.add(entry)
+
+proc parseMailcap(state: var MailcapParser; mailcap: var Mailcap;
+    file: ChaFile): Opt[void] =
+  var line: string
+  while file.readLine(line).get(false):
+    if line.len <= 0 or line[0] == '#':
+      continue
+    while true:
+      if line.len > 0 and line[^1] == '\r':
+        line.setLen(line.high)
+      if line.len == 0 or line[^1] != '\\':
+        break
+      line.setLen(line.high) # trim backslash
+      if not ?file.readLineAppend(line):
+        break
+    var entry: MailcapEntry
+    ?state.parseEntry(line, entry)
+    mailcap.add(entry)
+    inc state.line
   return ok()
+
+proc parseMailcap*(mailcap: var Mailcap; path: string): Err[string] =
+  let file0 = chafile.fopen(path, "r")
+  if file0.isErr:
+    return ok()
+  let file = file0.get
+  var state = MailcapParser(line: 1)
+  let res = state.parseMailcap(mailcap, file)
+  file.close()
+  if res.isErr:
+    return err(path & '(' & $state.line & "): " & msg)
+  ok()
 
 # Mostly based on w3m's mailcap quote/unquote
 type UnquoteState = enum
@@ -319,32 +311,32 @@ proc unquoteCommand*(ecmd, contentType, outpath: string; url: URL): string =
   var canpipe: bool
   return unquoteCommand(ecmd, contentType, outpath, url, canpipe)
 
-proc checkEntry(entry: MailcapEntry; contentType, outpath, mt, st: string;
-    url: URL): bool =
+proc checkEntry(entry: MailcapEntry; contentType, mt, st: string; url: URL):
+    bool =
   if not entry.t.startsWith("*/") and not entry.t.startsWithIgnoreCase(mt) or
       not entry.t.endsWith("/*") and not entry.t.endsWithIgnoreCase(st):
     return false
   if entry.test != "":
     var canpipe = true
-    let cmd = unquoteCommand(entry.test, contentType, outpath, url, canpipe)
+    let cmd = unquoteCommand(entry.test, contentType, "", url, canpipe)
     return canpipe and myposix.system(cstring(cmd)) == 0
   true
 
-proc findPrevMailcapEntry*(mailcap: Mailcap; contentType, outpath: string;
-    url: URL; last: int): int =
+proc findPrevMailcapEntry*(mailcap: Mailcap; contentType: string; url: URL;
+    last: int): int =
   let mt = contentType.until('/') & '/'
   let st = contentType.until(AsciiWhitespace + {';'}, mt.len - 1)
   for i in countdown(last - 1, 0):
-    if checkEntry(mailcap[i], contentType, outpath, mt, st, url):
+    if checkEntry(mailcap[i], contentType, mt, st, url):
       return i
   return -1
 
-proc findMailcapEntry*(mailcap: Mailcap; contentType, outpath: string;
-    url: URL; start = -1): int =
+proc findMailcapEntry*(mailcap: Mailcap; contentType: string; url: URL;
+    start = -1): int =
   let mt = contentType.until('/') & '/'
   let st = contentType.until(AsciiWhitespace + {';'}, mt.len - 1)
   for i in start + 1 ..< mailcap.len:
-    if checkEntry(mailcap[i], contentType, outpath, mt, st, url):
+    if checkEntry(mailcap[i], contentType, mt, st, url):
       return i
   return -1
 
