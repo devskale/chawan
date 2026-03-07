@@ -237,12 +237,17 @@ for (const it of ["redraw", "cancel", "toggleSource", "nextBuffer",
 }
 
 /* buffer, no precnum */
-for (const it of ["markURL", "reshape", "cursorLineBegin",
-        "cursorLineTextStart", "cursorLineEnd", "cursorMiddleColumn",
-        "cursorLeftEdge", "cursorRightEdge", "cursorMiddle", "saveLink",
-        "saveScreen", "saveSource", "editScreen", "editSource",
-        "toggleImages"]) {
+for (const it of ["cursorLineBegin", "cursorLineTextStart", "cursorLineEnd",
+        "cursorMiddleColumn", "cursorLeftEdge", "cursorRightEdge",
+        "cursorMiddle"]) {
     cmd[it] = () => pager[it]();
+}
+
+/* buffer, unshared with select
+ * (really select should have adifferent keymap) */
+for (const it of ["markURL", "reshape", "editScreen", "editSource",
+        "saveLink", "saveScreen", "saveSource", "toggleImages"]) {
+    cmd[it] = () => pager.buffer[it]();
 }
 
 /* line */
@@ -2130,16 +2135,12 @@ const ReTextStart = /\S/gu;
             this.cursorLineEnd();
     }
 
-    /*
-     * backwards compat
-     * TODO remove once we have an official interface for these
-     */
-    /* private */ findPrevMatch(...args) {
-        return this.iface.findPrevMatch(...args);
+    /* public */ findPrevMatch(regex, x, y, wrap = false, n = 1) {
+        return this.iface.findPrevMatch(regex, x, y, wrap, n);
     }
 
-    /* private */ findNextMatch(...args) {
-        return this.iface.findNextMatch(...args);
+    /* public */ findNextMatch(regex, x, y, wrap = false, n = 1) {
+        return this.iface.findNextMatch(regex, x, y, wrap, n);
     }
 
     /* private */ startSelection(t, mouse, x1 = undefined) {

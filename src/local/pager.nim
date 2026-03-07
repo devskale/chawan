@@ -42,7 +42,6 @@ import server/forkserver
 import server/headers
 import server/loaderiface
 import server/request
-import server/response
 import types/bitmap
 import types/blob
 import types/cell
@@ -155,7 +154,6 @@ jsDestructor(Pager)
 proc addConsole2(pager: Pager; interactive: bool)
 proc alert(pager: Pager; msg: string)
 proc redraw(pager: Pager)
-proc quit(pager: Pager; code: int)
 proc windowChange(pager: Pager): Opt[void]
 
 # private
@@ -333,7 +331,7 @@ proc initCookieStream(opaque: RootRef; response: Response) =
   response.opaque = CookieStreamOpaque(pager: pager)
   response.onRead = onReadCookieStream
   response.onFinish = onFinishCookieStream
-  response.resume()
+  pager.loader.resume(response)
 
 proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
@@ -371,7 +369,7 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
   let pager = Pager(
     config: config,
     forkserver: forkserver,
-    term: newTerminal(newPosixStream(STDOUT_FILENO), config),
+    term: newTerminal(newPosixStream(STDOUT_FILENO), config, loader),
     alerts: alerts,
     jsctx: ctx,
     luctx: LUContext(),
@@ -471,9 +469,6 @@ proc cleanup(pager: Pager) =
   for val in pager.jsmap.fields:
     JS_FreeValue(ctx, val)
   pager.timeouts.clearAll()
-  let rt = JS_GetRuntime(ctx)
-  ctx.free()
-  rt.free()
   if pager.console != nil and pager.dumpConsoleFile:
     if file := chafile.fopen(pager.consoleFile, "r+"):
       let stderr = cast[ChaFile](stderr)
@@ -481,10 +476,6 @@ proc cleanup(pager: Pager) =
       while (let n = file.read(buffer); n != 0):
         if stderr.write(buffer.toOpenArray(0, n - 1)).isErr:
           break
-
-proc quit(pager: Pager; code: int) =
-  pager.cleanup()
-  quit(code)
 
 proc runJSJobs(pager: Pager): Opt[void] =
   let rt = JS_GetRuntime(pager.jsctx)
@@ -647,7 +638,7 @@ proc runStartupScript(ctx: JSContext; pager: Pager): JSValue {.jsfunc.} =
   return ctx.eval(s, pager.config.start.startupScript, flag)
 
 proc run*(pager: Pager; pages: openArray[JSValue]; contentType: string;
-    charset: Charset; history: bool) =
+    charset: Charset; history: bool): int =
   var istream: PosixStream = nil
   let ps = newPosixStream(STDIN_FILENO)
   if pager.config.start.headless == hmFalse:
@@ -662,8 +653,7 @@ proc run*(pager: Pager; pages: openArray[JSValue]; contentType: string;
     if istream == nil:
       pager.config.start.headless = hmDump
   pager.loader.pollData.register(pager.forkserver.estream.fd, POLLIN)
-  let sr = pager.term.start(istream, proc(fd: cint) =
-    pager.loader.pollData.register(fd, POLLOUT))
+  let sr = pager.term.start(istream)
   if sr.isErr:
     return
   pager.attrs = pager.term.attrs
@@ -684,7 +674,8 @@ proc run*(pager: Pager; pages: openArray[JSValue]; contentType: string;
   if JS_IsException(res) and pager.exitCode == -1:
     pager.console.writeException(ctx)
   JS_FreeValue(ctx, res)
-  pager.quit(max(pager.exitCode, 0))
+  pager.cleanup()
+  return max(pager.exitCode, 0)
 
 # Note: this function does not work correctly if start < x of last written char
 proc writeStatusMessage(status: var Surface; str: string; format = Format();
@@ -2358,7 +2349,7 @@ proc handleRead(pager: Pager; init: BufferInit): Opt[void] =
     let response = newResponse(init.request, stream, init.istreamOutputId)
     stream.withPacketReaderFire r:
       r.sread(response.status)
-      r.sread(response.headers)
+      r.sreadLoader(response.headers)
     init.applyResponse(response, pager.mimeTypes.t)
     let redirect = response.getRedirect(init.request)
     let ctx = pager.jsctx
