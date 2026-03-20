@@ -1709,7 +1709,7 @@ const ReTextStart = /\S/gu;
             break;
         } case "save": {
             let buf = config.external.downloadDir;
-            if (buf[0] != '/')
+            if (buf.at(-1) != '/')
                 buf += '/';
             const path = this.init.url.pathname;
             if (path.at(-1) == '/')
@@ -1822,15 +1822,30 @@ const ReTextStart = /\S/gu;
         }}
     }
 
+    #setVisible() {
+        if (this.iface.loadState == "loaded" && this.iface.gotLines &&
+            pager.bufferInit == this.init) {
+            if (pager.bufferIface != this.iface)
+                pager.setVisibleBuffer(this);
+            if (pager.alertState == "loadInfo") {
+                pager.alertState = "normal";
+                this.setLoadInfo("");
+                pager.queueStatusUpdate();
+            }
+        }
+    }
+
     async #startLoad() {
         let repaintLoopPromise, titlePromise;
         if (!this.init.headless) {
             repaintLoopPromise = (async () => {
                 for (;;) {
-                    if (this.numLines > 0 && pager.bufferInit == this.init &&
-                        pager.bufferIface != this.iface) {
+                    /* If we get lines before the buffer loads, show them.
+                     * However, loadinfo must remain visible until the
+                     * buffer actually loads. */
+                    if (this.numLines > 0 && pager.bufferIface != this.iface)
                         pager.setVisibleBuffer(this);
-                    }
+                    this.#setVisible();
                     await this.iface.onReshape();
                     await this.iface.requestLines(true);
                 }
@@ -1865,19 +1880,12 @@ const ReTextStart = /\S/gu;
                 break loop;
             }
         }
-        this.setLoadInfo("");
         this.iface.loadState = "loaded";
-        if (pager.bufferInit == this.init && pager.bufferIface != this.iface)
-            pager.setVisibleBuffer(this);
+        this.#setVisible();
         const replace = this.#popReplace();
         if (replace != null)
             pager.deleteBuffer(replace, this);
         pager.numload--;
-        if (this == pager.buffer) {
-            if (pager.alertState == "loadInfo")
-                pager.alertState = "normal";
-            pager.queueStatusUpdate();
-        }
         if (!this.init.hasStart) {
             if (!this.init.headless)
                 this.iface.sendCursorPosition();
