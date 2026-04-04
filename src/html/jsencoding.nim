@@ -1,7 +1,7 @@
 {.push raises: [].}
 
-import chagashi/charset
-import chagashi/decoder
+import encoding/charset
+import encoding/decoder
 import monoucha/fromjs
 import monoucha/jsbind
 import monoucha/jstypes
@@ -96,7 +96,7 @@ proc encode(this: JSTextEncoder; input = ""): JSArrayBufferView {.jsfunc.} =
     t: JS_TYPED_ARRAY_UINT8,
     abuf: JSArrayBuffer(p: p, len: csize_t(input.len), dealloc: deallocWrap),
     offset: 0,
-    len: int64(input.len)
+    len: input.len
   )
 
 #TODO encodeInto
