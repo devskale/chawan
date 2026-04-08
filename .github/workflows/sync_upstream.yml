@@ -12,7 +12,7 @@ jobs:
     steps:
       # Step 1: Checkout your repository
       - name: Checkout Target Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Use a Personal Access Token (PAT) with 'workflow' scope
           # to allow pushing changes, especially if workflows are involved.
