@@ -986,6 +986,7 @@ proc loadCachedImage2(env: CachedImageEnv; response: Response) =
     headers.add("Cha-Image-Crop-Width", $cachedImage.dispw)
   of imKitty:
     url = parseURL0("img-codec+png:encode")
+  of imAscii: assert false
   of imNone: assert false
   let request = newRequest(
     url,

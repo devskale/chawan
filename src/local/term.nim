@@ -987,6 +987,8 @@ proc parseCSINum(term: Terminal; c: char): EscParseResult =
         term.attrs.height = int(y)
         term.attrs.heightPx = term.attrs.height * term.attrs.ppl
       term.eparser.queryState = qsNone
+      if term.imageMode == imNone and term.config{"imageMode"}.isNone:
+        term.imageMode = imAscii
       if term.attrs != oattrs:
         term.windowChange()
         changed = eprWindowChange
@@ -1975,6 +1977,7 @@ proc clearImage(term: Terminal; image: CanvasImage; maxh: int) =
   of imKitty:
     if image.kittyId != 0:
       term.frame.kittyImagesToClear.add(image.kittyId)
+  of imAscii: discard
 
 proc clearImages*(term: Terminal; maxh: int) =
   for image in term.frame.canvasImages:
@@ -2240,6 +2243,7 @@ proc outputImages(term: Terminal): Opt[void] =
       of imNone: assert false
       of imSixel: ?term.outputSixelImage(x, y, image)
       of imKitty: ?term.outputKittyImage(x, y, image)
+      of imAscii: assert false
       image.damaged = false
   ok()
 
