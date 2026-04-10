@@ -996,13 +996,23 @@ proc loadCachedImage2(env: CachedImageEnv; response: Response) =
       return
     let mem = ps.mmap()
     ps.sclose()
-    if mem == nil:
+    if mem == nil or mem.p == nil or mem.len == 0:
+      if mem != nil:
+        deallocMem(mem)
       loader.removeCachedItem(cacheId)
       return
     let ppc = pager.attrs.ppc
     let ppl = pager.attrs.ppl
+    if ppc <= 0 or ppl <= 0:
+      deallocMem(mem)
+      loader.removeCachedItem(cacheId)
+      env.iface.queueDraw()
+      cachedImage.state = cisLoaded
+      cachedImage.cacheId = -1
+      loader.close(response)
+      return
     let grid = rgbaToAsciiGrid(cast[pointer](mem.p), cachedImage.width, cachedImage.height,
-      ppc, ppl, 50) # TODO: read quality from config
+      ppc, ppl, 50, mem.len) # TODO: read quality from config
     deallocMem(mem)
     env.iface.queueDraw()
     cachedImage.asciiGrid = grid
@@ -1191,6 +1201,8 @@ proc draw(pager: Pager): bool =
       iface.drawLines(pager.display.grid, hlcolor)
       if pager.config{"highlightMarks"}:
         iface.highlightMarks(pager.display.grid, hlcolor)
+      if pager.term.imageMode == imAscii:
+        iface.overlayAsciiArt(pager.display.grid)
       iface.redraw = false
       pager.display.redraw = true
       imageRedraw = true

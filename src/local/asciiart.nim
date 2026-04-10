@@ -81,7 +81,7 @@ proc avgBlended(s: Sample): tuple[r, g, b: uint8] {.inline.} =
   )
 
 proc rgbaToAsciiGrid*(data: pointer; w, h: int;
-    ppc, ppl: int; quality: int): seq[SimpleFlexibleLine] =
+    ppc, ppl: int; quality: int; datalen = -1): seq[SimpleFlexibleLine] =
   ## Convert RGBA pixel data to a grid of colored block characters.
   ##
   ## data: raw RGBA pixels (R, G, B, A bytes, row-major, 4 bytes/pixel)
@@ -92,10 +92,15 @@ proc rgbaToAsciiGrid*(data: pointer; w, h: int;
   ##   1-30:  monochrome (no color formatting)
   ##   31-70: 256-color ANSI foreground
   ##   71-100: truecolor RGB foreground
-  if w <= 0 or h <= 0 or ppc <= 0 or ppl <= 0:
+  if data == nil or w <= 0 or h <= 0 or ppc <= 0 or ppl <= 0:
     return @[]
-
-  let px = cast[ptr UncheckedArray[uint8]](data)
+  let expected = w * h * 4
+  if datalen != -1 and datalen < expected:
+    return @[]
+  # Copy data to local buffer to avoid GC/mmap lifetime issues
+  var buf = newSeq[uint8](expected)
+  copyMem(addr buf[0], data, expected)
+  let px = cast[ptr UncheckedArray[uint8]](addr buf[0])
   let cols = (w + ppc - 1) div ppc  # ceil
   let rows = (h + ppl - 1) div ppl
   let hw = ppc div 2

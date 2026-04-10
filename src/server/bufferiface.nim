@@ -1741,6 +1741,45 @@ proc setText(cell: var FixedCell; u: uint32; i, pi, uw: int; s: string) =
   else:
     cell.str = s.substr(pi, i - 1)
 
+proc overlayAsciiArt*(iface: BufferInterface; display: var FixedGrid) =
+  for cached in iface.cachedImages:
+    let grid = cached.asciiGrid
+    if grid.len == 0:
+      continue
+    let bmp = cached.bmp
+    for image in iface.images:
+      if image.bmp.imageId != bmp.imageId:
+        continue
+      let sx = image.x - iface.pos.fromx
+      let sy = image.y - iface.pos.fromy
+      for i, asciiLine in grid:
+        let dy = sy + i
+        if dy < 0 or dy >= display.height:
+          continue
+        var cx = sx
+        var fi = 0
+        var cf = Format()
+        if asciiLine.formats.len > 0:
+          cf = asciiLine.formats[0].format
+        var bi = 0
+        while bi < asciiLine.str.len:
+          let pi = bi
+          let u = asciiLine.str.nextUTF8(bi)
+          let uw = u.width()
+          while fi < asciiLine.formats.len and
+              asciiLine.formats[fi].pos <= cx:
+            cf = asciiLine.formats[fi].format
+            inc fi
+          if cx >= 0 and cx < display.width:
+            let dls = dy * display.width + cx
+            display[dls] = FixedCell(str: asciiLine.str.substr(pi, bi - 1),
+              format: cf)
+            for j in 1 ..< uw:
+              if cx + j < display.width:
+                display[dy * display.width + cx + j] = FixedCell()
+          inc cx
+      break
+
 proc drawLines*(iface: BufferInterface; display: var FixedGrid;
     hlcolor: CellColor) =
   let bgcolor = iface.bgcolor
