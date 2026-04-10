@@ -24,6 +24,7 @@ import io/packetreader
 import io/packetwriter
 import io/poll
 import io/timeout
+import local/asciiart
 import local/lineedit
 import local/select
 import local/term
@@ -986,7 +987,29 @@ proc loadCachedImage2(env: CachedImageEnv; response: Response) =
     headers.add("Cha-Image-Crop-Width", $cachedImage.dispw)
   of imKitty:
     url = parseURL0("img-codec+png:encode")
-  of imAscii: assert false
+  of imAscii:
+    # Convert RGBA to ASCII art in-process — no external encoder needed
+    let loader = pager.loader
+    let ps = loader.openCachedItem(cacheId)
+    if ps == nil:
+      loader.removeCachedItem(cacheId)
+      return
+    let mem = ps.mmap()
+    ps.sclose()
+    if mem == nil:
+      loader.removeCachedItem(cacheId)
+      return
+    let ppc = pager.attrs.ppc
+    let ppl = pager.attrs.ppl
+    let grid = rgbaToAsciiGrid(cast[pointer](mem.p), cachedImage.width, cachedImage.height,
+      ppc, ppl, 50) # TODO: read quality from config
+    deallocMem(mem)
+    env.iface.queueDraw()
+    cachedImage.asciiGrid = grid
+    cachedImage.state = cisLoaded
+    cachedImage.cacheId = -1
+    loader.close(response)
+    return
   of imNone: assert false
   let request = newRequest(
     url,
@@ -1098,6 +1121,8 @@ proc initImages(pager: Pager; iface: BufferInterface) =
         cachedErry, cachedDispw)
       continue
     if cached.state == cisLoaded:
+      if imageMode == imAscii:
+        continue # ASCII grid will be spliced in paint loop
       let canvasImage = newCanvasImage(cached.data, pid, cached.preludeLen,
         image.bmp, dims, cached.transparent)
       term.addImage(canvasImage)

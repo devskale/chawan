@@ -119,6 +119,8 @@ type
     transparent*: bool
     # length of introducer, raster, palette data before pixel data
     preludeLen*: int
+    # ASCII art grid (used when imageMode == imAscii)
+    asciiGrid*: seq[SimpleFlexibleLine]
     next: CachedImage
 
   ImageCache = object
