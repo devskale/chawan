@@ -3,7 +3,6 @@
 import std/algorithm
 import std/macros
 import std/math
-import std/options
 import std/os
 import std/sets
 import std/tables
@@ -484,6 +483,7 @@ type
     tableArrayCount: array[csSiteconf..csOmnirule, uint32]
     error: string
     line: int
+    entryStart: int # line where siteconf started
     beforeKey: BeforeKey
     ival: int32
     tt: TomlType
@@ -1306,14 +1306,17 @@ proc addRuleEntry(cp: var ConfigParser) =
     t: cocStr,
     str: move(cp.buf)
   ))
+  cp.entryStart = cp.line
   cp.ruleOptionsSeen.incl(coAddEntry)
 
 proc checkRuleRegex(cp: var ConfigParser): Opt[void] =
   if coAddEntry in cp.ruleOptionsSeen:
     let intersection = {coUrl, coHost, coMatch} * cp.ruleOptionsSeen
     if intersection == {}:
+      cp.line = cp.entryStart
       return cp.err("missing match regex for " & $cp.section)
     if intersection notin [{coUrl}, {coHost}, {coMatch}]:
+      cp.line = cp.entryStart
       return cp.err("too many match regexes for " & $cp.section)
   ok()
 
@@ -2099,14 +2102,14 @@ proc parseConfig*(config: Config; dir: string; buf: openArray[char];
   warnings.add(cp.warnings)
   ok()
 
-proc openConfig*(dir, dataDir: var string; override: Option[string];
+proc openConfig*(dir, dataDir: var string; override: string;
     warnings: var seq[string]): Opt[ChaFile] =
-  if override.isSome:
-    if override.get.len > 0 and override.get[0] == '/':
-      dir = parentDir(override.get)
+  if override.len > 0:
+    if override[0] == '/':
+      dir = parentDir(override)
       dataDir = dir
-      return chafile.fopen(override.get, "r")
-    let path = myposix.getcwd() / override.get
+      return chafile.fopen(override, "r")
+    let path = myposix.getcwd() / override
     dir = parentDir(path)
     dataDir = dir
     return chafile.fopen(path, "r")
