@@ -1509,13 +1509,20 @@ Search for the word currently under the cursor, backwards.
 line.submit
 \f[B]RET\f[R], \f[B]LF\f[R]
 .RS
-Submit the line.
+Submit the currently entered text.
 .RE
 .TP
 line.cancel
+\f[B]C\-g\f[R]
+.RS
+Close the editor and cancel the operation it was opened for.
+.RE
+.TP
+line.copyOrCancel
 \f[B]C\-c\f[R]
 .RS
-Cancel the current operation.
+If there is an active selection, copy it.
+Otherwise, it\(cqs the same as \f[CR]line.cancel\f[R].
 .RE
 .TP
 line.backspace, line.delete

@@ -96,6 +96,8 @@ type
     hasload: bool # has a page been successfully loaded since startup?
     dumpConsoleFile: bool
     feedNext {.jsgetset.}: bool
+    paste {.jsget.}: bool # set in fulfillAsk
+    mousePaste: bool
     updateStatus: UpdateStatusState
     alertState {.jsgetset.}: PagerAlertState # private
     # current number prefix (when vi-numeric-prefix is true)
@@ -385,7 +387,7 @@ proc newPager*(config: Config; forkserver: ForkServer; ctx: JSContext;
     cookieJars: newCookieJarMap(),
     consoleCacheId: -1,
     console: console,
-    bufferAtom: JS_NewAtom(ctx, cstring"buffer"),
+    bufferAtom: JS_NewAtom(ctx, cstring"buffer")
   )
   pager.timeouts = newTimeoutState(pager.jsctx, evalJSFree, pager)
   pager.jsmap = JSMap(
@@ -608,12 +610,32 @@ proc updateNumericPrefix(pager: Pager): bool {.jsfunc.} =
     pager.precnum = -1
   false
 
+proc handleKeyEnd(pager: Pager; e: InputEvent): int =
+  let ctx = pager.jsctx
+  let arg0 = ctx.toJS(e.t)
+  if JS_IsException(arg0):
+    pager.console.writeException(ctx)
+    return 0
+  let arg1 = if e.t == ietMouse: ctx.toJS(e.m) else: JS_UNDEFINED
+  pager.term.catchSigint()
+  let res = ctx.callSink(pager.jsmap.handleInput, pager.jsmap.pager, arg0,
+    arg1)
+  pager.term.respectSigint()
+  if JS_IsException(res):
+    if pager.exitCode != -1: # quit() called
+      return -1
+    # user code, so catch & log exceptions here
+    pager.console.writeException(ctx)
+  JS_FreeValue(ctx, res)
+  1
+
 proc handleUserInput(pager: Pager): JSValue =
   let res = pager.term.ahandleRead()
   if res.isErr:
     return pager.jsQuit(1)
   if not res.get:
     return JS_UNDEFINED
+  let pasteHack = pager.mousePaste and not pager.term.hasBracketedPaste()
   while e := pager.term.areadEvent():
     case e.t
     of ietKey: pager.inputBuffer &= e.c
@@ -622,22 +644,17 @@ proc handleUserInput(pager: Pager): JSValue =
         return JS_EXCEPTION
     of ietRedraw: pager.redraw()
     of ietKeyEnd, ietPaste, ietMouse:
-      let ctx = pager.jsctx
-      let arg0 = ctx.toJS(e.t)
-      if JS_IsException(arg0):
-        pager.console.writeException(ctx)
-        break
-      let arg1 = if e.t == ietMouse: ctx.toJS(e.m) else: JS_UNDEFINED
-      pager.term.catchSigint()
-      let res = ctx.callSink(pager.jsmap.handleInput, pager.jsmap.pager, arg0,
-        arg1)
-      pager.term.respectSigint()
-      if JS_IsException(res):
-        if pager.exitCode != -1: # quit() called
-          return JS_EXCEPTION
-        # user code, so catch & log exceptions here
-        pager.console.writeException(ctx)
-      JS_FreeValue(ctx, res)
+      if e.t == ietKeyEnd and pasteHack:
+        continue
+      case pager.handleKeyEnd(e)
+      of -1: return JS_EXCEPTION
+      of 0: break
+      else: discard
+  if pasteHack:
+    # hack: when we have no bracketed paste, we pretend that all keys sent
+    # together on middle click are a single event.
+    if pager.handleKeyEnd(InputEvent(t: ietPaste)) < 0:
+      return JS_EXCEPTION
   return JS_UNDEFINED
 
 # private
@@ -741,7 +758,8 @@ proc writeStatusMessage(status: var Surface; str: string; format = Format();
 # Note: should only be called directly after user interaction.
 proc refreshStatusMsg(pager: Pager) =
   let init = pager.bufferInit
-  if init == nil or not JS_IsUndefined(pager.jsmap.askPromise):
+  if init == nil or not JS_IsUndefined(pager.jsmap.askPromise) or
+      pager.lineEdit != nil:
     return
   if pager.precnum > 0:
     discard pager.status.writeStatusMessage($pager.precnum & pager.inputBuffer)
@@ -1139,9 +1157,9 @@ proc draw(pager: Pager): bool =
   var imageRedraw = false
   var hasMenu = false
   let bufHeight = pager.bufHeight
+  let hlcolor = pager.highlightColor
   if iface != nil:
     if iface.redraw:
-      let hlcolor = pager.highlightColor
       iface.drawLines(pager.display.grid, hlcolor)
       if pager.config{"highlightMarks"}:
         iface.highlightMarks(pager.display.grid, hlcolor)
@@ -1166,15 +1184,13 @@ proc draw(pager: Pager): bool =
   if pager.display.redraw:
     pager.term.writeGrid(pager.display.grid)
     pager.display.redraw = false
-  if pager.lineEdit != nil:
-    if pager.lineEdit.redraw:
-      let x = pager.lineEdit.generateOutput()
-      pager.term.writeGrid(x, 0, pager.attrs.height - 1)
-      pager.lineEdit.redraw = false
-  else:
-    if pager.status.redraw:
-      pager.term.writeGrid(pager.status.grid, 0, pager.attrs.height - 1)
-      pager.status.redraw = false
+  if pager.status.redraw:
+    pager.term.writeGrid(pager.status.grid, 0, pager.attrs.height - 1)
+    pager.status.redraw = false
+  elif pager.lineEdit != nil and pager.lineEdit.redraw:
+    let x = pager.lineEdit.generateOutput(hlcolor)
+    pager.term.writeGrid(x, 0, pager.attrs.height - 1)
+    pager.lineEdit.redraw = false
   if pager.term.imageMode != imNone:
     if imageRedraw:
       # init images only after term canvas has been finalized
@@ -1191,7 +1207,7 @@ proc draw(pager: Pager): bool =
       # Ugh. :(
       pager.term.clearImages(bufHeight)
   let (cursorx, cursory) = pager.getAbsoluteCursorXY(iface)
-  let mouse = pager.lineEdit == nil
+  let mouse = not pager.mousePaste
   let bgcolor = if iface != nil: iface.bgcolor else: defaultColor
   pager.term.draw(redraw, mouse, cursorx, cursory, bufHeight, bgcolor).isOk
 
@@ -1229,7 +1245,8 @@ proc fitAskPrompt(pager: Pager; prompt0: string): string {.jsfunc.} =
   move(prompt)
 
 # private
-proc fulfillAsk(ctx: JSContext; pager: Pager): JSValue {.jsfunc.} =
+proc fulfillAsk(ctx: JSContext; pager: Pager; paste: bool): JSValue
+    {.jsfunc.} =
   if not JS_IsUndefined(pager.jsmap.askPromise):
     let inputBuffer = move(pager.inputBuffer)
     let text = ctx.toJS(inputBuffer)
@@ -1238,6 +1255,7 @@ proc fulfillAsk(ctx: JSContext; pager: Pager): JSValue {.jsfunc.} =
     let fun = pager.jsmap.askPromise
     pager.jsmap.askPromise = JS_UNDEFINED
     pager.askPrompt = ""
+    pager.paste = paste
     let res = ctx.callSinkFree(fun, JS_UNDEFINED, text)
     if JS_IsException(res):
       return res
@@ -1246,9 +1264,18 @@ proc fulfillAsk(ctx: JSContext; pager: Pager): JSValue {.jsfunc.} =
   return JS_FALSE
 
 # private
+proc startMousePaste(pager: Pager) {.jsfunc.} =
+  pager.mousePaste = true
+
+# private
+proc stopMousePaste(pager: Pager) {.jsfunc.} =
+  pager.mousePaste = false
+
+# private
 proc copyLoadInfo(pager: Pager; init: BufferInit) {.jsfunc.} =
   if pager.bufferInit == init and init.loadInfo != "" and
-      pager.alertState != pasAlertOn and JS_IsUndefined(pager.jsmap.askPromise):
+      pager.alertState != pasAlertOn and pager.lineEdit == nil and
+      JS_IsUndefined(pager.jsmap.askPromise):
     discard pager.status.writeStatusMessage(init.loadInfo)
     pager.alertState = pasLoadInfo
     pager.updateStatus = ussSkip

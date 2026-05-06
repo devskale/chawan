@@ -1,5 +1,6 @@
 {.push raises: [].}
 
+import types/color
 import config/history
 import monoucha/fromjs
 import monoucha/jsbind
@@ -13,8 +14,13 @@ import utils/strwidth
 import utils/twtstr
 
 type
+  LineSelectType = enum
+    lstChar = "char"
+    lstWord = "word"
+    lstLine = "line"
+
   LineEdit* = ref object
-    text {.jsget.}: string
+    text {.jsget.}: string # public
     prompt: string
     promptw: int
     cursorx: int # 0 ..< text.width
@@ -23,14 +29,16 @@ type
     shifti: int # 0 ..< text.len
     padding: int # 0 or 1
     maxwidth: int
+    selecti: int # start of selection
     hist: History
     currHist: HistoryEntry
     histtmp: string
     luctx: LUContext
+    selectType: LineSelectType
     redraw*: bool
     skipLast: bool
-    escNext {.jsgetset.}: bool
-    hide: bool
+    escNext {.jsgetset.}: bool # private
+    hide {.jsget.}: bool # private
     update: JSValue
     resolve: JSValue
 
@@ -99,7 +107,53 @@ proc shiftView(edit: LineEdit) =
       # skipped over a cell because of a double-width char
       edit.padding = 1
 
-proc generateOutput*(edit: LineEdit): FixedGrid =
+proc selectStart(edit: LineEdit): int =
+  if edit.selecti == -1:
+    return -1
+  case edit.selectType
+  of lstChar: return min(edit.selecti, edit.cursori)
+  of lstWord:
+    var i = min(edit.selecti, edit.cursori)
+    if i < edit.text.len:
+      # if we are on a word-breaking char, we stop immediately
+      let pi = i
+      let u = edit.text.nextUTF8(i)
+      if edit.luctx.breaksWord(u):
+        return pi
+      i = pi
+    while i > 0:
+      let pi = i
+      let u = edit.text.prevUTF8(i)
+      if edit.luctx.breaksWord(u):
+        return pi
+    return i
+  of lstLine: return 0
+
+proc selectEnd(edit: LineEdit): int =
+  if edit.selecti == -1:
+    return -1
+  case edit.selectType
+  of lstChar:
+    var i = max(edit.selecti, edit.cursori)
+    if i < edit.text.len:
+      discard edit.text.nextUTF8(i)
+    return i
+  of lstWord:
+    var i = max(edit.selecti, edit.cursori)
+    if i < edit.text.len:
+      # ensure the selection is at least one char wide
+      let u = edit.text.nextUTF8(i)
+      if edit.luctx.breaksWord(u):
+        return i
+    while i < edit.text.len:
+      let pi = i
+      let u = edit.text.nextUTF8(i)
+      if edit.luctx.breaksWord(u):
+        return pi
+    return i
+  of lstLine: return edit.text.len
+
+proc generateOutput*(edit: LineEdit; hlcolor: CellColor): FixedGrid =
   edit.shiftView()
   # Make the output grid +1 cell wide, so it covers the whole input area.
   result = newFixedGrid(edit.promptw + edit.maxwidth + 1, 1)
@@ -113,7 +167,15 @@ proc generateOutput*(edit: LineEdit): FixedGrid =
       result[x].str = " "
       inc x
   var i = edit.shifti
+  let selectStart = edit.selectStart
+  let selectEnd = edit.selectEnd
+  var format = Format()
   while i < edit.text.len:
+    if selectStart != -1:
+      if i in selectStart ..< selectEnd:
+        format.bgcolor = hlcolor
+      else:
+        format.bgcolor = defaultColor
     let pi = i
     let u = edit.text.nextUTF8(i)
     let w = edit.width(u)
@@ -127,10 +189,32 @@ proc generateOutput*(edit: LineEdit): FixedGrid =
           result[x].str &= edit.text[j]
     else:
       result[x].str &= '*'
+    result[x].format = format
     x += w
 
-proc getCursorX*(edit: LineEdit): int =
+proc getCursorX*(edit: LineEdit): int {.jsfunc.} =
   return edit.promptw + edit.cursorx + edit.padding - edit.shiftx
+
+# private
+proc hasSelection(edit: LineEdit): bool {.jsfunc.} =
+  return edit.selecti >= 0
+
+# private
+proc clearSelection(edit: LineEdit) {.jsfunc.} =
+  edit.selecti = -1
+  edit.redraw = true
+
+# private
+proc startSelection(edit: LineEdit; t: LineSelectType) {.jsfunc.} =
+  edit.selecti = edit.cursori
+  edit.selectType = t
+  edit.redraw = true
+
+# private
+proc selectedText(edit: LineEdit): string {.jsfget.} =
+  if edit.selecti < 0:
+    return ""
+  return edit.text.substr(edit.selectStart, edit.selectEnd - 1)
 
 proc update(ctx: JSContext; edit: LineEdit): JSValue =
   if JS_IsUndefined(edit.update):
@@ -161,6 +245,8 @@ proc backspace(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
     let pi = edit.cursori
     let u = edit.text.prevUTF8(edit.cursori)
     edit.text.delete(edit.cursori ..< pi)
+    if edit.cursori <= edit.selecti:
+      edit.selecti -= pi - edit.cursori
     edit.cursorx -= edit.width(u)
     edit.redraw = true
     return ctx.update(edit)
@@ -172,6 +258,8 @@ proc write*(ctx: JSContext; edit: LineEdit; s: string): JSValue {.jsfunc.} =
     edit.text.insert(s, edit.cursori)
     edit.cursori += s.len
     edit.cursorx += edit.width(s)
+    if edit.selecti >= edit.cursori:
+      edit.selecti += s.len
     edit.redraw = true
     return ctx.update(edit)
   return JS_UNDEFINED
@@ -180,6 +268,8 @@ proc delete(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori < edit.text.len:
     let len = edit.text.pointLenAt(edit.cursori)
     edit.text.delete(edit.cursori ..< edit.cursori + len)
+    if edit.cursori < edit.selecti:
+      edit.selecti -= len
     edit.redraw = true
     return ctx.update(edit)
   return JS_UNDEFINED
@@ -191,6 +281,7 @@ proc clear(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori > 0:
     edit.text.delete(0..edit.cursori - 1)
     edit.cursori = 0
+    edit.selecti = max(edit.selecti - edit.cursori, -1)
     edit.cursorx = 0
     edit.redraw = true
     return ctx.update(edit)
@@ -200,6 +291,7 @@ proc kill(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori < edit.text.len:
     edit.text.setLen(edit.cursori)
     edit.redraw = true
+    edit.selecti = min(edit.selecti, edit.cursori)
     return ctx.update(edit)
   return JS_UNDEFINED
 
@@ -207,15 +299,29 @@ proc backward(edit: LineEdit) {.jsfunc.} =
   if edit.cursori > 0:
     let u = edit.text.prevUTF8(edit.cursori)
     edit.cursorx -= edit.width(u)
-    if edit.cursorx < edit.shiftx:
+    if edit.cursorx < edit.shiftx or edit.selecti != -1:
       edit.redraw = true
 
 proc forward(edit: LineEdit) {.jsfunc.} =
   if edit.cursori < edit.text.len:
     let u = edit.text.nextUTF8(edit.cursori)
     edit.cursorx += edit.width(u)
-    if edit.cursorx >= edit.shiftx + edit.maxwidth:
+    if edit.cursorx >= edit.shiftx + edit.maxwidth or edit.selecti != -1:
       edit.redraw = true
+
+# private
+proc setAbsoluteCursorX(edit: LineEdit; x: int) {.jsfunc.} =
+  let x = max(x - edit.shiftx - edit.promptw, 0)
+  while edit.cursorx < x:
+    let x = edit.cursorx
+    edit.forward()
+    if edit.cursorx == x:
+      break
+  while edit.cursorx > x:
+    let x = edit.cursorx
+    edit.backward()
+    if edit.cursorx == x:
+      break
 
 proc prevWord(edit: LineEdit) {.jsfunc.} =
   if edit.cursori == 0:
@@ -273,14 +379,14 @@ proc killWord(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
 proc begin(edit: LineEdit) {.jsfunc.} =
   edit.cursori = 0
   edit.cursorx = 0
-  if edit.shiftx > 0:
+  if edit.shiftx > 0 or edit.selecti != -1:
     edit.redraw = true
 
 proc `end`(edit: LineEdit) {.jsfunc.} =
   if edit.cursori < edit.text.len:
     edit.cursori = edit.text.len
     edit.cursorx = edit.width(edit.text)
-    if edit.cursorx >= edit.shiftx + edit.maxwidth:
+    if edit.cursorx >= edit.shiftx + edit.maxwidth or edit.selecti != -1:
       edit.redraw = true
 
 proc prevHist(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
@@ -334,6 +440,7 @@ proc readLine*(prompt, current: string; termwidth: int; hide: bool;
     cursori: current.len,
     # - 1, so that the cursor always has place
     maxwidth: termwidth - promptw - 1,
+    selecti: -1,
     hist: hist,
     currHist: nil,
     luctx: luctx,

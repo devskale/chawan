@@ -186,6 +186,17 @@ globalThis.cmd = {
                 line.clear();
                 line.write(res);
             }
+        },
+        copySelection: () => {
+            const text = line.selectedText;
+            if (pager.clipboardWrite(text))
+                line.clearSelection();
+        },
+        copyOrCancel: () => {
+            if (line.hasSelection())
+                cmd.line.copySelection();
+            else
+                return line.cancel();
         }
     }
 }
@@ -275,12 +286,6 @@ Util.clamp = function(n, lo, hi) {
  */
 Util.MAX_INT32 = 0xFFFFFFFF;
 
-/*
- * Maximum number of consequent clicks registered.
- * Sort of a product of poor design.
- */
-Util.MAX_CLICKS = 3;
-
 Util.HttpLike = ["http:", "https:"];
 
 /*
@@ -291,9 +296,9 @@ class Mouse {
     pressed = {}; /* button -> position */
     released = {}; /* button -> position */
     click = {}; /* button -> count - 1 */
-    inSelection = false;
     blockTillRelease = false;
     moveType = "none"; /* none, drag, select */
+    selectSize = "char"; /* char, word, line */
 
     static SHIFT = 1;
     static CTRL = 2;
@@ -491,7 +496,7 @@ Pager.prototype.compileSearchRegex = function(s) {
 /* private */
 Pager.prototype.setLineEdit = async function(mode, prompt, obj) {
     if (this.lineEdit != null)
-        this.lineEdit.cancel();
+        await this.lineEdit.cancel();
     const res = await this.setLineEdit0(mode, prompt, obj);
     this.unsetLineEdit();
     this.queueStatusUpdate();
@@ -1194,6 +1199,17 @@ Pager.prototype.discardBuffer = function(buffer = this.buffer, dir = null) {
 }
 
 /* private */
+Pager.prototype.promptPaste = async function(input) {
+    this.startMousePaste();
+    /* TODO the text here is probably unnecessary */
+    const text = await this.askChar("Waiting for paste (C-c to cancel)");
+    this.stopMousePaste();
+    if (!this.paste && text == '\x03')
+        return null;
+    return text;
+}
+
+/* private */
 Pager.prototype.handleMouseInput = async function(input) {
     const mouse = this.mouse;
     if (mouse.blockTillRelease) {
@@ -1202,10 +1218,71 @@ Pager.prototype.handleMouseInput = async function(input) {
         mouse.blockTillRelease = false;
     }
     const button = input.button;
-    const [pressedX, pressedY] = mouse.pressed[button] ?? [-1, -1];
+    let [pressedX, pressedY] = mouse.pressed[button] ?? [-1, -1];
+    let click = mouse.click[button] ?? 0;
+    const edit = this.lineEdit;
     let buffer = this.buffer;
     const select = this.menu ?? buffer?.select;
-    if (select != null) {
+    if (edit != null) {
+        switch (button) {
+        case "left":
+            switch (input.t) {
+            case "release": {
+                if (mouse.moveType == "select") {
+                    if (this.osc52Primary && !edit.hide)
+                        this.clipboardWrite(edit.selectedText, false);
+                } else if (pressedX == input.x && pressedY == input.y) {
+                    if (input.y < ((this.bufHeight + 1) / 3) * 2) {
+                        await edit.cancel();
+                    } else {
+                        if (click == 0) {
+                            edit.clearSelection();
+                            edit.setAbsoluteCursorX(input.x);
+                        } else if (click < 3) {
+                            edit.startSelection(click == 1 ? "word" : "line");
+                            if (this.osc52Primary && !edit.hide)
+                                this.clipboardWrite(edit.selectedText, false);
+                        } else if (click == 3) {
+                            edit.clearSelection();
+                            edit.setAbsoluteCursorX(input.x);
+                        } else
+                            mouse.click[button] = 0;
+                    }
+                }
+                break;
+            }
+            case "move":
+                if (click >= 1) {
+                    switch (mouse.moveType) {
+                    case "none":
+                        /* drag if mouse moved vertically, select otherwise */
+                        if (pressedY == input.y) {
+                            mouse.moveType = "select";
+                            if (!edit.hasSelection())
+                                edit.startSelection("char");
+                            edit.setAbsoluteCursorX(input.x);
+                        } else
+                            mouse.moveType = "drag";
+                        break;
+                    case "select":
+                        edit.setAbsoluteCursorX(input.x);
+                        break;
+                    }
+                }
+                break;
+            }
+            break;
+        case "middle":
+            const text = await this.promptPaste();
+            if (text != null)
+                edit.write(text);
+            break;
+        case "right":
+            if (input.t == "release")
+                await edit.cancel();
+            break;
+        }
+    } else if (select != null) {
         /* one off because of border */
         const y = select.fromy + input.y - select.y - 1;
         let inside =
@@ -1261,7 +1338,7 @@ Pager.prototype.handleMouseInput = async function(input) {
         case "left":
             switch (input.t) {
             case "move":
-                if (mouse.click[button] < 1)
+                if (click < 1)
                     break;
                 switch (mouse.moveType) {
                 case "none":
@@ -1280,7 +1357,6 @@ Pager.prototype.handleMouseInput = async function(input) {
                 break;
             case "release":
                 if (buffer.currentSelection?.mouse) {
-                    mouse.inSelection = true;
                     if (this.osc52Primary) {
                         const text = await buffer.getSelectionText();
                         this.clipboardWrite(text, false);
@@ -1291,9 +1367,8 @@ Pager.prototype.handleMouseInput = async function(input) {
                     const py = buffer.cursory;
                     buffer.setAbsoluteCursorXY(input.x, input.y);
                     if (px == buffer.cursorx && py == buffer.cursory)
-                        buffer.click(mouse.click[button]);
+                        buffer.click(click);
                 }
-                mouse.moveType = "none";
                 break;
             case "press":
                 if (buffer.currentSelection?.mouse)
@@ -1334,18 +1409,26 @@ Pager.prototype.handleMouseInput = async function(input) {
         switch (button) {
         case "left":
             if (input.t == "release") {
-                if (this.mouse.inSelection) {
-                    this.mouse.inSelection = false;
+                const moveType = mouse.moveType;
+                mouse.moveType = "none";
+                if (moveType == "select") {
+                    mouse.selectType = "char";
                 } else if (input.y == this.bufHeight &&
-                           pressedX == input.x && pressedY == input.y) {
+                           pressedX == input.x && pressedY == input.y &&
+                           edit == null) {
                     this.load();
+                    /* reset click count */
+                    mouse.pressed[button] = [-1, -1];
+                    pressedX = pressedY = -1;
                 } else if (input.y >= this.bufHeight - 1 &&
                            pressedY == input.y) {
                     const dcol = input.x - pressedX;
-                    if (dcol <= -2)
-                        this.nextBuffer();
-                    else if (dcol >= 2)
-                        this.prevBuffer();
+                    if (edit == null) {
+                        if (dcol <= -2)
+                            this.nextBuffer();
+                        else if (dcol >= 2)
+                            this.prevBuffer();
+                    }
                 } else if (pressedX != -1 && pressedY != -1) {
                     const dcol = input.x - pressedX;
                     const drow = input.y - pressedY;
@@ -1362,13 +1445,13 @@ Pager.prototype.handleMouseInput = async function(input) {
             break;
         case "right":
             if (input.t == "release" && pressedX == input.x &&
-                pressedY == this.bufHeight) {
+                pressedY == this.bufHeight && edit == null) {
                 this.loadCursor();
             }
             break;
         case "middle":
             if (input.t == "release" && pressedX == input.x &&
-                pressedY == this.bufHeight) {
+                pressedY == this.bufHeight && edit == null) {
                 this.load("");
             }
             break;
@@ -1394,11 +1477,10 @@ Pager.prototype.handleMouseInput = async function(input) {
             mouse.pressed[button] = [input.x, input.y];
             const [releasedX, releasedY] =
                 mouse.released[button] ?? [-1, -1];
-            if (input.x == releasedX && input.y == releasedY) {
-                mouse.click[button] ??= 0;
-                if (++mouse.click[button] >= Util.MAX_CLICKS)
-                    mouse.click[button] = 0;
-            }
+            if (input.x == releasedX && input.y == releasedY)
+                mouse.click[button] = click + 1;
+            else
+                mouse.click[button] = 0;
             break;
         case "release":
             if (pressedX != input.x || pressedY != input.y)
@@ -1417,7 +1499,7 @@ Pager.prototype.handleInput = async function(t, mouseInput) {
     let paste = false;
     switch (t) {
     case "paste": paste = true; case "keyEnd":
-        if (this.fulfillAsk()) {
+        if (this.fulfillAsk(paste)) {
             this.queueStatusUpdate();
         } else if (line != null) {
             if (paste || line.escNext) {

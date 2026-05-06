@@ -2304,7 +2304,7 @@ LF line.submit
 C-h line.backspace
 C-? line.backspace
 C-d line.delete
-C-c line.cancel
+C-c line.copyOrCancel
 C-g line.cancel
 M-b line.prevWord
 M-f line.nextWord
