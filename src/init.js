@@ -1273,14 +1273,23 @@ Pager.prototype.handleMouseInput = async function(input) {
             }
             break;
         case "middle":
-            const text = await this.promptPaste();
-            if (text != null)
-                edit.write(text);
+            if (input.t == "press") {
+                const text = await this.promptPaste();
+                if (text != null)
+                    edit.write(text);
+            }
             break;
         case "right":
             if (input.t == "release")
                 await edit.cancel();
             break;
+        case "thumbInner":
+            if (input.t == "press")
+                edit.prevHist();
+            break;
+        case "thumbTip":
+            if (input.t == "press")
+                edit.nextHist();
         }
     } else if (select != null) {
         /* one off because of border */

@@ -201,8 +201,9 @@ proc hasSelection(edit: LineEdit): bool {.jsfunc.} =
 
 # private
 proc clearSelection(edit: LineEdit) {.jsfunc.} =
-  edit.selecti = -1
-  edit.redraw = true
+  if edit.selecti != -1:
+    edit.selecti = -1
+    edit.redraw = true
 
 # private
 proc startSelection(edit: LineEdit; t: LineSelectType) {.jsfunc.} =
@@ -240,15 +241,20 @@ proc submit(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
     return text
   return ctx.resolve(edit, text)
 
+proc deleteTextTo(edit: LineEdit; ei: int) =
+  edit.text.delete(edit.cursori ..< ei)
+  if edit.cursori < edit.selecti:
+    edit.selecti -= ei - edit.cursori
+    if edit.selecti <= edit.cursori:
+      edit.clearSelection()
+  edit.redraw = true
+
 proc backspace(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori > 0:
     let pi = edit.cursori
     let u = edit.text.prevUTF8(edit.cursori)
-    edit.text.delete(edit.cursori ..< pi)
-    if edit.cursori <= edit.selecti:
-      edit.selecti -= pi - edit.cursori
     edit.cursorx -= edit.width(u)
-    edit.redraw = true
+    edit.deleteTextTo(pi)
     return ctx.update(edit)
   return JS_UNDEFINED
 
@@ -267,10 +273,7 @@ proc write*(ctx: JSContext; edit: LineEdit; s: string): JSValue {.jsfunc.} =
 proc delete(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
   if edit.cursori < edit.text.len:
     let len = edit.text.pointLenAt(edit.cursori)
-    edit.text.delete(edit.cursori ..< edit.cursori + len)
-    if edit.cursori < edit.selecti:
-      edit.selecti -= len
-    edit.redraw = true
+    edit.deleteTextTo(edit.cursori + len)
     return ctx.update(edit)
   return JS_UNDEFINED
 
@@ -278,12 +281,11 @@ proc escape(edit: LineEdit) {.jsfunc.} =
   edit.escNext = true
 
 proc clear(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
-  if edit.cursori > 0:
-    edit.text.delete(0..edit.cursori - 1)
+  let pi = edit.cursori
+  if pi > 0:
     edit.cursori = 0
-    edit.selecti = max(edit.selecti - edit.cursori, -1)
     edit.cursorx = 0
-    edit.redraw = true
+    edit.deleteTextTo(pi)
     return ctx.update(edit)
   return JS_UNDEFINED
 
@@ -292,6 +294,8 @@ proc kill(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
     edit.text.setLen(edit.cursori)
     edit.redraw = true
     edit.selecti = min(edit.selecti, edit.cursori)
+    if edit.selecti == edit.cursori:
+      edit.clearSelection()
     return ctx.update(edit)
   return JS_UNDEFINED
 
@@ -352,11 +356,10 @@ proc nextWord(edit: LineEdit) {.jsfunc.} =
       break
 
 proc clearWord(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
-  let oc = edit.cursori
+  let pi = edit.cursori
   edit.prevWord()
-  if oc != edit.cursori:
-    edit.text.delete(edit.cursori .. oc - 1)
-    edit.redraw = true
+  if edit.cursori != pi:
+    edit.deleteTextTo(pi)
     return ctx.update(edit)
   return JS_UNDEFINED
 
@@ -372,8 +375,7 @@ proc killWord(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
       if edit.luctx.breaksWord(u):
         i = pi
         break
-  edit.text.delete(edit.cursori ..< i)
-  edit.redraw = true
+  edit.deleteTextTo(i)
   return ctx.update(edit)
 
 proc begin(edit: LineEdit) {.jsfunc.} =
@@ -401,6 +403,7 @@ proc prevHist(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
     edit.currHist = edit.currHist.prev
   if edit.currHist != nil:
     edit.text = edit.currHist.s
+    edit.clearSelection()
     # The begin call is needed so the cursor doesn't get lost outside
     # the string.
     edit.begin()
@@ -418,6 +421,7 @@ proc nextHist(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
         edit.currHist = nil
     else:
       edit.text = move(edit.histtmp)
+    edit.clearSelection()
     edit.begin()
     edit.end()
     edit.redraw = true

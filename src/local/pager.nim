@@ -1256,6 +1256,8 @@ proc fulfillAsk(ctx: JSContext; pager: Pager; paste: bool): JSValue
     pager.jsmap.askPromise = JS_UNDEFINED
     pager.askPrompt = ""
     pager.paste = paste
+    if pager.lineEdit != nil:
+      pager.lineEdit.redraw = true
     let res = ctx.callSinkFree(fun, JS_UNDEFINED, text)
     if JS_IsException(res):
       return res
