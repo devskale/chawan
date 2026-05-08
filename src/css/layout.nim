@@ -2426,8 +2426,9 @@ proc cellWidthPx(l: CSSLength): SizeConstraint =
   return stretch(l.npx.toLUnit())
 
 proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
-    rowi, numrows: int): RowContext =
+    numrows: int) =
   let lctx = tctx.lctx
+  let rowi = tctx.rows.len
   var cellHead: CellWrapper = nil
   var cellTail: CellWrapper = nil
   var blockBorder = Span(start: tctx.blockSpacing, send: tctx.blockSpacing)
@@ -2482,14 +2483,17 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
     n = nextn
     firstCell = false
   tctx.growRowspan(growi, n, tctx.cols.len, growlen, width, cellHead, cellTail)
-  RowContext(
+  width += borderWidth
+  tctx.maxwidth = max(width, tctx.maxwidth)
+  tctx.borderWidth = max(borderWidth, tctx.borderWidth)
+  tctx.rows.add(RowContext(
     box: row,
     cellHead: cellHead,
-    width: width + borderWidth,
+    width: width,
     borderWidth: borderWidth,
     blockBorder: blockBorder,
     ncols: n
-  )
+  ))
 
 proc alignTableCell(cell: BlockBox; availableHeight, baseline: LUnit) =
   let firstChild = BlockBox(cell.firstChild)
@@ -2566,39 +2570,45 @@ proc layoutTableRow(tctx: TableContext; ctx: RowContext;
     cellw = cellw.next
   row.state.size.w = x
 
-proc preLayoutTableRows(tctx: var TableContext; rows: openArray[BlockBox];
-    table: BlockBox) =
-  for i, row in rows.mypairs:
-    let rctx = tctx.preLayoutTableRow(row, table, i, rows.len)
-    tctx.maxwidth = max(rctx.width, tctx.maxwidth)
-    tctx.borderWidth = max(rctx.borderWidth, tctx.borderWidth)
-    tctx.rows.add(rctx)
-
 proc preLayoutTableRows(tctx: var TableContext; table: BlockBox) =
-  # Use separate seqs for different row groups, so that e.g. this HTML:
-  # echo '<TABLE><TBODY><TR><TD>world<THEAD><TR><TD>hello'|cha -T text/html
-  # is rendered as:
-  # hello
-  # world
-  var thead: seq[BlockBox] = @[]
-  var tbody: seq[BlockBox] = @[]
-  var tfoot: seq[BlockBox] = @[]
+  # Per CSS 2.1, the first thead and tfoot is always rendered as the first
+  # and the last group, while subsequent thead/tfoot is treated as tbody.
+  var thead: CSSBox = nil
+  var tfoot: CSSBox = nil
+  var nrows = 0
   for child in table.children:
-    let child = BlockBox(child)
     let display = child.computed{"display"}
-    if display == DisplayTableRow:
-      tbody.add(child)
-    else:
+    case display
+    of DisplayTableHeaderGroup:
+      if thead == nil:
+        thead = child
+    of DisplayTableRowGroup:
       child.keepLayout = true
+    of DisplayTableRow:
+      inc nrows
+      continue
+    of DisplayTableFooterGroup:
+      if tfoot == nil:
+        tfoot = child
+    else: assert false
+    for it in child.children:
+      assert it.computed{"display"} == DisplayTableRow
+      inc nrows
+  tctx.rows = newSeqOfCap[RowContext](nrows)
+  if thead != nil:
+    for child in thead.children:
+      tctx.preLayoutTableRow(BlockBox(child), table, nrows)
+  for child in table.children:
+    if child == thead or child == tfoot:
+      continue
+    if child.computed{"display"} == DisplayTableRow:
+      tctx.preLayoutTableRow(BlockBox(child), table, nrows)
+    else:
       for it in child.children:
-        case display
-        of DisplayTableHeaderGroup: thead.add(BlockBox(it))
-        of DisplayTableRowGroup: tbody.add(BlockBox(it))
-        of DisplayTableFooterGroup: tfoot.add(BlockBox(it))
-        else: assert false, $child.computed{"display"}
-  tctx.preLayoutTableRows(thead, table)
-  tctx.preLayoutTableRows(tbody, table)
-  tctx.preLayoutTableRows(tfoot, table)
+        tctx.preLayoutTableRow(BlockBox(it), table, nrows)
+  if tfoot != nil:
+    for child in tfoot.children:
+      tctx.preLayoutTableRow(BlockBox(child), table, nrows)
 
 proc calcSpecifiedRatio(tctx: var TableContext;
     totalWidth, weightRatio: float32): float32 =
