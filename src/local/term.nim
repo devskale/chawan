@@ -1553,7 +1553,7 @@ proc hasTitle(term: Terminal): bool =
 proc hasAltScreen(term: Terminal): bool =
   term.config{"altScreen"}.get(tfAltScreen in term.desc)
 
-proc hasBracketedPaste(term: Terminal): bool =
+proc hasBracketedPaste*(term: Terminal): bool =
   term.config{"bracketedPaste"}.get(tfBracketedPaste in term.desc)
 
 proc hasMouse(term: Terminal): bool =

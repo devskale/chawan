@@ -1393,12 +1393,18 @@ cursorSearchWordBackward
 line.submit
 : **RET**, **LF**
 
-: Submit the line.
+: Submit the currently entered text.
 
 line.cancel
+: **C-g**
+
+: Close the editor and cancel the operation it was opened for.
+
+line.copyOrCancel
 : **C-c**
 
-: Cancel the current operation.
+: If there is an active selection, copy it.  Otherwise, it's the same as
+  `line.cancel`.
 
 line.backspace, line.delete
 : **C-h**, **C-d**
