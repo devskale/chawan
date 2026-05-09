@@ -23,7 +23,7 @@ import utils/strwidth
 import utils/twtstr
 
 type
-  DrawingState = object
+  DrawingState = ref object
     # CanvasTransform
     transformMatrix: Matrix
     # CanvasFillStrokeStyles
@@ -35,6 +35,7 @@ type
     textAlign: CanvasTextAlign
     # CanvasPath
     path: Path
+    next: DrawingState
 
   TextMetrics = ref object
     # x-direction
@@ -56,7 +57,6 @@ type
     canvas {.jsget.}: EventTarget
     bitmap: NetworkBitmap
     state: DrawingState
-    stateStack: seq[DrawingState]
     ps*: PosixStream
 
 jsDestructor(CanvasRenderingContext2D)
@@ -104,7 +104,12 @@ proc create2DContext*(loader: FileLoader; target: EventTarget;
     w.swrite(pcSetDimensions)
     w.swrite(bitmap.width)
     w.swrite(bitmap.height)
-  let ctx2d = CanvasRenderingContext2D(bitmap: bitmap, canvas: target, ps: ps)
+  let ctx2d = CanvasRenderingContext2D(
+    bitmap: bitmap,
+    canvas: target,
+    ps: ps,
+    state: DrawingState()
+  )
   ctx2d.state.reset()
   return ctx2d
 
@@ -177,15 +182,18 @@ proc clear(ctx: CanvasRenderingContext2D) =
   ctx.clearRect(0, 0, ctx.bitmap.width, ctx.bitmap.height)
 
 proc save(ctx: CanvasRenderingContext2D) {.jsfunc.} =
-  ctx.stateStack.add(ctx.state)
+  let state = DrawingState()
+  state[] = ctx.state[]
+  state.next = ctx.state
+  ctx.state = state
 
 proc restore(ctx: CanvasRenderingContext2D) {.jsfunc.} =
-  if ctx.stateStack.len > 0:
-    ctx.state = ctx.stateStack.pop()
+  if ctx.state.next != nil:
+    ctx.state = ctx.state.next
 
 proc reset(ctx: CanvasRenderingContext2D) {.jsfunc.} =
   ctx.clear()
-  ctx.stateStack.setLen(0)
+  ctx.state.next = nil
   ctx.state.reset()
 
 #TODO scale
