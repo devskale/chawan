@@ -298,7 +298,6 @@ class Mouse {
     click = {}; /* button -> count - 1 */
     blockTillRelease = false;
     moveType = "none"; /* none, drag, select */
-    selectSize = "char"; /* char, word, line */
 
     static SHIFT = 1;
     static CTRL = 2;
@@ -1201,7 +1200,6 @@ Pager.prototype.discardBuffer = function(buffer = this.buffer, dir = null) {
 /* private */
 Pager.prototype.promptPaste = async function(input) {
     this.startMousePaste();
-    /* TODO the text here is probably unnecessary */
     const text = await this.askChar("Waiting for paste (C-c to cancel)");
     this.stopMousePaste();
     if (!this.paste && text == '\x03')
@@ -1421,7 +1419,7 @@ Pager.prototype.handleMouseInput = async function(input) {
                 const moveType = mouse.moveType;
                 mouse.moveType = "none";
                 if (moveType == "select") {
-                    mouse.selectType = "char";
+                    /* do nothing */
                 } else if (input.y == this.bufHeight &&
                            pressedX == input.x && pressedY == input.y &&
                            edit == null) {
