@@ -33,9 +33,17 @@ function testDate() {
 	new Date();
 }
 
+function testRegExp() {
+	/a/.test("");
+	const o = /x/g;
+	Object.defineProperty(o, "flags", {get: undefined, configurable: true});
+	RegExp.prototype[Symbol.replace].apply(o);
+}
+
 testNumberLiterals();
 testArrayBuffer();
 testDate();
+testRegExp();
 
 document.getElementById("x").textContent = "Success";
 </script>
