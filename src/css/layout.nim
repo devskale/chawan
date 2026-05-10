@@ -2191,12 +2191,12 @@ proc layoutImage(lctx: LayoutContext; box: BlockBox; offset: Offset;
   var size = osize
   if input.space.w.t == scStretch:
     let w = input.space.w.u
-    if input.space.h.t != scStretch:
+    if input.space.h.t != scStretch and osize.w > 0'lu:
       size.h = w * osize.h div osize.w
     size.w = w
   if input.space.h.t == scStretch:
     let h = input.space.h.u
-    if input.space.w.t != scStretch:
+    if input.space.w.t != scStretch and osize.h > 0'lu:
       size.w = h * osize.w div osize.h
     size.h = h
   let paddingSum = input.padding.sum()
