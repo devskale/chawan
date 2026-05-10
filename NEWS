@@ -11,6 +11,7 @@ unreleased
 * add toggleLinkHintsAutoClick command (by Arthur Jacquin)
 * add saveScreen, editScreen commands; rename sourceEdit to editSource
 * add x-type, x-match, x-nc-match mailcap extensions (from w3mmee)
+* add mouse support to the line editor
 * improve keybinding format (mostly backwards-compatible; see cha-config(5))
 * remove display.force-clear (shouldn't have ever been needed)
 * remove display.query-da1 (no longer needed)
@@ -31,6 +32,8 @@ unreleased
 * fix color blending over body bgcolor
 * fix matching of nested subsequent sibling combinator
 * fix various CSS image sizing bugs
+* fix table row rendering order with multiple thead/tfoot children
+* fix absolutely positioned boxes not respecting min/max size constraints
 * fix percentage calc() output in color values
 * fix inline pre/nowrap not being flushed to the next line on overflow
 * fix bugs in our libregexp UTF-8 patch
@@ -45,6 +48,8 @@ unreleased
 * fix TypedArray handling
 * fix suspend() not suspending all processes
 * fix JS bindings having incorrect property descriptions
+* fix user/pass in Basic auth not being percent-decoded
+* fix decoding of data URLs that include a question mark
 
 0.3.0 (2025.11.21)
 
