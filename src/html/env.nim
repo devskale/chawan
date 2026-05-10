@@ -162,6 +162,13 @@ proc pushState(ctx: JSContext; history: History; data, unused: JSValueConst;
     return ctx.setLocation(window, s)
   return JS_UNDEFINED
 
+proc replaceState(ctx: JSContext; history: History; data, unused: JSValueConst;
+    s: string): JSValue {.jsfunc.} =
+  let window = ctx.getWindow()
+  if window != nil:
+    return ctx.setLocation(window, s)
+  return JS_UNDEFINED
+
 # Storage
 proc find(this: Storage; key: string): int =
   for i in 0 ..< this.map.len:
