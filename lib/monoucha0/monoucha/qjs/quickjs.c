@@ -7233,8 +7233,8 @@ static const char *get_prop_string(JSContext *ctx, JSValueConst obj, JSAtom prop
 /* if filename != NULL, an additional level is added with the filename
    and line number information (used for parse error). */
 static void build_backtrace(JSContext *ctx, JSValueConst error_obj,
-                            const char *filename, int line_num, int col_num,
-                            int backtrace_flags)
+                            JSValueConst filter_func, const char *filename,
+                            int line_num, int col_num, int backtrace_flags)
 {
     JSStackFrame *sf;
     JSValue str;
@@ -7265,7 +7265,18 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_obj,
             return;
         }
     }
-    for(sf = ctx->rt->current_stack_frame; sf != NULL; sf = sf->prev_frame) {
+
+    sf = ctx->rt->current_stack_frame;
+    if (!JS_IsUndefined(filter_func)) {
+        for (; sf != NULL; sf = sf->prev_frame) {
+            if (js_same_value(ctx, sf->cur_func, filter_func))
+                goto found;
+        }
+        sf = ctx->rt->current_stack_frame;
+found:
+    }
+
+    for(; sf != NULL; sf = sf->prev_frame) {
         if (sf->js_mode & JS_MODE_BACKTRACE_BARRIER)
             break;
         if (backtrace_flags & JS_BACKTRACE_FLAG_SKIP_FIRST_LEVEL) {
@@ -7329,7 +7340,7 @@ static BOOL is_backtrace_needed(JSContext *ctx, JSValueConst obj)
 
 void JS_BuildBacktrace(JSContext *ctx, JSValueConst obj, int skip_first_level)
 {
-    build_backtrace(ctx, obj, NULL, 0, 0, skip_first_level);
+    build_backtrace(ctx, obj, JS_UNDEFINED, NULL, 0, 0, skip_first_level);
 }
 
 JSValue JS_NewError(JSContext *ctx)
@@ -7354,7 +7365,7 @@ static JSValue JS_ThrowError2(JSContext *ctx, JSErrorEnum error_num,
                                JS_NewString(ctx, buf),
                                JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
         if (add_backtrace) {
-            build_backtrace(ctx, obj, NULL, 0, 0, 0);
+            build_backtrace(ctx, obj, JS_UNDEFINED, NULL, 0, 0, 0);
         }
     }
     ret = JS_Throw(ctx, obj);
@@ -20205,7 +20216,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
            before if the exception happens in a bytecode
            operation */
         sf->cur_pc = pc;
-        build_backtrace(ctx, rt->current_exception, NULL, 0, 0, 0);
+        build_backtrace(ctx, rt->current_exception, JS_UNDEFINED, NULL, 0, 0, 0);
     }
     if (!rt->current_exception_is_uncatchable) {
         while (sp > stack_buf) {
@@ -21881,7 +21892,7 @@ static int js_parse_error_v(JSParseState *s, const uint8_t *ptr, const char *fmt
     int line_num, col_num;
     line_num = get_line_col(&col_num, s->buf_start, ptr - s->buf_start);
     JS_ThrowError2(ctx, JS_SYNTAX_ERROR, fmt, ap, FALSE);
-    build_backtrace(ctx, ctx->rt->current_exception, s->filename,
+    build_backtrace(ctx, ctx->rt->current_exception, JS_UNDEFINED, s->filename,
                     line_num + 1, col_num + 1, 0);
     return -1;
 }
@@ -26438,7 +26449,7 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
                 /* add the line number info */
                 int line_num, col_num;
                 line_num = get_line_col(&col_num, s->buf_start, s->token.ptr - s->buf_start);
-                build_backtrace(s->ctx, s->ctx->rt->current_exception,
+                build_backtrace(s->ctx, s->ctx->rt->current_exception, JS_UNDEFINED,
                                 s->filename, line_num + 1, col_num + 1, 0);
                 return -1;
             }
@@ -41037,7 +41048,7 @@ static JSValue js_error_constructor(JSContext *ctx, JSValueConst new_target,
     }
 
     /* skip the Error() function in the backtrace */
-    build_backtrace(ctx, obj, NULL, 0, 0, JS_BACKTRACE_FLAG_SKIP_FIRST_LEVEL);
+    build_backtrace(ctx, obj, JS_UNDEFINED, NULL, 0, 0, JS_BACKTRACE_FLAG_SKIP_FIRST_LEVEL);
     return obj;
  exception:
     JS_FreeValue(ctx, obj);
@@ -41104,8 +41115,19 @@ static JSValue js_error_isError(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, JS_IsError(ctx, argv[0]));
 }
 
+static JSValue js_error_capture_stack_trace(JSContext *ctx, JSValueConst this_val,
+                                            int argc, JSValueConst *argv)
+{
+    if (!JS_IsObject(argv[0]))
+        return JS_ThrowTypeErrorNotAnObject(ctx);
+    build_backtrace(ctx, argv[0], argv[1], NULL, 0, 0,
+                    JS_BACKTRACE_FLAG_SKIP_FIRST_LEVEL);
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry js_error_funcs[] = {
     JS_CFUNC_DEF("isError", 1, js_error_isError),
+    JS_CFUNC_DEF("captureStackTrace", 2, js_error_capture_stack_trace),
 };
 
 /* AggregateError */
