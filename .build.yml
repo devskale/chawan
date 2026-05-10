@@ -1,0 +1,37 @@
+image: alpine/edge
+
+packages:
+- nim
+- brotli-dev
+- brotli-static
+- libssh2-dev
+- libssh2-static
+- openssl-dev
+- openssl-libs-static
+- zlib-dev
+- zlib-static
+- build-base
+- xz
+
+sources:
+- "https://git.sr.ht/~bptato/chawan"
+
+artifacts:
+- chawan/chawan-linux-amd64.tar.xz
+
+tasks:
+- linux-amd64: |
+    cd chawan
+    # Set flags
+    sed -i '/^STATIC_LINK ?=/s/0/1/' Makefile
+    export LDFLAGS="-lz"
+    export CFLAGS="-ffile-prefix-map=$(pwd)/="
+    # Build
+    make -j$(nproc)
+    # Prepare archive
+    dir=chawan-linux-amd64
+    mkdir "$dir"
+    cp -rP target/ doc/ Makefile cha "$dir"
+    # Create archive
+    tar caf "$dir".tar "$dir" --owner=root --group=root
+    xz "$dir".tar
