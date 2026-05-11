@@ -1890,7 +1890,7 @@ const ReTextStart = /\S/gu;
                     if (i < 0)
                         break;
                     if (s == 'R')
-                        pager.saveMailcapEntry(i);
+                        pager.saveMailcapEntry(init, i);
                     pager.applyMailcap(init, i);
                     break loop;
                 /* navigation */

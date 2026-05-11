@@ -350,9 +350,10 @@ proc resolveAbsoluteWidth(lctx: LayoutContext; size: Size;
     positioned: RelativeRect; computed: CSSValues; input: var LayoutInput) =
   let paddingSum = input.padding[dtHorizontal].sum()
   if computed{"width"}.auto:
-    let u = max(size.w - positioned[dtHorizontal].sum() - paddingSum -
+    var u = max(size.w - positioned[dtHorizontal].sum() - paddingSum -
       input.margin[dtHorizontal].sum() - input.borderSum(dtHorizontal, lctx),
       0'lu)
+    u = minClamp(u, input.bounds.a[dtHorizontal])
     if not computed{"left"}.auto and not computed{"right"}.auto:
       # Both left and right are known, so we can calculate the width.
       input.space.w = stretch(u)
@@ -360,8 +361,9 @@ proc resolveAbsoluteWidth(lctx: LayoutContext; size: Size;
       # Return shrink to fit and solve for left/right.
       input.space.w = fitContent(u)
   else:
-    let sizepx = computed{"width"}.spx(stretch(size.w), computed, paddingSum)
-    input.space.w = stretch(sizepx)
+    var u = computed{"width"}.spx(stretch(size.w), computed, paddingSum)
+    u = minClamp(u, input.bounds.a[dtHorizontal])
+    input.space.w = stretch(u)
 
 proc resolveAbsoluteHeight(lctx: LayoutContext; size: Size;
     positioned: RelativeRect; computed: CSSValues; input: var LayoutInput) =
@@ -370,30 +372,18 @@ proc resolveAbsoluteHeight(lctx: LayoutContext; size: Size;
     if not computed{"top"}.auto and not computed{"bottom"}.auto:
       # Both top and bottom are known, so we can calculate the height.
       # Well, but subtract padding and margin first.
-      let u = max(size.h - positioned[dtVertical].sum() - paddingSum -
+      var u = max(size.h - positioned[dtVertical].sum() - paddingSum -
         input.margin[dtVertical].sum() - input.borderSum(dtVertical, lctx),
         0'lu)
+      u = minClamp(u, input.bounds.a[dtVertical])
       input.space.h = stretch(u)
     else:
       # The height is based on the content.
       input.space.h = maxContent()
   else:
-    let sizepx = computed{"height"}.spx(stretch(size.h), computed, paddingSum)
-    input.space.h = stretch(sizepx)
-
-# Calculate and resolve available width & height for absolutely positioned
-# boxes.
-proc resolveAbsoluteSizes(lctx: LayoutContext; size: Size;
-    positioned: RelativeRect; computed: CSSValues): LayoutInput =
-  var input = LayoutInput(
-    margin: lctx.resolveMargins(stretch(size.w), computed),
-    padding: lctx.resolvePadding(stretch(size.w), computed),
-    bounds: DefaultBounds
-  )
-  input.border = lctx.resolveBorder(computed, input.margin)
-  lctx.resolveAbsoluteWidth(size, positioned, computed, input)
-  lctx.resolveAbsoluteHeight(size, positioned, computed, input)
-  return input
+    var u = computed{"height"}.spx(stretch(size.h), computed, paddingSum)
+    u = minClamp(u, input.bounds.a[dtVertical])
+    input.space.h = stretch(u)
 
 proc fillImageSize(bounds: BoundsPart; osize: Size): Size =
   if osize.w == 0'lu or osize.h == 0'lu:
@@ -475,6 +465,28 @@ proc applyImageSizes(lctx: LayoutContext; space: Space; paddingSum: Size;
   for dim in DimensionType:
     let u = intr[dim]
     input.bounds.mi[dim] = Span(start: u, send: u)
+
+# Calculate and resolve available width & height for absolutely positioned
+# boxes.
+proc resolveAbsoluteSizes(lctx: LayoutContext; size: Size;
+    positioned: RelativeRect; box: BlockBox): LayoutInput =
+  let computed = box.computed
+  let padding = lctx.resolvePadding(stretch(size.w), computed)
+  let paddingSum = padding.sum()
+  let space = stretch(size)
+  let bmp = box.getImageBitmap()
+  var input = LayoutInput(
+    margin: lctx.resolveMargins(stretch(size.w), computed),
+    padding: padding,
+    bounds: lctx.resolveBounds(space, paddingSum, computed, bmp != nil)
+  )
+  input.border = lctx.resolveBorder(computed, input.margin)
+  if bmp != nil:
+    lctx.applyImageSizes(space, paddingSum, bmp, computed, input)
+  else:
+    lctx.resolveAbsoluteWidth(size, positioned, computed, input)
+    lctx.resolveAbsoluteHeight(size, positioned, computed, input)
+  return input
 
 # Calculate and resolve available width & height for floating boxes.
 proc resolveFloatSizes(lctx: LayoutContext; space: Space; box: BlockBox):
@@ -1641,7 +1653,7 @@ proc popPositioned(lctx: LayoutContext; head: CSSAbsolute; size: Size) =
     var offset = child.input.bfcOffset
     size.w -= offset.x
     let positioned = lctx.resolvePositioned(size, child.computed)
-    var input = lctx.resolveAbsoluteSizes(size, positioned, child.computed)
+    var input = lctx.resolveAbsoluteSizes(size, positioned, child)
     input.bfcOffset = offset
     offset.x += input.margin.left
     lctx.layout(child, offset, input)
@@ -2191,12 +2203,12 @@ proc layoutImage(lctx: LayoutContext; box: BlockBox; offset: Offset;
   var size = osize
   if input.space.w.t == scStretch:
     let w = input.space.w.u
-    if input.space.h.t != scStretch:
+    if input.space.h.t != scStretch and osize.w > 0'lu:
       size.h = w * osize.h div osize.w
     size.w = w
   if input.space.h.t == scStretch:
     let h = input.space.h.u
-    if input.space.w.t != scStretch:
+    if input.space.w.t != scStretch and osize.h > 0'lu:
       size.w = h * osize.w div osize.h
     size.h = h
   let paddingSum = input.padding.sum()

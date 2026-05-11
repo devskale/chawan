@@ -1222,7 +1222,8 @@ proc loadData(ctx: var LoaderContext; handle: InputHandle;
     ctx.rejectHandle(handle, ceInvalidURL, "invalid data URL")
     return
   let sd = ct.len + 1 # data start
-  let body = percentDecode(url.pathname.toOpenArray(sd, url.pathname.high))
+  var body = percentDecode(url.pathname.toOpenArray(sd, url.pathname.high))
+  body &= percentDecode(url.search)
   if ct.endsWith(";base64"):
     var d: string
     if d.atob(body).isErr:
