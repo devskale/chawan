@@ -1222,8 +1222,7 @@ Pager.prototype.handleMouseInput = async function(input) {
     let buffer = this.buffer;
     const select = this.menu ?? buffer?.select;
     if (edit != null) {
-        switch (button) {
-        case "left":
+        if (button == "left") {
             switch (input.t) {
             case "release": {
                 if (mouse.moveType == "select") {
@@ -1231,6 +1230,13 @@ Pager.prototype.handleMouseInput = async function(input) {
                         this.clipboardWrite(edit.selectedText, false);
                 } else if (pressedX == input.x && pressedY == input.y) {
                     if (input.y < ((this.bufHeight + 1) / 3) * 2) {
+                        if (buffer != null) {
+                            /* might have scrolled away from the editor's
+                             * position */
+                            const x = buffer.fromx + input.x;
+                            const y = buffer.fromy + input.y;
+                            buffer.setCursorXY(x, y);
+                        }
                         await edit.cancel();
                     } else {
                         if (click == 0) {
@@ -1269,25 +1275,35 @@ Pager.prototype.handleMouseInput = async function(input) {
                 }
                 break;
             }
-            break;
-        case "middle":
-            if (input.t == "press") {
+        } else if (button == "right") {
+            if (input.t == "release")
+                await edit.cancel();
+        } else if (buffer != null && input.t == "press") {
+            switch (button) {
+            case "middle":
                 const text = await this.promptPaste();
                 if (text != null)
                     edit.write(text);
-            }
-            break;
-        case "right":
-            if (input.t == "release")
-                await edit.cancel();
-            break;
-        case "thumbInner":
-            if (input.t == "press")
+                break;
+            case "thumbInner":
                 edit.prevHist();
-            break;
-        case "thumbTip":
-            if (input.t == "press")
+                break;
+            case "thumbTip":
                 edit.nextHist();
+                break;
+            case "wheelUp":
+                buffer.shiftScreenUp(config.input.wheelScroll);
+                break;
+            case "wheelDown":
+                buffer.shiftScreenDown(config.input.wheelScroll);
+                break;
+            case "wheelLeft":
+                buffer.shiftScreenLeft(config.input.sideWheelScroll);
+                break;
+            case "wheelRight":
+                buffer.shiftScreenRight(config.input.sideWheelScroll);
+                break;
+            }
         }
     } else if (select != null) {
         /* one off because of border */
@@ -1298,8 +1314,7 @@ Pager.prototype.handleMouseInput = async function(input) {
         let outside =
             select.y > input.y || input.y >= select.y + select.height &&
             select.x > input.x || input.x >= select.x + select.width;
-        switch (button) {
-        case "right":
+        if (button == "right") {
             if (!inside)
                 select.unselect();
             else if (input.x != pressedX || input.y != pressedY) {
@@ -1324,8 +1339,7 @@ Pager.prototype.handleMouseInput = async function(input) {
                 else if (outside)
                     select.cursorLeft();
             }
-            break;
-        case "left":
+        } else if (button == "left") {
             if (input.t == "press") {
                 if (outside) { /* clicked outside the select */
                     mouse.blockTillRelease = true;
@@ -1338,11 +1352,24 @@ Pager.prototype.handleMouseInput = async function(input) {
                     select.click();
                 }
             }
-            break;
+        } else if (input.t == "press") {
+            switch (button) {
+            case "wheelUp":
+                this.scrollUp(config.input.wheelScroll);
+                break;
+            case "wheelDown":
+                this.scrollDown(config.input.wheelScroll);
+                break;
+            case "wheelLeft":
+                this.scrollLeft(config.input.sideWheelScroll);
+                break;
+            case "wheelRight":
+                this.scrollRight(config.input.sideWheelScroll);
+                break;
+            }
         }
     } else if (buffer != null) {
-        switch (button) {
-        case "left":
+        if (button == "left") {
             switch (input.t) {
             case "move":
                 if (click < 1)
@@ -1382,40 +1409,51 @@ Pager.prototype.handleMouseInput = async function(input) {
                     buffer.clearSelection();
                 break;
             }
-            break;
-        case "middle":
+        } else if (button == "middle") {
             if (input.t == "release" && input.x == pressedX &&
                 input.y == pressedY && input.y < buffer.height) {
                 this.discardBuffer(buffer);
             }
-            break;
-        case "right":
-            if (input.t == "press" && input.y < buffer.height) {
-                let canceled = false;
-                if (buffer.currentSelection == null &&
-                    !(input.mods & Mouse.META)) {
-                    buffer.setAbsoluteCursorXY(input.x, input.y);
-                    canceled = await buffer.contextMenu();
+        } else if (input.t == "press") {
+            switch (button) {
+            case "right":
+                if (input.y < buffer.height) {
+                    let canceled = false;
+                    if (buffer.currentSelection == null &&
+                        !(input.mods & Mouse.META)) {
+                        buffer.setAbsoluteCursorXY(input.x, input.y);
+                        canceled = await buffer.contextMenu();
+                    }
+                    if (!canceled) {
+                        this.openMenu(input.x, input.y);
+                        this.menu.unselect();
+                    }
                 }
-                if (!canceled) {
-                    this.openMenu(input.x, input.y);
-                    this.menu.unselect();
-                }
-            }
-            break;
-        case "thumbInner":
-            if (input.t == "press")
+                break;
+            case "thumbInner":
                 this.prevBuffer();
-            break;
-        case "thumbTip":
-            if (input.t == "press")
+                break;
+            case "thumbTip":
                 this.nextBuffer();
+            case "wheelUp":
+                this.scrollUp(config.input.wheelScroll);
+                break;
+            case "wheelDown":
+                this.scrollDown(config.input.wheelScroll);
+                break;
+            case "wheelLeft":
+                this.scrollLeft(config.input.sideWheelScroll);
+                break;
+            case "wheelRight":
+                this.scrollRight(config.input.sideWheelScroll);
+                break;
+            }
         }
     }
     if (!mouse.blockTillRelease) {
-        switch (button) {
-        case "left":
-            if (input.t == "release") {
+        if (input.t == "release") {
+            switch (button) {
+            case "left":
                 const moveType = mouse.moveType;
                 mouse.moveType = "none";
                 if (moveType == "select") {
@@ -1448,39 +1486,25 @@ Pager.prototype.handleMouseInput = async function(input) {
                     else
                         this.scrollDown(-drow);
                 }
+                break;
+            case "right":
+                if (pressedX == input.x && pressedY == this.bufHeight &&
+                    edit == null) {
+                    this.loadCursor();
+                }
+                break;
+            case "middle":
+                if (pressedX == input.x && pressedY == this.bufHeight &&
+                    edit == null) {
+                    this.load("");
+                }
+                break;
             }
-            break;
-        case "right":
-            if (input.t == "release" && pressedX == input.x &&
-                pressedY == this.bufHeight && edit == null) {
-                this.loadCursor();
-            }
-            break;
-        case "middle":
-            if (input.t == "release" && pressedX == input.x &&
-                pressedY == this.bufHeight && edit == null) {
-                this.load("");
-            }
-            break;
-        case "wheelUp":
-            if (input.t == "press")
-                this.scrollUp(config.input.wheelScroll);
-            break;
-        case "wheelDown":
-            if (input.t == "press")
-                this.scrollDown(config.input.wheelScroll);
-            break;
-        case "wheelLeft":
-            if (input.t == "press")
-                this.scrollLeft(config.input.sideWheelScroll);
-            break;
-        case "wheelRight":
-            if (input.t == "press")
-                this.scrollRight(config.input.sideWheelScroll);
-            break;
-        }
-        switch (input.t) {
-        case "press":
+            if (pressedX != input.x || pressedY != input.y)
+                mouse.click[button] = 0;
+            mouse.released[button] = mouse.pressed[button];
+            mouse.pressed[button] = [-1, -1];
+        } else if (input.t == "press") {
             mouse.pressed[button] = [input.x, input.y];
             const [releasedX, releasedY] =
                 mouse.released[button] ?? [-1, -1];
@@ -1488,13 +1512,6 @@ Pager.prototype.handleMouseInput = async function(input) {
                 mouse.click[button] = click + 1;
             else
                 mouse.click[button] = 0;
-            break;
-        case "release":
-            if (pressedX != input.x || pressedY != input.y)
-                mouse.click[button] = 0;
-            mouse.released[button] = mouse.pressed[button];
-            mouse.pressed[button] = [-1, -1];
-            break;
         }
     }
     this.queueStatusUpdate();
@@ -2414,11 +2431,43 @@ const ReTextStart = /\S/gu;
         this.setCursorX((this.iface?.cursorLastX ?? 0) + n);
     }
 
-    /* public */ scrollDown(n = 1) {
+    /* private */ shiftScreenDown(n = 1) {
         const H = this.numLines;
         const y = Math.min(this.fromy + this.height + n, H) - this.height;
         if (y > this.fromy) {
             this.setFromY(y);
+            return true;
+        }
+        return false;
+    }
+
+    /* private */ shiftScreenUp(n = 1) {
+        const y = Math.max(this.fromy - n, 0);
+        if (y < this.fromy) {
+            this.setFromY(y);
+            return true;
+        }
+        return false;
+    }
+
+    /* private */ shiftScreenRight(n = 1) {
+        const iface = this.iface;
+        if (iface == null)
+            return;
+        const msw = iface.maxScreenWidth();
+        const x = Math.min(this.fromx + this.width + n, msw) - this.width;
+        if (x > this.fromx)
+            this.setFromX(x, false);
+    }
+
+    /* public */ shiftScreenLeft(n = 1) {
+        const x = Math.max(this.fromx - n, 0);
+        if (x < this.fromx)
+            this.setFromX(x, false);
+    }
+
+    /* public */ scrollDown(n = 1) {
+        if (this.shiftScreenDown(n)) {
             const dy = this.fromy - this.cursory;
             if (dy > 0)
                 this.cursorDown(dy);
@@ -2427,9 +2476,7 @@ const ReTextStart = /\S/gu;
     }
 
     /* public */ scrollUp(n = 1) {
-        const y = Math.max(this.fromy - n, 0);
-        if (y < this.fromy) {
-            this.setFromY(y);
+        if (this.shiftScreenUp(n)) {
             const dy = this.cursory - this.fromy - this.height + 1;
             if (dy > 0)
                 this.cursorUp(dy);
