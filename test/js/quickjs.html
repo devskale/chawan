@@ -36,8 +36,8 @@ function testDate() {
 function testRegExp() {
 	/a/.test("");
 	const o = /x/g;
-	Object.defineProperty(o, "flags", {get: undefined, configurable: true});
-	RegExp.prototype[Symbol.replace].apply(o);
+	Object.defineProperty(o, "flags", {get: undefined});
+	"".replace(o);
 }
 
 testNumberLiterals();
