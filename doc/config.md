@@ -240,7 +240,7 @@ ignore-case = "auto"
 
   Note: this can also be overridden inline in the search bar (vim-style),
   with the escape sequences `\c` (ignore case) and `\C` (strict case).
-  See [search mode](#search-mode) for details.)
+  See [search mode](#search-mode) for details.
 
 ## Encoding
 
@@ -289,7 +289,7 @@ mailcap = ["~/.mailcap", "/etc/mailcap", "/usr/etc/mailcap", "/usr/local/etc/mai
 : **array of paths**
 
 : Search path for mailcap files.  See [**cha-mailcap**](mailcap.md)(5)
-for details.  Directories specified first have higher precedence.
+  for details.  Directories specified first have higher precedence.
 
 mime-types = ["~/.mime.types", "/etc/mime.types", "/usr/etc/mime.types", "/usr/local/etc/mime.types"]
 : **array of paths**
@@ -311,20 +311,20 @@ cgi-dir = ["\$CHA_DIR/cgi-bin", "\$CHA_LIBEXEC_DIR/cgi-bin"]
 : **array of paths**
 
 : Search path for local CGI scripts.  See [**cha-cgi**](cgi.md)(5) for
-details.
+  details.
 
 urimethodmap = ["\$CHA_DIR/urimethodmap", "~/.urimethodmap", "/etc/urimethodmap"]
 : **array of paths**
 
 : Search path for urimethodmap files.  See
-[**cha-urimethodmap**](urimethodmap.md)(5) for details.
+  [**cha-urimethodmap**](urimethodmap.md)(5) for details.
 
 w3m-cgi-compat = false
 : **boolean**
 
 : Enable local CGI compatibility with w3m.  In short, it redirects
-`file:///cgi-bin/*` and `file:///$LIB/cgi-bin/*` to `cgi-bin:*`.
-See [**cha-cgi**](cgi.md)(5) for details.
+  `file:///cgi-bin/*` and `file:///$LIB/cgi-bin/*` to `cgi-bin:*`.
+  See [**cha-cgi**](cgi.md)(5) for details.
 
 download-dir = "\${TMPDIR:-/tmp}/"
 : **path**
@@ -340,8 +340,8 @@ copy-cmd = "xsel -bi"
 : **shell command**
 
 : Command to use for "copy to clipboard" operations.  When
-`input.osc52-copy` is set to "auto" (the default), `copy-cmd` is ignored if
-support for OSC 52 is detected.
+  `input.osc52-copy` is set to "auto" (the default), `copy-cmd` is ignored
+  if support for OSC 52 is detected.
 
 paste-cmd = "xsel -bo"
 : **shell command**
@@ -352,7 +352,7 @@ bookmark = "\$CHA_DATA_DIR/bookmark.md"
 : **path**
 
 : Path to the bookmark.md file. (The file it points to should have a
-.md extension, so that its type can be correctly deduced.)
+  .md extension, so that its type can be correctly deduced.)
 
 history-file = "\$CHA_DATA_DIR/history.uri"
 : **path**
@@ -401,9 +401,9 @@ use-mouse = "auto"
 osc52-copy = "auto"
 : **boolean** / **"auto"**
 
-: Whether Chawan should use the OSC 52 escape sequence for copying to the
-clipboard directly through the terminal.  When available, OSC 52 overrides
-`external.copy-cmd`.
+: Whether Chawan should use the OSC 52 escape sequence for copying to
+  the clipboard directly through the terminal.  When available, OSC 52
+  overrides `external.copy-cmd`.
 
   When set to "auto" (the default), Chawan tries to detect whether OSC 52
   is available on launch.
@@ -412,8 +412,8 @@ osc52-primary = "auto"
 : **boolean** / **"auto"**
 
 : Whether Chawan should try to set the primary selection through OSC 52.
-This happens automatically on mouse selection, and also on all clipboard
-copies.
+  This happens automatically on mouse selection, and also on all clipboard
+  copies.
 
   When set to "auto" (the default), Chawan tries to detect whether the
   terminal is capable of setting the primary selection.  Note that very
@@ -449,7 +449,7 @@ link-hint-chars = "abcdefghijklmnoprstuvxyz"
 : **string**
 
 : A string of characters to use in `toggleLinkHints`.  Any Unicode
-codepoint is accepted, and they are ordered as specified in this option.
+  codepoint is accepted, and they are ordered as specified in this option.
 
 Examples:
 
@@ -536,7 +536,7 @@ color-mode = "auto"
 
 format-mode = "auto"
 : **"auto"** / **["bold", "italic", "underline", "reverse", "strike",
-"overline", "blink"]**
+  "overline", "blink"]**
 
 : Specifies allowed output formatting modes.  Accepts the string "auto"
   or an array of specific attributes.  "auto" (the default) tries to
@@ -810,7 +810,7 @@ cookie = buffer.cookie
 : **boolean** / **"save"**
 
 : Whether loading (with "save", also saving) cookies should be allowed for
-this URL.
+  this URL.
 
 share-cookie-jar
 : **host string**
@@ -830,7 +830,7 @@ scripting = buffer.scripting
 : **boolean** / **"app"**
 
 : Enable/disable JavaScript execution on this site.  See `buffer.scripting`
-for details.
+  for details.
 
 styling = buffer.styling
 : **boolean**
