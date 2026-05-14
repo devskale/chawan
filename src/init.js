@@ -1230,13 +1230,8 @@ Pager.prototype.handleMouseInput = async function(input) {
                         this.clipboardWrite(edit.selectedText, false);
                 } else if (pressedX == input.x && pressedY == input.y) {
                     if (input.y < ((this.bufHeight + 1) / 3) * 2) {
-                        if (buffer != null) {
-                            /* might have scrolled away from the editor's
-                             * position */
-                            const x = buffer.fromx + input.x;
-                            const y = buffer.fromy + input.y;
-                            buffer.setCursorXY(x, y);
-                        }
+                        if (buffer != null)
+                            buffer.setAbsoluteCursorXY(input.x, input.y);
                         await edit.cancel();
                     } else {
                         if (click == 0) {
@@ -1252,6 +1247,17 @@ Pager.prototype.handleMouseInput = async function(input) {
                         } else
                             mouse.click[button] = 0;
                     }
+                } else if (pressedX != -1 && pressedY != -1) {
+                    const dcol = input.x - pressedX;
+                    const drow = input.y - pressedY;
+                    if (dcol > 0)
+                        buffer.shiftScreenLeft(dcol);
+                    else
+                        buffer.shiftScreenRight(-dcol);
+                    if (drow > 0)
+                        buffer.shiftScreenUp(drow);
+                    else
+                        buffer.shiftScreenDown(-drow);
                 }
                 break;
             }
@@ -1456,7 +1462,7 @@ Pager.prototype.handleMouseInput = async function(input) {
             case "left":
                 const moveType = mouse.moveType;
                 mouse.moveType = "none";
-                if (moveType == "select") {
+                if (moveType == "select" || edit != null) {
                     /* do nothing */
                 } else if (input.y == this.bufHeight &&
                            pressedX == input.x && pressedY == input.y &&
@@ -2460,7 +2466,7 @@ const ReTextStart = /\S/gu;
             this.setFromX(x, false);
     }
 
-    /* public */ shiftScreenLeft(n = 1) {
+    /* private */ shiftScreenLeft(n = 1) {
         const x = Math.max(this.fromx - n, 0);
         if (x < this.fromx)
             this.setFromX(x, false);
