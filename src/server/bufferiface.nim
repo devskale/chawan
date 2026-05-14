@@ -1,6 +1,5 @@
 {.push raises: [].}
 
-import std/options
 import std/posix
 import std/tables
 
@@ -216,7 +215,7 @@ type
 
   BufferInitFlag* = enum
     bifSave, bifHTML, bifHistory, bifTailOnLoad, bifCrashed, bifHasStart,
-    bifRedirected, bifMailcapCancel, bifForceType
+    bifPendingStart, bifRedirected, bifMailcapCancel, bifForceType
 
   LoadState* = enum
     lsLoading = "loading"
@@ -271,7 +270,7 @@ type
     config*: BufferConfig
     loaderConfig*: LoaderClientConfig
     filterCmd*: string # filter command (called on load)
-    startpos*: Option[CursorState]
+    startpos: CursorState
     title: string
     # if set, this *overrides* any content type received from the network.
     # (this is because it stores the content type from the -T flag.)
@@ -397,14 +396,17 @@ proc copyCursorPos(ctx: JSContext; this: BufferInit; val: JSValueConst):
     Opt[void] {.jsfunc.} =
   var iface: BufferInterface
   if ctx.fromJS(val, iface).isOk:
-    if iface.init.startpos.isSome:
+    if bifPendingStart in iface.init.flags:
       this.startpos = iface.init.startpos
     else:
-      this.startpos = some(iface.pos)
+      this.startpos = iface.pos
+    this.flags.incl(bifPendingStart)
   else:
     var init: BufferInit
     ?ctx.fromJS(val, init)
     this.startpos = init.startpos
+    if bifPendingStart in iface.init.flags:
+      this.flags.incl(bifPendingStart)
   # set a separate flag, because startpos may be already used (and
   # therefore unset) by the time hasStart is checked
   this.flags.incl(bifHasStart)
@@ -1360,11 +1362,11 @@ proc getLinesFromStream(ctx: JSContext; iface: BufferInterface;
       if iface.cursory != n:
         iface.setCursorY(n)
         iface.refreshStatus = true
-    if iface.init.startpos.isSome and
-        iface.numLines >= iface.init.startpos.get.cursor.y:
-      iface.pos = iface.init.startpos.get
+    if bifPendingStart in iface.init.flags and
+        iface.numLines >= iface.init.startpos.cursor.y:
+      iface.pos = iface.init.startpos
       iface.requestLinesFast()
-      iface.init.startpos = none(CursorState)
+      iface.init.flags.excl(bifPendingStart)
       iface.sendCursorPosition()
     if iface.loadState != lsLoading:
       iface.refreshStatus = true
