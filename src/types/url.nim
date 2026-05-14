@@ -1130,7 +1130,7 @@ proc isIP*(url: URL): bool =
   return url.hostType in {htIpv4, htIpv6}
 
 # https://url.spec.whatwg.org/#urlencoded-parsing
-proc parseFromURLEncoded(input: string): seq[(string, string)] =
+proc parseFromURLEncoded(input: openArray[char]): seq[(string, string)] =
   result = @[]
   for s in input.split('&'):
     if s == "":
@@ -1167,15 +1167,17 @@ proc newURLSearchParams(ctx: JSContext; init: JSValueConst = JS_UNDEFINED):
     else:
       var res: string
       ?ctx.fromJS(init, res)
+      var i = 0
       if res.len > 0 and res[0] == '?':
-        res.delete(0..0)
-      params.list = parseFromURLEncoded(res)
+        inc i
+      params.list = parseFromURLEncoded(res.toOpenArray(i, res.high))
   return ok(params)
 
 proc searchParams(url: URL): URLSearchParams {.jsfget.} =
   if url.searchParamsInternal == nil:
+    let i = int(url.search.len > 0)
     url.searchParamsInternal = URLSearchParams(
-      list: parseFromURLEncoded(url.search.substr(1)),
+      list: parseFromURLEncoded(url.search.toOpenArray(i, url.search.high)),
       url: url
     )
   return url.searchParamsInternal
