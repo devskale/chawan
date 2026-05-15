@@ -9,7 +9,6 @@
 
 import std/hashes
 import std/macros
-import std/options
 import std/sets
 
 import chame/tags
@@ -373,11 +372,6 @@ proc toAtom*(prefix: NamespacePrefix): CAtom =
   of PREFIX_XML: satXml
   of PREFIX_XMLNS: satXmlns
   of PREFIX_UNKNOWN: satUempty).toAtom()
-
-proc toAtom*(val: Option[string]): CAtom =
-  if val.isSome:
-    return val.unsafeGet.toAtom()
-  CAtomNull
 
 proc `==`*(a: CAtom; b: StaticAtom): bool =
   a.toStaticAtom() == b

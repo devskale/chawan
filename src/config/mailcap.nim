@@ -324,8 +324,8 @@ proc unquoteCommand*(ecmd, contentType, outpath: string; url: URL;
   var cmd = ""
   var attrname = ""
   var state = usNormal
-  var qss = @[qsNormal] # quote state stack. len >1
-  template qs: var QuoteState = qss[^1]
+  var qs = qsNormal # current quote state
+  var qss: seq[QuoteState] = @[] # quote state stack
   for c in ecmd:
     case state
     of usQuoted:
@@ -360,15 +360,16 @@ proc unquoteCommand*(ecmd, contentType, outpath: string; url: URL;
         cmd &= c
       of '(':
         if prevDollar:
-          qss.add(qsNormal)
+          qss.add(qs)
+          qs = qsNormal
         cmd &= c
       of ')':
         if qs != qsSingleQuoted:
           if qss.len > 1:
-            qss.setLen(qss.len - 1)
+            qs = qss.pop()
           else:
             # mismatched parens; probably an invalid shell command...
-            qss[0] = qsNormal
+            qs = qsNormal
         cmd &= c
       else:
         cmd &= c
