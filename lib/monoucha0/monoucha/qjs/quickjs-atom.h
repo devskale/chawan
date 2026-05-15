@@ -190,6 +190,7 @@ DEF(unicodeSets, "unicodeSets")
 DEF(not_equal, "not-equal")
 DEF(timed_out, "timed-out")
 DEF(ok, "ok")
+DEF(toISOString, "toISOString")
 /* */
 DEF(toJSON, "toJSON")
 DEF(maxByteLength, "maxByteLength")
