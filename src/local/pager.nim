@@ -508,11 +508,7 @@ proc evalAction(pager: Pager; val: JSValue; arg0: int32; oval: var JSValue):
   # If an action evaluates to a function that function is evaluated too.
   if JS_IsFunction(ctx, val):
     if arg0 != 0:
-      let arg0 = ctx.toJS(arg0)
-      if JS_IsException(arg0):
-        JS_FreeValue(ctx, val)
-        return arg0
-      val = ctx.callSinkFree(val, JS_UNDEFINED, arg0)
+      val = ctx.callSinkFree(val, JS_UNDEFINED, ctx.toJS(arg0))
     else: # no precnum
       val = ctx.callFree(val, JS_UNDEFINED)
   return val
@@ -2672,11 +2668,12 @@ const LegacyReflectFuncList = [
   "cursorBottom", "lowerPage", "lowerPageBegin", "centerLine",
   "centerLineBegin", "raisePage", "raisePageBegin", "nextPageBegin",
   "cursorLeftEdge", "cursorMiddleColumn", "cursorRightEdge", "centerColumn",
-  "findNextMark", "setMark", "clearMark", "gotoMark", "gotoMarkY", "getMarkPos",
-  "cursorToggleSelection", "getSelectionText", "markURL", "showLinkHints",
-  "toggleImages", "saveLink", "saveSource", "setCursorX", "setCursorY",
-  "setCursorXY", "setCursorXCenter", "setCursorYCenter", "setCursorXYCenter",
-  "setFromX", "setFromY", "setFromXY", "find", "cancel", "reshape"
+  "findPrevMark", "findNextMark", "setMark", "clearMark", "gotoMark",
+  "gotoMarkY", "getMarkPos", "cursorToggleSelection", "getSelectionText",
+  "markURL", "showLinkHints", "toggleImages", "saveLink", "saveSource",
+  "setCursorX", "setCursorY", "setCursorXY", "setCursorXCenter",
+  "setCursorYCenter", "setCursorXYCenter", "setFromX", "setFromY", "setFromXY",
+  "find", "cancel", "reshape"
 ]
 const LegacyReflectGetList = [
   cstring"url", "hoverTitle", "hoverLink", "hoverImage", "cursorx", "cursory",
