@@ -1557,7 +1557,11 @@ proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
     i: i,
     finish: finish
   )
-  window.corsFetch(newRequest(url), loadSheet0, env)
+  let request = newRequest(
+    url,
+    referrer = window.document.url
+  )
+  window.corsFetch(request, loadSheet0, env)
 
 proc loadSheet(window: Window; this: SheetElement; url: URL;
     finish: LoadSheetFinish) =
@@ -1653,6 +1657,7 @@ proc loadImage0(opaque: RootRef; response: Response) =
     return
   let contentType = response.getContentType("image/x-unknown")
   if not contentType.startsWith("image/"):
+    window.loader.close(response)
     window.imageLoaded()
     return
   var t = contentType.after('/')
@@ -1671,6 +1676,7 @@ proc loadImage0(opaque: RootRef; response: Response) =
   cachedURL.cacheId = window.loader.addCacheFile(response.outputId)
   let url = parseURL0("img-codec+" & t & ":decode")
   if url == nil:
+    window.loader.close(response)
     window.imageLoaded()
     return
   let request = newRequest(
@@ -1740,7 +1746,12 @@ proc loadImage*(window: Window; image: HTMLImageElement) =
   window.imageURLCache[surl] = cachedURL
   let headers = newHeaders(hgRequest, {"Accept": "*/*"})
   inc window.remoteImageNum
-  window.corsFetch(newRequest(url, headers = headers), loadImage0, cachedURL)
+  let request = newRequest(
+    url,
+    headers = headers,
+    referrer = window.document.url
+  )
+  window.corsFetch(request, loadImage0, cachedURL)
 
 type LoadSVGEnv = ref object of RootObj
   window: Window
@@ -1813,7 +1824,8 @@ proc loadSVG*(window: Window; svg: SVGSVGElement) =
     "img-codec+svg+xml:decode",
     httpMethod = hmPost,
     headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
-    body = RequestBody(t: rbtOutput, outputId: svgres.outputId)
+    body = RequestBody(t: rbtOutput, outputId: svgres.outputId),
+    referrer = window.document.url
   )
   let env = LoadSVGEnv(
     window: window,
