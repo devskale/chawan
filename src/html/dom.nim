@@ -22,6 +22,7 @@ import encoding/decoder
 import html/catom
 import html/domcanvas
 import html/domexception
+import html/domrect
 import html/event
 import html/performance
 import html/script
@@ -355,15 +356,6 @@ type
   DOMImplementation = ref object
     document: Document
 
-  DOMRect* = ref object
-    x* {.jsgetset.}: float64
-    y* {.jsgetset.}: float64
-    width* {.jsgetset.}: float64
-    height* {.jsgetset.}: float64
-
-  DOMRectList = ref object
-    list: seq[DOMRect]
-
   DocumentWriteBuffer* = ref object
     data*: string
     i*: int
@@ -509,6 +501,8 @@ type
 
   FormAssociatedElement* = ref object of HTMLElement
     form*: HTMLFormElement
+    prev: FormAssociatedElement # previous control in form
+    next: FormAssociatedElement # next control in form
     parserInserted*: bool
 
   HTMLInputElement* = ref object of FormAssociatedElement
@@ -560,7 +554,8 @@ type
   HTMLFormElement* = ref object of HTMLElement
     constructingEntryList*: bool
     firing*: bool
-    controls*: seq[FormAssociatedElement]
+    controlsHead: FormAssociatedElement
+    controlsTail: FormAssociatedElement
     cachedElements: HTMLFormControlsCollection
     relList {.jsget.}: DOMTokenList
 
@@ -732,8 +727,6 @@ jsDestructor(DocumentType)
 jsDestructor(Attr)
 jsDestructor(NamedNodeMap)
 jsDestructor(CSSStyleDeclaration)
-jsDestructor(DOMRect)
-jsDestructor(DOMRectList)
 jsDestructor(CustomElementRegistry)
 jsDestructor(ShadowRoot)
 
@@ -787,9 +780,9 @@ proc serializeFragment(res: var string; node: Node; writeShadow: bool)
 proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
   writeShadow: bool)
 
-proc countChildren(node: ParentNode; nodeType: type): int
-proc hasChild(node: ParentNode; nodeType: type): bool
-proc hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool
+proc countChildren(node: ParentNode; t: NodeType): int
+proc hasChild(node: ParentNode; t: NodeType): bool
+proc hasChildExcept(node: ParentNode; t: NodeType; ex: Node): bool
 proc insert*(parent: ParentNode; node, before: Node; suppressObservers = false)
 proc replaceAll(parent: ParentNode; node: Node)
 proc replaceAll(parent: ParentNode; s: sink string)
@@ -821,18 +814,19 @@ proc attrulgz(element: Element; name: StaticAtom; value: uint32)
 proc attrulgz*(element: Element; s: StaticAtom): Opt[uint32]
 proc delAttr(ctx: JSContext; element: Element; i: int)
 proc elIndex*(this: Element): int
-proc elementInsertionSteps(element: Element): bool
 proc ensureStyle(element: Element)
 proc findAttr(element: Element; qualifiedName: CAtom): int
 proc findAttrNS(element: Element; namespace, localName: CAtom): int
 proc getCharset(element: Element): Charset
 proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues
+proc insertionSteps(element: Element): bool
 proc invalidate*(element: Element)
 proc invalidate*(element: Element; dep: DependencyType)
 proc nextDisplayedElement(element: Element): Element
 proc outerHTML(element: Element): string
 proc postConnectionSteps(element: Element)
 proc previousElementSibling*(element: Element): Element
+proc removingSteps(element: Element)
 proc scriptingEnabled(element: Element): bool
 proc shadowRoot(this: Element): ShadowRoot
 proc tagName(element: Element): string
@@ -1251,6 +1245,12 @@ iterator displayedElements*(window: Window): Element
   while element != nil:
     yield element
     element = element.nextDisplayedElement
+
+iterator controls*(form: HTMLFormElement): FormAssociatedElement {.inline.} =
+  var control = form.controlsHead
+  while control != nil:
+    yield control
+    control = control.next
 
 iterator inputs(form: HTMLFormElement): HTMLInputElement {.inline.} =
   for control in form.controls:
@@ -2160,7 +2160,7 @@ proc ownerDocument(node: Node): Document {.jsfget.} =
     return nil
   return node.document
 
-proc jsNodeType0(node: Node): NodeType =
+proc nodeTypeEnum(node: Node): NodeType =
   if node of CharacterData:
     if node of Text:
       return ntText
@@ -2182,7 +2182,7 @@ proc jsNodeType0(node: Node): NodeType =
     return ntDocumentFragment
 
 proc nodeType(node: Node): uint16 {.jsfget.} =
-  return uint16(node.jsNodeType0)
+  return uint16(node.nodeTypeEnum)
 
 proc nodeName(node: Node): string {.jsfget.} =
   if node of Element:
@@ -2318,23 +2318,23 @@ proc preInsertionValidity(parent, node, before: Node):
   if parent of Document:
     if node of DocumentFragment:
       let node = DocumentFragment(node)
-      let elems = node.countChildren(Element)
-      if elems > 1 or node.hasChild(Text):
+      let elems = node.countChildren(ntElement)
+      if elems > 1 or node.hasChild(ntText):
         return err("document fragment has invalid children")
-      elif elems == 1 and (parent.hasChild(Element) or
+      elif elems == 1 and (parent.hasChild(ntElement) or
           before != nil and (before of DocumentType or
           before.hasNextSibling(DocumentType))):
         return err("document fragment has invalid children")
     elif node of Element:
-      if parent.hasChild(Element):
+      if parent.hasChild(ntElement):
         return err("document already has an element child")
       elif before != nil and (before of DocumentType or
             before.hasNextSibling(DocumentType)):
         return err("cannot insert element before document type")
     elif node of DocumentType:
-      if parent.hasChild(DocumentType) or
+      if parent.hasChild(ntDocumentType) or
           before != nil and before.hasPreviousSibling(Element) or
-          before == nil and parent.hasChild(Element):
+          before == nil and parent.hasChild(ntElement):
         return err("cannot insert document type before an element node")
     else: discard
   ok(parent)
@@ -2392,15 +2392,16 @@ proc remove*(node: Node; suppressObservers: bool) =
     #TODO assign slottables for tree with root
     #TODO assign slottables for tree with node
     discard
-  #TODO removing steps
-  let parentConnected = root.isConnected
-  #TODO if node is custom and connected, disconnectedcallback
-  for desc in element.descendantsShadowIncl:
-    #TODO removing steps
-    if desc of Element:
-      let element = Element(desc)
-      if element.custom == cesCustom and parentConnected:
-        discard #TODO call disconnectedCallback
+  if element != nil:
+    element.removingSteps()
+    let parentConnected = root.isConnected
+    #TODO if node is custom and connected, disconnectedcallback
+    for desc in element.descendantsShadowIncl:
+      element.removingSteps()
+      if desc of Element:
+        let element = Element(desc)
+        if element.custom == cesCustom and parentConnected:
+          discard #TODO call disconnectedCallback
   #TODO registered observers
   if not suppressObservers:
     discard #TODO queue tree mutation record
@@ -2474,19 +2475,19 @@ proc replace*(parent, child, node: Node): Err[cstring] =
   if parent of Document:
     if node of DocumentFragment:
       let node = DocumentFragment(node)
-      let elems = node.countChildren(Element)
-      if elems > 1 or node.hasChild(Text):
+      let elems = node.countChildren(ntElement)
+      if elems > 1 or node.hasChild(ntText):
         return err("document fragment has invalid children")
-      elif elems == 1 and (parent.hasChildExcept(Element, child) or
+      elif elems == 1 and (parent.hasChildExcept(ntElement, child) or
           childNextSibling != nil and childNextSibling of DocumentType):
         return err("document fragment has invalid children")
     elif node of Element:
-      if parent.hasChildExcept(Element, child):
+      if parent.hasChildExcept(ntElement, child):
         return err("document already has an element child")
       elif childNextSibling != nil and childNextSibling of DocumentType:
         return err("cannot insert element before document type")
     elif node of DocumentType:
-      if parent.hasChildExcept(DocumentType, child) or
+      if parent.hasChildExcept(ntDocumentType, child) or
           childPreviousSibling != nil and childPreviousSibling of DocumentType:
         return err("cannot insert document type before an element node")
   let referenceChild = if childNextSibling == node:
@@ -2917,23 +2918,23 @@ proc childElementCountImpl(node: ParentNode): int =
     return 0
   return last.elIndex + 1
 
-proc countChildren(node: ParentNode; nodeType: type): int =
+proc countChildren(node: ParentNode; t: NodeType): int =
   result = 0
   for child in node.childList:
-    if child of nodeType:
+    if child.nodeTypeEnum == t:
       inc result
 
-proc hasChild(node: ParentNode; nodeType: type): bool =
+proc hasChild(node: ParentNode; t: NodeType): bool =
   for child in node.childList:
-    if child of nodeType:
+    if child.nodeTypeEnum == t:
       return true
   return false
 
-proc hasChildExcept(node: ParentNode; nodeType: type; ex: Node): bool =
+proc hasChildExcept(node: ParentNode; t: NodeType; ex: Node): bool =
   for child in node.childList:
     if child == ex:
       continue
-    if child of nodeType:
+    if child.nodeTypeEnum == t:
       return true
   return false
 
@@ -3035,7 +3036,7 @@ proc insert0(parent: ParentNode; node, before: Node;
   for desc in node.descendantsShadowIncl:
     if desc of Element:
       let el = Element(desc)
-      if el.elementInsertionSteps():
+      if el.insertionSteps():
         postConnectionNodes.add(el)
       if el.custom == cesCustom:
         #TODO append parentDocument to element custom registry
@@ -3487,7 +3488,7 @@ proc setLocation*(ctx: JSContext; document: Document; s: string): JSValue
     return JS_ThrowTypeError(ctx, "document.location is not an object")
   let url = document.parseURL0(s)
   if url == nil:
-    return JS_ThrowDOMException(ctx, "Invalid URL", "SyntaxError")
+    return JS_ThrowDOMException(ctx, "SyntaxError", "invalid URL")
   document.window.navigate(url)
   return JS_UNDEFINED
 
@@ -4011,6 +4012,22 @@ proc getter(ctx: JSContext; document: Document; s: string): JSValue
       if child.name == id:
         return ctx.toJS(child)
   return JS_UNINITIALIZED
+
+proc fullscreen(document: Document): bool {.
+    jsfget, jsfget: "fullscreenEnabled".} =
+  false
+
+# "lenient setter"
+proc setFullscreen(document: Document; b: bool) {.
+    jsfset: "fullscreen", jsfset: "fullscreenEnabled".} =
+  discard
+
+proc fullscreenElement(document: Document): JSValue {.jsfget.} =
+  return JS_NULL
+
+proc exitFullscreen(ctx: JSContext; document: Document): JSValue {.jsfunc.} =
+  JS_ThrowTypeError(ctx, "fullscreen is not supported")
+  return ctx.newRejectedPromise()
 
 # DocumentType
 proc remove(this: DocumentType) {.jsfunc.} =
@@ -5531,7 +5548,7 @@ proc resetElement*(element: Element) =
   else: discard
 
 # Returns true if has post-connection steps.
-proc elementInsertionSteps(element: Element): bool =
+proc insertionSteps(element: Element): bool =
   case element.tagType
   of TAG_OPTION:
     if element.parentElement != nil:
@@ -5568,12 +5585,22 @@ proc elementInsertionSteps(element: Element): bool =
       style.updateSheet()
   of TAG_SCRIPT:
     return true
+  elif element.tagType(satNamespaceSVG) == TAG_SVG:
+    let svg = SVGSVGElement(element)
+    let window = element.document.window
+    if window != nil:
+      window.loadSVG(svg)
   elif element of FormAssociatedElement:
     let element = FormAssociatedElement(element)
     if element.parserInserted:
       return
     element.resetFormOwner()
   false
+
+proc removingSteps(element: Element) =
+  if element of FormAssociatedElement:
+    let element = FormAssociatedElement(element)
+    element.resetFormOwner()
 
 proc postConnectionSteps(element: Element) =
   let script = HTMLScriptElement(element)
@@ -5784,6 +5811,10 @@ proc getProgressPosition*(element: Element): float64 =
   let max = element.attrdgz(satMax).get(1)
   return min(value, max) / max
 
+proc requestFullscreen(ctx: JSContext; element: Element): JSValue {.jsfunc.} =
+  JS_ThrowTypeError(ctx, "fullscreen is not supported")
+  return ctx.newRejectedPromise()
+
 proc getBitmap*(element: Element): NetworkBitmap =
   case element.tagType
   of TAG_IMG:
@@ -5875,35 +5906,6 @@ proc globalCustomElements(this: ShadowRoot): CustomElementRegistry =
   if not document.customElements.scoped:
     return document.customElements
   return nil
-
-# DOMRect
-proc left(rect: DOMRect): float64 {.jsfget.} =
-  return min(rect.x, rect.x + rect.width)
-
-proc right(rect: DOMRect): float64 {.jsfget.} =
-  return max(rect.x, rect.x + rect.width)
-
-proc top(rect: DOMRect): float64 {.jsfget.} =
-  return min(rect.y, rect.y + rect.height)
-
-proc bottom(rect: DOMRect): float64 {.jsfget.} =
-  return max(rect.y, rect.y + rect.height)
-
-# DOMRectList
-proc length(this: DOMRectList): int {.jsfget.} =
-  this.list.len
-
-proc getter(ctx: JSContext; this: DOMRectList; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  return case ctx.fromIdx(atom, u)
-  of fiIdx:
-    if int64(u) < int64(this.list.len):
-      ctx.toJS(this.list[int(u)]).uninitIfNull()
-    else:
-      JS_UNINITIALIZED
-  of fiStr: JS_UNINITIALIZED
-  of fiErr: JS_EXCEPTION
 
 # CSSStyleDeclaration
 #
@@ -6458,7 +6460,12 @@ proc reset*(form: HTMLFormElement) =
 # FormAssociatedElement
 proc setForm*(element: FormAssociatedElement; form: HTMLFormElement) =
   element.form = form
-  form.controls.add(element)
+  if form.controlsTail == nil:
+    form.controlsHead = element
+  else:
+    form.controlsTail.next = element
+  element.prev = form.controlsTail
+  form.controlsTail = element
   form.document.invalidateCollections()
 
 proc resetFormOwner(element: FormAssociatedElement) =
@@ -6469,7 +6476,19 @@ proc resetFormOwner(element: FormAssociatedElement) =
     let lastForm = element.findAncestor(TAG_FORM)
     if not element.attrb(satForm) and lastForm == element.form:
       return
-  element.form = nil
+  let form = element.form
+  if form != nil:
+    if element.prev == nil:
+      form.controlsHead = element.next
+    else:
+      element.prev.next = element.next
+    if element.next == nil:
+      form.controlsTail = element.prev
+    else:
+      element.next.prev = element.prev
+    element.prev = nil
+    element.next = nil
+    element.form = nil
   if element.tagType in ListedElements and element.isConnected:
     let form = element.document.getElementById(element.attr(satForm))
     if form of HTMLFormElement:
@@ -7755,8 +7774,6 @@ proc addDOMModule*(ctx: JSContext; eventTargetCID: JSClassID): Opt[void] =
   ?ctx.registerType(Attr, parent = nodeCID)
   ?ctx.registerType(NamedNodeMap)
   ?ctx.registerType(CSSStyleDeclaration)
-  ?ctx.registerType(DOMRect)
-  ?ctx.registerType(DOMRectList)
   ?ctx.registerType(CustomElementRegistry)
   ?ctx.registerType(ShadowRoot, parent = documentFragmentCID)
   ?ctx.registerElements(nodeCID)

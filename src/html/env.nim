@@ -10,6 +10,7 @@ import html/chadombuilder
 import html/dom
 import html/domcanvas
 import html/domexception
+import html/domrect
 import html/event
 import html/formdata
 import html/jsencoding
@@ -107,18 +108,9 @@ proc query(ctx: JSContext; this: Permissions; desc: JSValueConst): JSValue
   if JS_IsException(name):
     return name
   JS_FreeValue(ctx, name)
-  var funs {.noinit.}: array[2, JSValue]
-  let res = ctx.newPromiseCapability(funs)
-  if JS_IsException(res):
-    return res
-  JS_FreeValue(ctx, funs[0])
   # reject immediately
   JS_ThrowTypeError(ctx, "permissions are not supported")
-  let code = ctx.enqueueRejection(funs[1])
-  if code < 0:
-    JS_FreeValue(ctx, res)
-    return JS_EXCEPTION
-  return res
+  return ctx.newRejectedPromise()
 
 # Screen
 
@@ -302,26 +294,21 @@ proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
   if input0.isErr:
     return JS_EXCEPTION
   let input = input0.get
+  if input.url.schemeType != stData and
+      not window.isSameOrigin(input.url.origin):
+    # reject immediately
+    discard ctx.throwNetworkError()
+    return ctx.newRejectedPromise()
   var funs {.noinit.}: array[2, JSValue]
   let res = ctx.newPromiseCapability(funs)
   if JS_IsException(res):
     return res
-  if input.url.schemeType != stData and
-      not window.isSameOrigin(input.url.origin):
-    JS_FreeValue(ctx, funs[0])
-    # reject immediately
-    discard ctx.throwNetworkError()
-    let code = ctx.enqueueRejection(funs[1])
-    if code < 0:
-      JS_FreeValue(ctx, res)
-      return JS_EXCEPTION
-  else:
-    let opaque = JSFetchOpaque(
-      ctx: JS_DupContext(ctx),
-      resolve: funs[0],
-      reject: funs[1]
-    )
-    window.loader.fetch(input, jsFinish, opaque)
+  let opaque = JSFetchOpaque(
+    ctx: JS_DupContext(ctx),
+    resolve: funs[0],
+    reject: funs[1]
+  )
+  window.loader.fetch(input, jsFinish, opaque)
   return res
 
 proc scrollTo(window: Window) {.jsfunc.} =
@@ -544,6 +531,7 @@ proc addCommonModules*(ctx: JSContext; window: Window): Opt[void] =
   ?ctx.addConsoleModule()
   ?ctx.addNavigatorModule()
   ?ctx.addDOMExceptionModule()
+  ?ctx.addDOMRectModule()
   ?ctx.addDOMModule(eventTargetCID)
   ?ctx.addCanvasModule()
   ?ctx.addURLModule()
