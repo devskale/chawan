@@ -299,6 +299,8 @@ type
     # if not nil, this is a live collection.  (uses a ptr instead of a ref
     # because ORC likes to set refs to nil before the destructor is called)
     document: ptr DocumentObj
+    prev: ptr CollectionObj
+    next: ptr CollectionObj
 
   Collection = ref CollectionObj
 
@@ -398,7 +400,7 @@ type
     cachedLinks: HTMLCollection
     cachedImages: HTMLCollection
     parser*: RootRef
-    liveCollections: seq[ptr CollectionObj]
+    liveCollectionsHead: ptr CollectionObj
     cachedAll: HTMLAllCollection
     customElements: CustomElementRegistry #TODO ?
 
@@ -496,6 +498,7 @@ type
 
   SVGSVGElement* = ref object of SVGElement
     bitmap*: NetworkBitmap
+    parserDocument*: Document
     shared: seq[SVGSVGElement] # elements that serialize to the same string
     fetchStarted: bool
 
@@ -2231,18 +2234,18 @@ proc isInclusiveAncestorHost(a, b: Node): bool =
       return true
   return false
 
-proc hasNextSibling(node: Node; nodeType: type): bool =
+proc hasNextSibling(node: Node; t: NodeType): bool =
   var node = node.nextSibling
   while node != nil:
-    if node of nodeType:
+    if node.nodeTypeEnum == t:
       return true
     node = node.nextSibling
   return false
 
-proc hasPreviousSibling(node: Node; nodeType: type): bool =
+proc hasPreviousSibling(node: Node; t: NodeType): bool =
   var node = node.previousSibling
   while node != nil:
-    if node of nodeType:
+    if node.nodeTypeEnum == t:
       return true
     node = node.previousSibling
   return false
@@ -2311,10 +2314,6 @@ proc preInsertionValidity(parent, node, before: Node):
     return err(nil)
   if not node.isValidChild():
     return err("node is not a valid child")
-  if node of Text and parent of Document:
-    return err("cannot insert text into document")
-  if node of DocumentType and not (parent of Document):
-    return err("document type can only be inserted into document")
   if parent of Document:
     if node of DocumentFragment:
       let node = DocumentFragment(node)
@@ -2323,20 +2322,24 @@ proc preInsertionValidity(parent, node, before: Node):
         return err("document fragment has invalid children")
       elif elems == 1 and (parent.hasChild(ntElement) or
           before != nil and (before of DocumentType or
-          before.hasNextSibling(DocumentType))):
+          before.hasNextSibling(ntDocumentType))):
         return err("document fragment has invalid children")
     elif node of Element:
       if parent.hasChild(ntElement):
         return err("document already has an element child")
       elif before != nil and (before of DocumentType or
-            before.hasNextSibling(DocumentType)):
+            before.hasNextSibling(ntDocumentType)):
         return err("cannot insert element before document type")
     elif node of DocumentType:
       if parent.hasChild(ntDocumentType) or
-          before != nil and before.hasPreviousSibling(Element) or
+          before != nil and before.hasPreviousSibling(ntElement) or
           before == nil and parent.hasChild(ntElement):
         return err("cannot insert document type before an element node")
+    elif node of Text:
+      return err("cannot insert text into document")
     else: discard
+  elif node of DocumentType:
+    return err("document type can only be inserted into document")
   ok(parent)
 
 # Pass an index to avoid searching for the node in parent's child list.
@@ -2467,9 +2470,6 @@ proc replace*(parent, child, node: Node): Err[cstring] =
     return err(nil)
   if not node.isValidChild():
     return err("node is not a valid child")
-  if node of Text and parent of Document or
-      node of DocumentType and not (parent of Document):
-    return err("replacement cannot be placed in parent")
   let childNextSibling = child.nextSibling
   let childPreviousSibling = child.previousSibling
   if parent of Document:
@@ -2490,6 +2490,10 @@ proc replace*(parent, child, node: Node): Err[cstring] =
       if parent.hasChildExcept(ntDocumentType, child) or
           childPreviousSibling != nil and childPreviousSibling of DocumentType:
         return err("cannot insert document type before an element node")
+    elif node of Text:
+      return err("replacement cannot be placed in parent")
+  elif node of DocumentType:
+    return err("replacement cannot be placed in parent")
   let referenceChild = if childNextSibling == node:
     node.nextSibling
   else:
@@ -3126,10 +3130,13 @@ proc refreshCollection(ctx: JSContext; this: Collection): Opt[void] =
 
 proc finalize0(collection: Collection) =
   if collection.document != nil:
-    let document = collection.document
-    let i = document.liveCollections.find(cast[ptr CollectionObj](collection))
-    assert i != -1
-    document.liveCollections.del(i)
+    let collection = addr collection[]
+    if collection.prev != nil:
+      collection.prev.next = collection.next
+    else:
+      collection.document.liveCollectionsHead = collection.next
+    if collection.next != nil:
+      collection.next.prev = collection.prev
 
 proc finalize(collection: HTMLCollection) {.jsfin.} =
   collection.finalize0()
@@ -3148,8 +3155,10 @@ proc finalize(collection: HTMLAllCollection) {.jsfin.} =
   collection.finalize0()
 
 proc finalize(document: Document) {.jsfin.} =
-  for it in document.liveCollections:
-    cast[Collection](it).document = nil
+  var it = document.liveCollectionsHead
+  while it != nil:
+    it.document = nil
+    it = it.next
 
 proc getLength(ctx: JSContext; this: Collection): Opt[uint32] =
   ?ctx.refreshCollection(this)
@@ -3170,11 +3179,14 @@ proc newCollection[T: Collection](ctx: JSContext; root: Node;
     inclusive: inclusive,
     match: match,
     root: root,
-    document: if islive: cast[ptr DocumentObj](document) else: nil
+    document: if islive: addr document[] else: nil,
+    invalid: islive
   )
   if islive:
-    document.liveCollections.add(cast[ptr CollectionObj](this))
-    this.invalid = true
+    if document.liveCollectionsHead != nil:
+      document.liveCollectionsHead.prev = addr this[]
+      this.next = document.liveCollectionsHead
+    document.liveCollectionsHead = addr this[]
   else:
     ?ctx.populateCollection(this)
   ok(this)
@@ -3329,12 +3341,16 @@ proc adopt(document: Document; node: Node) =
       for desc in node.descendants:
         if desc.nextSibling == nil:
           desc.internalNext = document
-    for i in countdown(oldDocument.liveCollections.high, 0):
-      let collection = oldDocument.liveCollections[i]
-      if collection.document == cast[ptr DocumentObj](document):
-        collection.document = cast[ptr DocumentObj](document)
-        document.liveCollections.add(collection)
-        oldDocument.liveCollections.del(i)
+    var collection = oldDocument.liveCollectionsHead
+    while collection != nil:
+      let next = collection.next
+      if collection.root == node:
+        collection.document = addr document[]
+        collection.prev = nil
+        collection.next = document.liveCollectionsHead
+        document.liveCollectionsHead.prev = collection
+        document.liveCollectionsHead = collection
+      collection = next
     #TODO custom elements
     #..adopting steps
 
@@ -3604,8 +3620,10 @@ proc `title=`(document: Document; s: sink string) {.jsfset: "title".} =
   title.replaceAll(s)
 
 proc invalidateCollections(document: Document) =
-  for collection in document.liveCollections:
+  var collection = document.liveCollectionsHead
+  while collection != nil:
     collection.invalid = true
+    collection = collection.next
 
 proc isValidCustomElementName(atom: CAtom): bool =
   const Disallowed = [
@@ -5545,6 +5563,7 @@ proc resetElement*(element: Element) =
     let textarea = HTMLTextAreaElement(element)
     textarea.dirty = false
     textarea.invalidate()
+  #TODO TAG_OUTPUT
   else: discard
 
 # Returns true if has post-connection steps.
@@ -5586,10 +5605,12 @@ proc insertionSteps(element: Element): bool =
   of TAG_SCRIPT:
     return true
   elif element.tagType(satNamespaceSVG) == TAG_SVG:
+    #TODO this doesn't work if JS adds descendants to the SVG tag
     let svg = SVGSVGElement(element)
-    let window = element.document.window
-    if window != nil:
-      window.loadSVG(svg)
+    if svg.parserDocument != svg.document:
+      let window = svg.document.window
+      if window != nil:
+        window.loadSVG(svg)
   elif element of FormAssociatedElement:
     let element = FormAssociatedElement(element)
     if element.parserInserted:
