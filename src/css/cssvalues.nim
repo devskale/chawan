@@ -602,7 +602,7 @@ proc valueType*(prop: CSSPropertyType): CSSValueType =
   return ValueTypes[prop]
 
 proc isSupportedProperty*(s: string): bool =
-  return propertyType(s).isOk
+  return anyPropertyType(s).isOk
 
 template auto*(length: CSSLength): bool =
   isNaN(length.npx)
@@ -1823,7 +1823,7 @@ proc makeDefaultEntry(t: CSSPropertyType): CSSComputedEntry =
   of cprtWord: return makeEntry(t, getDefaultWord(t))
   of cprtObject: return makeEntry(t, getDefault(t))
 
-const ShorthandMap = [
+const ShorthandMap* = [
   cstNone: @[],
   cstAll: @[],
   cstMargin: @[cptMarginTop, cptMarginRight, cptMarginBottom, cptMarginLeft],
