@@ -1117,7 +1117,8 @@ proc readSuccess0(bc: BufferContext; s: string; fd: cint): Request =
       let input = HTMLInputElement(focus)
       case input.inputType
       of itFile:
-        input.files = @[newWebFile(s, fd)]
+        let file = newWebFile(s, fd)
+        input.addFile(file)
         input.invalidate()
       else:
         input.setValue(s)
@@ -1639,7 +1640,7 @@ proc markURL(bc: BufferContext; handle: PagerHandle) {.proxy.} =
           else: data &= c
           inc j
         let replacement = bc.window.jsctx.parseFragment(html, data)
-        discard element.replace(replacement, text, nil)
+        discard element.replaceChildWith(text, replacement, nil)
   bc.maybeReshape()
 
 proc toggleImages(bc: BufferContext; handle: PagerHandle): bool {.

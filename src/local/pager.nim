@@ -85,6 +85,12 @@ type
   UpdateStatusState = enum
     ussNone, ussUpdate, ussSkip
 
+  # stream is written to ostream before cmd is started
+  MailcapWriteItem = ref object of MapData
+    cmd: string
+    path: string
+    ostream: PosixStream
+
   JSMap = object
     # workaround for the annoying warnings (too lazy to fix them)
     pager: JSValue
@@ -1862,11 +1868,8 @@ proc clipboardWrite(ctx: JSContext; pager: Pager; s: string; clipboard = true):
 # ps remains open, but os is consumed.
 proc execPipe(pager: Pager; cmd: string; ps, os: PosixStream): int =
   let westream = pager.forkserver.westream
-  case (let pid = fork(); pid)
-  of -1:
-    pager.alert("Failed to fork process")
-    return -1
-  of 0:
+  let pid = fork()
+  if pid == 0:
     discard myposix.signal(SIGINT, myposix.SIG_IGN)
     discard myposix.signal(SIGCHLD, myposix.SIG_DFL)
     ps.moveFd(STDIN_FILENO)
@@ -1874,6 +1877,8 @@ proc execPipe(pager: Pager; cmd: string; ps, os: PosixStream): int =
     westream.moveFd(STDERR_FILENO)
     myExec(cmd)
   else:
+    if pid == -1:
+      pager.alert("Failed to fork process")
     os.sclose()
     return pid
 
@@ -1893,6 +1898,7 @@ proc execPipeSink(pager: Pager; cmd: string; istream: PosixStream):
     PosixStream =
   let (pins, pouts) = pager.createPipe()
   if pins == nil:
+    istream.sclose()
     return nil
   pins.setCloseOnExec()
   let pid = pager.execPipe(cmd, istream, pouts)
@@ -1901,17 +1907,52 @@ proc execPipeSink(pager: Pager; cmd: string; istream: PosixStream):
     return nil
   return pins
 
+# ps and os are both consumed.
+# If not the empty string, path will be removed once cmd exits.
+proc execCmdUnlink(pager: Pager; cmd, path: string): int =
+  let westream = pager.forkserver.westream
+  let pid = fork()
+  if pid == 0:
+    discard myposix.signal(SIGCHLD, myposix.SIG_DFL)
+    discard myposix.signal(SIGINT, myposix.SIG_IGN)
+    closeStdin()
+    closeStdout()
+    westream.moveFd(STDERR_FILENO)
+    let pid2 = fork()
+    if pid2 == 0:
+      myExec(cmd)
+    else:
+      var code = cint(1)
+      if pid2 != -1:
+        var wstatus: cint
+        while waitpid(pid2, wstatus, 0) == -1:
+          if errno != EINTR:
+            break
+        if WIFEXITED(wstatus):
+          code = WEXITSTATUS(wstatus)
+        elif WIFSIGNALED(wstatus):
+          code = 128 + WTERMSIG(wstatus)
+      discard unlink(cstring(path))
+      quit(code)
+  else:
+    if pid == -1:
+      pager.alert("Failed to fork process")
+    pager.pidMap[int(pid)] = cmd
+    return pid
+
 # Pipe output of an x-ansioutput mailcap command to the text/x-ansi handler.
 proc ansiDecode(pager: Pager; url: URL; ishtml: bool; istream: PosixStream):
     PosixStream =
   let entry = pager.autoMailcap.findMailcapEntry("text/x-ansi", "text/x-ansi",
     url)
   if entry == nil:
+    istream.sclose()
     pager.alert("No text/x-ansi entry found")
     return nil
   var canpipe = true
   let cmd = unquoteCommand(entry.cmd, "text/x-ansi", "", url, canpipe)
   if not canpipe:
+    istream.sclose()
     pager.alert("Error: could not pipe to text/x-ansi, decoding as text/plain")
     return nil
   return pager.execPipeSink(cmd, istream)
@@ -1966,6 +2007,7 @@ proc writeToFile(istream: PosixStream; outpath: string): bool =
 # needsterminal is ignored.
 proc runMailcapReadFile(pager: Pager; stream: PosixStream;
     cmd, outpath: string; pouts: PosixStream): int =
+  let westream = pager.forkserver.westream
   case (let pid = fork(); pid)
   of -1:
     pager.alert("Error: failed to fork mailcap read process")
@@ -1973,7 +2015,9 @@ proc runMailcapReadFile(pager: Pager; stream: PosixStream;
     return pid
   of 0:
     # child process
-    closeStderr()
+    discard myposix.signal(SIGCHLD, myposix.SIG_DFL)
+    discard myposix.signal(SIGINT, myposix.SIG_IGN)
+    westream.moveFd(STDIN_FILENO)
     pager.term.istream.sclose()
     pager.term.ostream.sclose()
     if not stream.writeToFile(outpath):
@@ -2008,21 +2052,20 @@ proc runMailcapWriteFile(pager: Pager; stream: PosixStream;
         pager.alert("Error: " & cmd & " exited with status " & $ret)
   else:
     # don't block
-    let pid = fork()
-    if pid == 0:
-      # child process
-      closeStderr()
-      pager.term.istream.sclose()
-      pager.term.ostream.sclose()
-      if not stream.writeToFile(outpath):
-        quit(1)
-      let ps = newPosixStream("/dev/null")
-      let os = newPosixStream("/dev/null", O_WRONLY)
-      let ret = pager.execPipeWait(cmd, ps, os)
-      discard unlink(cstring(outpath))
-      quit(ret)
-    # parent
-    stream.sclose()
+    discard unlink(cstring(outpath))
+    let ostream = newPosixStream(outpath, O_WRONLY or O_CREAT or O_EXCL, 0o600)
+    if ostream != nil:
+      let item = MailcapWriteItem(
+        stream: stream,
+        ostream: ostream,
+        cmd: cmd,
+        path: outpath
+      )
+      stream.setBlocking(false)
+      pager.loader.register(item, POLLIN)
+    else:
+      pager.alert("Failed to create temp file")
+      stream.sclose()
   ok()
 
 # Search for a mailcap entry, and if found, execute the specified command
@@ -2356,14 +2399,39 @@ proc handleRead(pager: Pager; init: BufferInit): JSValue =
       init.ostream = stream
       if init.filterCmd != "":
         pager.setEnvVars(pager.defaultEnv())
-        let ostream = pager.execPipeSink(init.filterCmd, init.ostream)
-        if ostream == nil:
+        init.ostream = pager.execPipeSink(init.filterCmd, init.ostream)
+        if init.ostream == nil:
           return pager.fail(init, "failed to filter buffer")
-        init.ostream = ostream
       return pager.initMailcap(init)
     stream.sclose()
     return ctx.connected(init, cres, arg0)
   return JS_UNDEFINED
+
+proc handleReadMailcap(pager: Pager; item: MailcapWriteItem) =
+  var fail = false
+  var buffer {.noinit.}: array[4096, char]
+  while true:
+    let n = item.stream.read(buffer)
+    if n < 0:
+      let e = errno
+      if e != EAGAIN and e != EWOULDBLOCK and e != EINTR:
+        fail = true
+      break
+    if n == 0:
+      pager.loader.unregister(item)
+      item.stream.sclose()
+      item.ostream.sclose()
+      discard pager.execCmdUnlink(item.cmd, item.path)
+      break
+    if item.ostream.writeLoop(buffer.toOpenArray(0, n - 1)).isErr:
+      fail = true
+      break
+  if fail:
+    pager.loader.unregister(item)
+    item.stream.sclose()
+    item.ostream.sclose()
+    discard unlink(cstring(item.path))
+    pager.alert("Failed to write temp file for command " & item.cmd)
 
 # private
 proc setMenu(ctx: JSContext; pager: Pager; val: JSValueConst): Opt[void] {.
@@ -2436,6 +2504,8 @@ proc handleRead(pager: Pager; fd: cint): JSValue =
         iface.refreshStatus = false
       of irException: pager.console.writeException(ctx)
       of irEOF: pager.ifaceDead(iface)
+    elif data of MailcapWriteItem:
+      pager.handleReadMailcap(MailcapWriteItem(data))
     else:
       pager.loader.onRead(fd)
       if data of ConnectData:
@@ -2484,6 +2554,8 @@ proc handleError(pager: Pager; fd: cint): Opt[bool] =
     elif data of BufferInterface:
       let iface = BufferInterface(data)
       pager.ifaceDead(iface)
+    elif data of MailcapWriteItem:
+      pager.handleReadMailcap(MailcapWriteItem(data))
     else:
       discard pager.loader.onError(fd) #TODO handle connection error?
   else:

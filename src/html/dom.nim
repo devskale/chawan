@@ -512,7 +512,7 @@ type
     inputType* {.jsget: "type".}: InputType
     internalValue: RefString
     internalChecked {.jsget: "checked".}: bool
-    files* {.jsget.}: seq[WebFile]
+    internalFiles: FileList # may be nil
     xcoord*: int
     ycoord*: int
 
@@ -2460,7 +2460,9 @@ proc append(parent, node: Node; ctx: JSContext) =
   discard parent.insertBefore(node, nil, ctx)
 
 # Replace child with node.
-proc replace*(parent, node, child: Node; ctx: JSContext): Err[cstring] =
+# Note: the argument ordering here is the opposite of replaceChild.
+proc replaceChildWith*(parent, child, node: Node; ctx: JSContext):
+    Err[cstring] =
   let parent = ?parent.checkParentValidity()
   if node.isInclusiveAncestorHost(parent):
     return err("parent must be an ancestor")
@@ -2503,14 +2505,17 @@ proc replace*(parent, node, child: Node; ctx: JSContext): Err[cstring] =
   #TODO tree mutation record
   ok()
 
-proc replaceChild(ctx: JSContext; parent, node, child: Node): JSValue {.jsfunc.} =
-  let res = parent.replace(node, child, ctx)
+# Warning: the ordering is counter-intuitive here.
+proc jsReplaceChild(ctx: JSContext; parent, node, child: Node): JSValue {.
+    jsfunc: "replaceChild".} =
+  let res = parent.replaceChildWith(child, node, ctx)
   if res.isErr:
     return ctx.insertThrow(res.error)
   return ctx.toJS(child)
 
-proc replaceChildUndefined(ctx: JSContext; parent, node, child: Node): JSValue =
-  let res = parent.replace(node, child, ctx)
+proc replaceChildWithThrow(ctx: JSContext; parent, child, node: Node):
+    JSValue =
+  let res = parent.replaceChildWith(child, node, ctx)
   if res.isErr:
     return ctx.insertThrow(res.error)
   return JS_UNDEFINED
@@ -2791,27 +2796,31 @@ proc setTextContent(ctx: JSContext; node: Node; data: JSValueConst): Opt[void]
     return ok()
   return ctx.setNodeValue(node, data)
 
-proc toNode(ctx: JSContext; nodes: openArray[JSValueConst]; document: Document):
-    Opt[Node] =
-  var node: Node = nil
-  var fragment = false
+proc toNodes(ctx: JSContext; nodes: openArray[JSValueConst];
+    res: var seq[Node]): Opt[void] =
   for it in nodes:
-    var node0: Node
-    if ctx.fromJS(it, node0).isErr:
+    var node: Node
+    if ctx.fromJS(it, node).isOk:
+      res.add(node)
+    else:
       var s: string
       ?ctx.fromJS(it, s)
-      node0 = ctx.newText(s)
-    if node == nil:
-      node = node0
-    else:
-      if not fragment:
-        let fragment = document.newDocumentFragment()
-        fragment.append(node, ctx)
-        node = fragment
-      node.append(node0, ctx)
-  if node == nil:
-    node = document.newDocumentFragment()
-  ok(node)
+      res.add(ctx.newText(s))
+  ok()
+
+proc toNode(ctx: JSContext; nodes: openArray[Node]; document: Document): Node =
+  if nodes.len == 1:
+    return nodes[0]
+  let fragment = document.newDocumentFragment()
+  for node in nodes:
+    fragment.append(node, ctx)
+  fragment
+
+proc toNode(ctx: JSContext; argv: openArray[JSValueConst];
+    document: Document): Opt[Node] =
+  var nodes: seq[Node] = @[]
+  ?ctx.toNodes(argv, nodes)
+  ok(ctx.toNode(nodes, document))
 
 proc prependImpl(ctx: JSContext; parent: Node; nodes: openArray[JSValueConst]):
     JSValue =
@@ -2838,6 +2847,59 @@ proc replaceChildrenImpl(ctx: JSContext; parent: Node;
     return ctx.insertThrow(x.error)
   let parent = x.get
   parent.replaceAll(node, ctx)
+  return JS_UNDEFINED
+
+proc previousSiblingExcept(this: Node; nodes: openArray[Node]): Node =
+  var node = this
+  while node != nil:
+    if node notin nodes:
+      break
+    node = node.previousSibling
+  node
+
+proc nextSiblingExcept(this: Node; nodes: openArray[Node]): Node =
+  var node = this
+  while node != nil:
+    if node notin nodes:
+      break
+    node = node.nextSibling
+  node
+
+proc beforeImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
+    Opt[void] =
+  var nodes: seq[Node]
+  ?ctx.toNodes(argv, nodes)
+  let parent = this.parentNode
+  if parent != nil:
+    let prev = this.previousSiblingExcept(nodes)
+    let node = ctx.toNode(nodes, this.document)
+    let before = if prev != nil: prev.nextSibling else: parent.firstChild
+    parent.insert(node, before, ctx)
+  ok()
+
+proc afterImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
+    Opt[void] =
+  var nodes: seq[Node]
+  ?ctx.toNodes(argv, nodes)
+  let parent = this.parentNode
+  if parent != nil:
+    let before = this.nextSiblingExcept(nodes)
+    let node = ctx.toNode(nodes, this.document)
+    parent.insert(node, before, ctx)
+  ok()
+
+proc replaceWithImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
+    JSValue =
+  var nodes: seq[Node]
+  if ctx.toNodes(argv, nodes).isErr:
+    return JS_EXCEPTION
+  let parent = this.parentNode
+  if parent != nil:
+    let before = this.nextSiblingExcept(nodes)
+    let node = ctx.toNode(nodes, this.document)
+    if this.parentNode == parent:
+      return ctx.replaceChildWithThrow(parent, this, node)
+    parent.insert(node, before, ctx)
   return JS_UNDEFINED
 
 proc assignSlot(node: Node) =
@@ -4072,6 +4134,18 @@ proc exitFullscreen(ctx: JSContext; document: Document): JSValue {.jsfunc.} =
   return ctx.newRejectedPromise()
 
 # DocumentType
+proc before(ctx: JSContext; this: DocumentType; nodes: varargs[JSValueConst]):
+    Opt[void] {.jsfunc.} =
+  ctx.beforeImpl(this, nodes)
+
+proc after(ctx: JSContext; this: DocumentType; nodes: varargs[JSValueConst]):
+    Opt[void] {.jsfunc.} =
+  ctx.afterImpl(this, nodes)
+
+proc replaceWith(ctx: JSContext; this: DocumentType;
+    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+  ctx.replaceWithImpl(this, nodes)
+
 proc remove(this: DocumentType) {.jsfunc.} =
   Node(this).remove()
 
@@ -4726,6 +4800,18 @@ proc previousElementSibling(this: CharacterData): Element {.jsfget.} =
 proc nextElementSibling(this: CharacterData): Element {.jsfget.} =
   return this.nextElementSiblingImpl
 
+proc before(ctx: JSContext; this: CharacterData; nodes: varargs[JSValueConst]):
+    Opt[void] {.jsfunc.} =
+  ctx.beforeImpl(this, nodes)
+
+proc after(ctx: JSContext; this: CharacterData; nodes: varargs[JSValueConst]):
+    Opt[void] {.jsfunc.} =
+  ctx.afterImpl(this, nodes)
+
+proc replaceWith(ctx: JSContext; this: CharacterData;
+    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+  ctx.replaceWithImpl(this, nodes)
+
 proc remove(this: CharacterData) {.jsfunc.} =
   Node(this).remove()
 
@@ -4925,8 +5011,20 @@ proc previousElementSibling*(element: Element): Element {.jsfget.} =
 proc nextElementSibling*(element: Element): Element {.jsfget.} =
   return element.nextElementSiblingImpl
 
-proc remove(element: Element) {.jsfunc.} =
-  Node(element).remove()
+proc before(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
+    Opt[void] {.jsfunc.} =
+  ctx.beforeImpl(this, nodes)
+
+proc after(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
+    Opt[void] {.jsfunc.} =
+  ctx.afterImpl(this, nodes)
+
+proc replaceWith(ctx: JSContext; this: Element;
+    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+  ctx.replaceWithImpl(this, nodes)
+
+proc remove(this: Element) {.jsfunc.} =
+  Node(this).remove()
 
 proc isDisplayed(element: Element): bool =
   element.ensureStyle()
@@ -5055,7 +5153,7 @@ proc outerHTML(ctx: JSContext; element: Element; s: string): JSValue
     # element node
     Element(parent0)
   let fragment = ctx.parseFragment(parent, s)
-  return ctx.replaceChildUndefined(parent, fragment, element)
+  ctx.replaceChildWithThrow(parent, element, fragment)
 
 type InsertAdjacentPosition = enum
   iapBeforeBegin = "beforebegin"
@@ -5569,7 +5667,8 @@ proc resetElement*(element: Element) =
     of itCheckbox, itRadio:
       input.setChecked(input.attrb(satChecked))
     of itFile:
-      input.files.setLen(0)
+      if input.internalFiles != nil:
+        input.internalFiles.clear()
     else:
       input.setValue(input.attr(satValue))
     input.invalidate()
@@ -6639,6 +6738,11 @@ proc setChecked*(input: HTMLInputElement; b: bool) {.jsfset: "checked".} =
   input.invalidate()
   input.internalChecked = b
 
+proc files*(this: HTMLInputElement): FileList {.jsfget.} =
+  if this.internalFiles == nil:
+    this.internalFiles = newFileList()
+  this.internalFiles
+
 proc inputString*(input: HTMLInputElement): RefString =
   case input.inputType
   of itCheckbox, itRadio:
@@ -6657,13 +6761,15 @@ proc inputString*(input: HTMLInputElement): RefString =
     return newRefString("SUBMIT")
   of itFile:
     #TODO multiple files?
-    let s = if input.files.len > 0: input.files[0].name else: ""
-    return newRefString(s)
+    return newRefString(input.files.getName())
   else:
     return input.internalValue
 
 proc select(ctx: JSContext; input: HTMLInputElement) {.jsfunc.} =
   ctx.focus(input)
+
+proc addFile*(this: HTMLInputElement; file: WebFile) =
+  this.files.add(file)
 
 # <label>
 proc control*(label: HTMLLabelElement): FormAssociatedElement {.jsfget.} =
@@ -6953,7 +7059,7 @@ proc setter(ctx: JSContext; this: HTMLOptionsCollection; atom: JSAtom;
   let value = value.get
   let parent = this.root
   if element != nil:
-    return ctx.replaceChildUndefined(parent, value, element)
+    return ctx.replaceChildWithThrow(parent, element, value)
   let len0 = ctx.getLength(this)
   if len0.isErr:
     return JS_EXCEPTION
