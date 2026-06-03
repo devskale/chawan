@@ -21,4 +21,18 @@ if ! $CHA -Ctest.toml test2.test2 | diff test2.expected -
 then	exit 1
 fi
 
+if ! $CHA -Cno-lf-at-eof.toml -V >/dev/null
+then	exit 1
+fi
+
+if $CHA -Cnul-at-eof.toml -V >/dev/null 2>/dev/null
+then	echo "NUL was accepted at EOF"
+	exit 1
+fi
+
+if ! $CHA -Cbad-siteconf.toml about:blank 2>&1 | grep -q 'missing match regex'
+then	echo "bad siteconf accepted"
+	exit 1
+fi
+
 $CHA -r 'quit()'

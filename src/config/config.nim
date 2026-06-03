@@ -2052,6 +2052,7 @@ proc parseFile(cp: var ConfigParser; file: ChaFile): Opt[void] =
   while ?file.readLine(line):
     ?cp.parseConfigLine(line)
     inc cp.line
+  ?cp.checkRuleRegex()
   ok()
 
 proc cleanup(cp: var ConfigParser) =
@@ -2100,6 +2101,11 @@ proc parseConfig*(config: Config; dir: string; buf: openArray[char];
           JS_FreeValue(ctx, JS_MKPTR(JS_TAG_OBJECT, entry.fun))
       return err(move(cp.error))
     inc cp.line
+  if cp.checkRuleRegex().isErr:
+    for entry in cp.entries:
+      if entry.t == cocFunction and entry.fun != nil:
+        JS_FreeValue(ctx, JS_MKPTR(JS_TAG_OBJECT, entry.fun))
+    return err(move(cp.error))
   ctx.applyEntries(config, cp.entries)
   warnings.add(cp.warnings)
   ok()
@@ -2347,15 +2353,15 @@ const ConfigInitTrue = [
 
 const ConfigInitInt32 = {
   coHistorySize: 100'i32,
-  coMaxRedirect: 10,
-  coMaxNetConnections: 12,
-  coWheelScroll: 5,
-  coSideWheelScroll: 5,
-  coMinimumContrast: 100,
-  coColumns: 80,
-  coLines: 24,
-  coPixelsPerColumn: 9,
-  coPixelsPerLine: 18
+  coMaxRedirect: 10'i32,
+  coMaxNetConnections: 12'i32,
+  coWheelScroll: 5'i32,
+  coSideWheelScroll: 5'i32,
+  coMinimumContrast: 100'i32,
+  coColumns: 80'i32,
+  coLines: 24'i32,
+  coPixelsPerColumn: 9'i32,
+  coPixelsPerLine: 18'i32
 }
 
 const ConfigInitStr = {
