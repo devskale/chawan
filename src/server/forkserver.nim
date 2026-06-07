@@ -235,6 +235,30 @@ proc setupForkServerEnv(config: LoaderConfig): Opt[void] =
   ?twtstr.setEnv("CHA_BOOKMARK", config.bookmark)
   ok()
 
+const DefaultBrowsecap = """
+http;			http;		x-cgioutput; x-resource; x-netpath
+https;			http;		x-cgioutput; x-resource; x-netpath
+finger/get;		finger;		x-cgioutput; x-resource; x-netpath
+gemini;			gemini;		x-cgioutput; x-resource; x-netpath
+file;			file;		x-cgioutput; x-resource
+ftp/get;		ftp;		x-cgioutput; x-resource; x-netpath
+sftp/get;		sftp;		x-cgioutput; x-resource; x-netpath
+gopher/get;		gopher;		x-cgioutput; x-resource; x-netpath
+spartan;		spartan;	x-cgioutput; x-resource; x-netpath
+man/get;		man;		x-cgioutput; x-resource
+man-k/get;		man;		x-cgioutput; x-resource
+man-l/get;		man;		x-cgioutput; x-resource
+img-codec+png;		stbi;		x-cgioutput; x-resource
+img-codec+jpeg;		stbi;		x-cgioutput; x-resource
+img-codec+gif;		stbi;		x-cgioutput; x-resource
+img-codec+bmp;		stbi;		x-cgioutput; x-resource
+img-codec+x-unknown;	stbi;		x-cgioutput; x-resource
+img-codec+webp;		jebp;		x-cgioutput; x-resource
+img-codec+x-sixel;	sixel;		x-cgioutput; x-resource
+img-codec+x-cha-canvas;	canvas;		x-cgioutput; x-resource
+img-codec+svg+xml;	nanosvg;	x-cgioutput; x-resource
+"""
+
 proc runForkServer*(controlStream, loaderStream: PosixStream; pagerPid: int) =
   setProcessTitle("cha forkserver")
   var ctx = ForkServerContext(stream: controlStream)
@@ -256,11 +280,10 @@ proc runForkServer*(controlStream, loaderStream: PosixStream; pagerPid: int) =
       quit(1)
     var browsecap: Mailcap
     for path in urimethodmapPaths:
-      let ps = newPosixStream(path)
-      if ps != nil:
-        browsecap.parseURIMethodMap(ps.readAll())
-        ps.sclose()
-    browsecap.parseURIMethodMap(DefaultURIMethodMap)
+      if file := chafile.fopen(path, "r"):
+        discard browsecap.parseURIMethodMap(file)
+        discard file.close()
+    browsecap.parseBuiltin(DefaultBrowsecap)
     for t in browsecap.mainTypes:
       ctx.schemes.add(t)
     # returns a new stream that connects fork server <-> loader and
