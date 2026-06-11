@@ -2532,7 +2532,6 @@ proc clone(node: Node; ctx: JSContext; document = none(Document);
     x.name = element.name
     x.classList = x.newDOMTokenList(satClass)
     x.attrs = element.attrs
-    #TODO namespaced attrs?
     # Cloning steps
     if x of HTMLScriptElement:
       let x = HTMLScriptElement(x)
@@ -2561,9 +2560,10 @@ proc clone(node: Node; ctx: JSContext; document = none(Document);
     let x = document.newText(text.data.s)
     Node(x)
   elif node of CDATASection:
-    let x = document.newCDATASection("")
-    #TODO is this really correct??
-    # really, I don't know. only relevant with xhtml anyway...
+    # Note: the spec does not mention this for some reason, but this is
+    # what others do.
+    let node = CDATASection(node)
+    let x = document.newCDATASection(node.data.s)
     Node(x)
   elif node of Comment:
     let comment = Comment(node)
@@ -2679,13 +2679,14 @@ proc isEqualNode(node, other: Node): bool {.jsfunc.} =
       return false
     let node = ProcessingInstruction(node)
     let other = ProcessingInstruction(other)
-    if node.target != other.target or node.data != other.data:
+    if node.target != other.target or node.data.s != other.data.s:
       return false
   elif node of CharacterData:
     if node of Text and not (other of Text) or
-        node of Comment and not (other of Comment):
+        node of Comment and not (other of Comment) or
+        node of CDATASection and not (other of CDATASection):
       return false
-    return CharacterData(node).data == CharacterData(other).data
+    return CharacterData(node).data.s == CharacterData(other).data.s
   true
 
 proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
@@ -3021,6 +3022,7 @@ proc getElementsByTagNameImpl(ctx: JSContext; root: ParentNode; tagName: string)
     proc(ctx: JSContext; this: Collection; node: Node): Opt[bool] =
       if node of Element:
         let element = Element(node)
+        #TODO we should be using qualified name here
         if element.namespaceURI == satNamespaceHTML:
           return ok(element.localName == this.atoms[1])
         return ok(element.localName == this.atoms[0])
@@ -3363,7 +3365,7 @@ proc newDocument*(url: URL): Document =
   return document
 
 proc newDocument(ctx: JSContext): Document {.jsctor.} =
-  let global = ctx.getGlobal()
+  let global = ctx.getWindow()
   let document = Document(
     url: parseURL0("about:blank"),
     contentType: satApplicationXml,
@@ -3401,9 +3403,21 @@ proc adopt(document: Document; node: Node; ctx: JSContext) =
     remove(node)
   if oldDocument != document:
     node.internalNext = document
-    var templates: seq[HTMLTemplateElement]
     if node of ParentNode:
       let node = ParentNode(node)
+      # The node document is already set, so we must update collections
+      # before doing anything that might be observable.
+      var collection = oldDocument.liveCollectionsHead
+      while collection != nil:
+        let next = collection.next
+        if collection.root == node:
+          collection.document = addr document[]
+          collection.prev = nil
+          collection.next = document.liveCollectionsHead
+          if document.liveCollectionsHead != nil:
+            document.liveCollectionsHead.prev = collection
+          document.liveCollectionsHead = collection
+        collection = next
       for desc in node.descendantsShadowIncl:
         if desc.nextSibling == nil:
           desc.internalNext = document
@@ -3422,23 +3436,20 @@ proc adopt(document: Document; node: Node; ctx: JSContext) =
             if attributes != nil:
               for it in attributes.attrlist:
                 it.internalNext = document
-          #TODO custom element registry, img relevant mutations
+          #TODO custom element registry, img relevant mutations, adoptedCallback
           if element.tagType == TAG_TEMPLATE:
-            templates.add(HTMLTemplateElement(element))
-    var collection = oldDocument.liveCollectionsHead
-    while collection != nil:
-      let next = collection.next
-      if collection.root == node:
-        collection.document = addr document[]
-        collection.prev = nil
-        collection.next = document.liveCollectionsHead
-        if document.liveCollectionsHead != nil:
-          document.liveCollectionsHead.prev = collection
-        document.liveCollectionsHead = collection
-      collection = next
-    #TODO custom elements
-    for element in templates:
-      document.adopt(element.content, ctx)
+            document.adopt(HTMLTemplateElement(element).content, ctx)
+
+proc adoptNode(ctx: JSContext; document: Document; node: Node): JSValue
+    {.jsfunc.} =
+  if node of Document:
+    return JS_ThrowDOMException(ctx, "NotSupportedError",
+      "document nodes cannot be adopted")
+  if node of ShadowRoot:
+    return JS_ThrowDOMException(ctx, "HierarchyRequestError",
+      "shadow root nodes cannot be adopted")
+  document.adopt(node, ctx)
+  return ctx.toJS(node)
 
 proc compatMode(document: Document): string {.jsfget.} =
   if document.mode == QUIRKS:
@@ -3476,7 +3487,8 @@ proc images(ctx: JSContext; document: Document): Opt[HTMLCollection] {.
     )
   ok(document.cachedImages)
 
-proc getURL(ctx: JSContext; document: Document): JSValue {.jsfget: "URL".} =
+proc getURL(ctx: JSContext; document: Document): JSValue {.
+    jsfget: "URL", jsfget: "documentURI".} =
   return ctx.toJS($document.url)
 
 proc getCookieWindow(ctx: JSContext; document: Document): Opt[Window] =
