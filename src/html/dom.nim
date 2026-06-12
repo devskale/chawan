@@ -1198,10 +1198,11 @@ iterator branchHost(node: Node): Node {.inline.} =
     yield node
     node = node.parentNodeHost
 
-iterator branchElems*(node: Node): Element {.inline.} =
-  for node in node.branch:
-    if node of Element:
-      yield Element(node)
+iterator branchElems*(element: Element): Element {.inline.} =
+  var element = element
+  while element != nil:
+    yield element
+    element = element.parentElement
 
 iterator descendants*(node: ParentNode): Node {.inline.} =
   var it = node.firstChild
@@ -2344,12 +2345,14 @@ proc preInsertionValidity(parent, node, before: Node):
   ok(parent)
 
 # Pass an index to avoid searching for the node in parent's child list.
-proc remove*(node: Node; suppressObservers: bool) =
+proc removeImpl*(node: Node; suppressObservers = false) =
   let parent = node.parentNode
+  if parent == nil:
+    return
   let document = node.document
   # document is only nil for Document nodes, but those cannot call
   # remove().
-  assert parent != nil and document != nil
+  assert document != nil
   #TODO live ranges
   #TODO NodeIterator
   let element = if node of Element: Element(node) else: nil
@@ -2411,10 +2414,6 @@ proc remove*(node: Node; suppressObservers: bool) =
     discard #TODO queue tree mutation record
   #TODO children changed steps
 
-proc remove*(node: Node) =
-  if node.parentNode != nil:
-    node.remove(suppressObservers = false)
-
 # e may be nil
 proc insertThrow(ctx: JSContext; e: cstring): JSValue =
   if e == nil:
@@ -2425,7 +2424,7 @@ proc insertThrow(ctx: JSContext; e: cstring): JSValue =
 proc removeChild(ctx: JSContext; parent, node: Node): JSValue {.jsfunc.} =
   if Node(node.parentNode) != parent:
     return ctx.insertThrow(nil)
-  node.remove()
+  node.removeImpl()
   return ctx.toJS(node)
 
 # before may be nil
@@ -2500,7 +2499,7 @@ proc replaceChildWith*(parent, child, node: Node; ctx: JSContext):
     childNextSibling
   #NOTE the standard says "if parent is not null", but the adoption step
   # that made it necessary has been removed.
-  child.remove(suppressObservers = true)
+  child.removeImpl(suppressObservers = true)
   parent.insert(node, referenceChild, ctx, suppressObservers = true)
   #TODO tree mutation record
   ok()
@@ -2961,7 +2960,7 @@ proc getChildList*(node: ParentNode): seq[Node] =
 proc replaceAll(parent: ParentNode; node: Node; ctx: JSContext) =
   let removedNodes = parent.getChildList()
   for child in removedNodes:
-    child.remove(true)
+    child.removeImpl(true)
   if node != nil:
     if node of DocumentFragment:
       let nodes = DocumentFragment(node).getChildList()
@@ -3128,7 +3127,7 @@ proc insert*(parent: ParentNode; node, before: Node; ctx: JSContext;
     return
   if node of DocumentFragment:
     for child in nodes:
-      child.remove(true)
+      child.removeImpl(suppressObservers = true)
     #TODO tree mutation record
   if before != nil:
     #TODO live ranges
@@ -3400,7 +3399,7 @@ proc globalCustomElements(document: Document): CustomElementRegistry =
 proc adopt(document: Document; node: Node; ctx: JSContext) =
   let oldDocument = node.document
   if node.parentNode != nil:
-    remove(node)
+    node.removeImpl()
   if oldDocument != document:
     node.internalNext = document
     if node of ParentNode:
@@ -4160,7 +4159,7 @@ proc replaceWith(ctx: JSContext; this: DocumentType;
   ctx.replaceWithImpl(this, nodes)
 
 proc remove(this: DocumentType) {.jsfunc.} =
-  Node(this).remove()
+  this.removeImpl()
 
 proc nodeIteratorMatch(ctx: JSContext; this: Collection; node: Node):
     Opt[bool] =
@@ -4834,8 +4833,8 @@ proc replaceWith(ctx: JSContext; this: CharacterData;
     nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
   ctx.replaceWithImpl(this, nodes)
 
-proc remove(this: CharacterData) {.jsfunc.} =
-  Node(this).remove()
+proc remove*(this: CharacterData) {.jsfunc.} =
+  this.removeImpl()
 
 # Element
 proc hash(element: Element): Hash =
@@ -5045,8 +5044,8 @@ proc replaceWith(ctx: JSContext; this: Element;
     nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
   ctx.replaceWithImpl(this, nodes)
 
-proc remove(this: Element) {.jsfunc.} =
-  Node(this).remove()
+proc remove*(this: Element) {.jsfunc.} =
+  this.removeImpl()
 
 proc isDisplayed(element: Element): bool =
   element.ensureStyle()
@@ -5630,6 +5629,8 @@ proc newElement*(document: Document; localName, namespaceURI, prefix: CAtom):
     HTMLModElement()
   of TAG_PROGRESS:
     HTMLProgressElement()
+  of TAG_SLOT:
+    HTMLSlotElement()
   elif sns == satNamespaceSVG:
     if tagType == TAG_SVG:
       SVGSVGElement()
@@ -6048,7 +6049,7 @@ proc attachShadow(ctx: JSContext; this: Element; init: ShadowRootInit):
       return err()
     let removedNodes = old.getChildList()
     for child in removedNodes:
-      child.remove()
+      child.removeImpl()
     old.declarative = false
     return ok(old)
   let shadow = ShadowRoot(
@@ -6064,6 +6065,23 @@ proc attachShadow(ctx: JSContext; this: Element; init: ShadowRootInit):
   )
   this.setShadowRoot(shadow)
   ok(shadow)
+
+proc closest(ctx: JSContext; this: Element; q: string): JSValue {.jsfunc.} =
+  let selectors = parseSelectors(q)
+  if selectors.len == 0:
+    return JS_ThrowDOMException(ctx, "SyntaxError", "invalid selector: %s",
+      cstring(q))
+  for element in this.branchElems:
+    if element.matchesImpl(selectors):
+      return ctx.toJS(element)
+  return JS_NULL
+
+proc matches(ctx: JSContext; this: Element; q: string): JSValue {.jsfunc.} =
+  let selectors = parseSelectors(q)
+  if selectors.len == 0:
+    return JS_ThrowDOMException(ctx, "SyntaxError", "invalid selector: %s",
+      cstring(q))
+  return ctx.toJS(this.matchesImpl(selectors))
 
 # ShadowRoot
 proc host(this: ShadowRoot): Element {.jsfget.} =
