@@ -356,9 +356,16 @@ type
   CSSEntryType* = enum
     ceBit, ceWord, ceHWord, ceObject, ceVar, ceGlobal
 
-  CSSVarItem* = object
+  CSSVarItemType* = enum
+    cvitVar, cvitToks
+
+  CSSVarItem* = ref object
     name*: CAtom
-    toks*: seq[CSSToken]
+    case t*: CSSVarItemType
+    of cvitToks:
+      toks*: seq[CSSToken]
+    of cvitVar:
+      fallback*: seq[CSSVarItem]
 
   CSSVarEntry* = ref object
     resolved*: seq[tuple[vars: CSSVariableMap; entries: seq[CSSComputedEntry]]]
@@ -1660,9 +1667,9 @@ proc makeEntry(t: CSSPropertyType; image: NetworkBitmap): CSSComputedEntry =
 template makeEntry*[T: enum|set](t: CSSPropertyType; val: T): CSSComputedEntry =
   CSSComputedEntry(et: ceBit, p: wide(t), bit: cast[uint8](val))
 
-proc parseDeclWithVar0*(toks: openArray[CSSToken]): seq[CSSVarItem] =
-  var ctx = initCSSParser(toks)
+proc parseDeclWithVar0(ctx: var CSSParser; nested: bool): seq[CSSVarItem] =
   ctx.skipBlanks()
+  var nparens = 0u
   var items: seq[CSSVarItem] = @[]
   while ctx.has():
     let tok = ctx.consume()
@@ -1673,25 +1680,36 @@ proc parseDeclWithVar0*(toks: openArray[CSSToken]): seq[CSSVarItem] =
       if tok.t != cttIdent:
         return @[]
       let name = tok.s.substr(2).toAtom()
-      items.add(CSSVarItem(name: name))
       ctx.skipBlanks()
-      var toks: seq[CSSToken] = @[]
+      var fallback: seq[CSSVarItem]
       if ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
         if tok.t != cttComma:
           return @[]
-        ctx.skipBlanks()
-        while ctx.has() and (let tok = ctx.consume(); tok.t != cttRparen):
-          toks.add(tok)
-      items[^1].toks = move(toks)
+        fallback = ctx.parseDeclWithVar0(nested = true)
+      items.add(CSSVarItem(
+        t: cvitVar,
+        name: name,
+        fallback: move(fallback)
+      ))
+    elif nested and tok.t == cttRparen and nparens == 0:
+      break
     else:
       if items.len == 0 or items[^1].name != CAtomNull:
-        items.add(CSSVarItem(name: CAtomNull))
+        items.add(CSSVarItem(t: cvitToks, name: CAtomNull))
+      if tok.t.tokenPair == cttRparen:
+        inc nparens
+      elif tok.t == cttRparen and nparens > 0:
+        dec nparens
       items[^1].toks.add(tok)
   move(items)
 
+proc parseDeclWithVar1*(value: openArray[CSSToken]): seq[CSSVarItem] =
+  var ctx = initCSSParser(value)
+  ctx.parseDeclWithVar0(nested = false)
+
 proc parseDeclWithVar*(p: CSSWidePropertyType; value: openArray[CSSToken]):
     Opt[CSSComputedEntry] =
-  var items = parseDeclWithVar0(value)
+  var items = parseDeclWithVar1(value)
   if items.len == 0:
     return err()
   let cvar = CSSVarEntry(items: move(items))

@@ -28,3 +28,5 @@ a { --pink0: var(--pink); --gray: gray }
 test
 </div>
 </div>
+<div style="--fallback: green; color: var(--non-existent, var(--fallback))">test</div>
+<div style="color: green; --fallback: red; color: var(--non-existent, var(--fallback)))">test</div>
