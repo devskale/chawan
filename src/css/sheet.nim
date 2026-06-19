@@ -49,20 +49,19 @@ type
     disabled*: bool # whether or not we have disabled attr etc.
     applies*: bool # whether or not media attr/import applies
 
+  SelectorHashType* = enum
+    shtGeneral, shtRoot, shtHint, shtFirstChild, shtLastChild
+
   CSSRuleMap* = ref object
     tagTable*: Table[CAtom, seq[CSSRuleDef]]
     idTable*: Table[CAtom, seq[CSSRuleDef]]
     classTable*: Table[CAtom, seq[CSSRuleDef]]
     attrTable*: Table[CAtom, seq[CSSRuleDef]]
-    rootList*: seq[CSSRuleDef]
-    generalList*: seq[CSSRuleDef]
-    hintList*: seq[CSSRuleDef]
+    typeList*: array[SelectorHashType, seq[CSSRuleDef]]
     sheetId: uint32
-    layers: seq[CAtom]
     anonLayers: uint16
-
-  SelectorHashType = enum
-    shtGeneral, shtRoot, shtHint
+    quirks*: bool
+    layers: seq[CAtom]
 
   SelectorHashes = object
     tags: seq[CAtom]
@@ -76,6 +75,9 @@ proc getSelectorIds(hashes: var SelectorHashes; sel: Selector): bool
 proc addRule(sheet: CSSStylesheet; rule: CSSQualifiedRule; layer: CAtom)
 proc addAtRule(sheet: CSSStylesheet; atrule: CSSAtRule; base: URL;
   layer: CAtom): Opt[void]
+
+proc newCSSRuleMap*(quirks: bool): CSSRuleMap =
+  CSSRuleMap(quirks: quirks)
 
 proc getSelectorIds(hashes: var SelectorHashes; sels: CompoundSelector) =
   for sel in sels:
@@ -158,6 +160,14 @@ proc getSelectorIds(hashes: var SelectorHashes; sel: Selector): bool =
       hashes.tags.add(TAG_AREA.toAtom())
       hashes.attr = satHref.toAtom()
       return true
+    of pcFirstChild:
+      if hashes.t == shtGeneral:
+        hashes.t = shtFirstChild
+      return false
+    of pcLastChild:
+      if hashes.t == shtGeneral:
+        hashes.t = shtLastChild
+      return false
     else:
       return false
   of stUniversal, stNot, stLang, stNthChild, stNthLastChild, stHost:
@@ -172,19 +182,21 @@ proc add(sheet: CSSRuleMap; rule: CSSRuleDef) =
     var hashes = SelectorHashes()
     hashes.getSelectorIds(cxsel)
     if hashes.id != CAtomNull:
-      sheet.idTable.mgetOrPut(hashes.id, @[]).add(rule)
+      let id = if sheet.quirks: hashes.id.toLowerAscii() else: hashes.id
+      sheet.idTable.mgetOrPut(id, @[]).add(rule)
     elif hashes.tags.len > 0:
       for tag in hashes.tags:
         sheet.tagTable.mgetOrPut(tag, @[]).addIfNotLast(rule)
     elif hashes.class != CAtomNull:
-      sheet.classTable.mgetOrPut(hashes.class, @[]).add(rule)
+      let class = if sheet.quirks:
+        hashes.class.toLowerAscii()
+      else:
+        hashes.class
+      sheet.classTable.mgetOrPut(class, @[]).add(rule)
     elif hashes.attr != CAtomNull:
       sheet.attrTable.mgetOrPut(hashes.attr, @[]).add(rule)
     else:
-      case hashes.t
-      of shtRoot: sheet.rootList.add(rule)
-      of shtHint: sheet.hintList.add(rule)
-      of shtGeneral: sheet.generalList.add(rule)
+      sheet.typeList[hashes.t].add(rule)
 
 proc add*(map: CSSRuleMap; sheet: CSSStylesheet) =
   let sheetId = map.sheetId
@@ -203,7 +215,7 @@ proc add*(map: CSSRuleMap; sheet: CSSStylesheet) =
     if layer != CAtomNull:
       if layer != prevLayer:
         if ($layer)[0] == '!':
-          layerId = 20000 + map.anonLayers # ought to be enough for everyone
+          layerId = 20000 + map.anonLayers # ought to be enough for anybody
           inc map.anonLayers
         else:
           layerId = uint16(map.layers.find(layer)) + 1

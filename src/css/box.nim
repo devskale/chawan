@@ -109,8 +109,7 @@ type
 
   BoxRenderState* = object
     # Whether the following two variables have been initialized.
-    #TODO find a better name that doesn't conflict with box.positioned
-    positioned*: bool
+    rendered*: bool
     offset*: Offset
     clipBox*: ClipBox
 
@@ -174,19 +173,19 @@ type
     box*: BlockBox
     next*: CSSAbsolute
 
-  BlockBox* = ref object of CSSBox
+  BlockBox* {.final.} = ref object of CSSBox
     input*: LayoutInput # tree builder output -> layout input
     state*: BoxLayoutState # layout output -> render input
 
   InlineBox* = ref object of CSSBox
     state*: InlineBoxState
 
-  InlineTextBox* = ref object of InlineBox
+  InlineTextBox* {.final.} = ref object of InlineBox
     runs*: seq[TextRun] # state
     text*: RefString
     len*: int # must invalidate if text.s.len != len
 
-  InlineNewLineBox* = ref object of InlineBox
+  InlineNewLineBox* {.final.} = ref object of InlineBox
 
 proc offset*(x, y: LUnit): Offset =
   return [dtHorizontal: x, dtVertical: y]
