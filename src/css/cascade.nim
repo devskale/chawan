@@ -3,7 +3,6 @@
 import std/algorithm
 import std/math
 import std/sets
-import std/tables
 
 import chame/tags
 import config/conftypes
@@ -88,22 +87,31 @@ proc hasClass(ancestors: var AncestorCache; class: CAtom): bool =
     ancestors.last = ancestor
   found
 
+proc calcRule(tosorts: var ToSorts; element: Element;
+    depends: var DependencyInfo; rule: CSSRuleDef) =
+  var seen: set[PseudoElement] = {}
+  for sel in rule.sels:
+    if sel.pseudo in seen:
+      continue
+    # skip an arbitrary class from the selector ancestors as an
+    # optimization
+    let ancestorClass = sel.ancestorClass
+    if ancestorClass != CAtomNull and
+        not tosorts.cache.hasClass(ancestorClass):
+      continue
+    if element.matches(sel, depends):
+      tosorts.map[sel.pseudo].add((sel.specificity, rule))
+      seen.incl(sel.pseudo)
+
+proc calcRules(tosorts: var ToSorts; element: Element;
+    depends: var DependencyInfo; rules: RuleTable; name: CAtom) =
+  for rule in rules.getAll(name):
+    tosorts.calcRule(element, depends, rule)
+
 proc calcRules(tosorts: var ToSorts; element: Element;
     depends: var DependencyInfo; rules: openArray[CSSRuleDef]) =
   for rule in rules:
-    var seen: set[PseudoElement] = {}
-    for sel in rule.sels:
-      if sel.pseudo in seen:
-        continue
-      # skip an arbitrary class from the selector ancestors as an
-      # optimization
-      let ancestorClass = sel.ancestorClass
-      if ancestorClass != CAtomNull and
-          not tosorts.cache.hasClass(ancestorClass):
-        continue
-      if element.matches(sel, depends):
-        tosorts.map[sel.pseudo].add((sel.specificity, rule))
-        seen.incl(sel.pseudo)
+    tosorts.calcRule(element, depends, rule)
 
 proc add(entry: var RuleListEntry; rule: CSSRuleDef) =
   for f in CSSImportantFlag: # normal, important
@@ -117,19 +125,15 @@ proc calcRules(map: var RuleListMap; element: Element; sheet: CSSRuleMap;
   var tosorts = ToSorts(
     cache: AncestorCache(last: parentElement, quirks: sheet.quirks)
   )
-  sheet.tagTable.withValue(element.localName, v):
-    tosorts.calcRules(element, depends, v[])
-  if element.id != CAtomNull:
+  tosorts.calcRules(element, depends, sheet.tagTable, element.localName)
+  if element.id != satUempty:
     let id = if quirks: element.id.toLowerAscii() else: element.id
-    sheet.idTable.withValue(id, v):
-      tosorts.calcRules(element, depends, v[])
+    tosorts.calcRules(element, depends, sheet.idTable, id)
   for class in element.classList:
     let class = if quirks: class.toLowerAscii() else: class
-    sheet.classTable.withValue(class, v):
-      tosorts.calcRules(element, depends, v[])
+    tosorts.calcRules(element, depends, sheet.classTable, class)
   for attr in element.attrs:
-    sheet.attrTable.withValue(attr.qualifiedName, v):
-      tosorts.calcRules(element, depends, v[])
+    tosorts.calcRules(element, depends, sheet.attrTable, attr.qualifiedName)
   if parentElement == nil:
     tosorts.calcRules(element, depends, sheet.typeList[shtRoot])
   if parentElement == nil or parentElement.firstElementChild == element:
@@ -178,7 +182,7 @@ proc addItems(ctx: var ApplyValueContext; toks: var seq[CSSToken];
       var cv: CSSVariable = nil
       var varsIt = vars
       while varsIt != nil:
-        cv = varsIt.table.getOrDefault(varName)
+        cv = varsIt.getOrDefault(varName)
         if cv != nil:
           break
         varsIt = varsIt.parent
@@ -394,13 +398,13 @@ proc applyPresHints(ctx: var ApplyValueContext; element: Element) =
     ctx.applyColorHint(cptColor, element.attr(satColor))
   else: discard
 
-proc applyVars(ctx: var ApplyValueContext; vars: seq[CSSVariable];
+proc applyVars(ctx: var ApplyValueContext; vars: openArray[CSSVariable];
     parentVars: CSSVariableMap) =
   if vars.len > 0:
     if ctx.vals.vars == nil:
       ctx.vals.vars = newCSSVariableMap(parentVars)
     for cvar in vars.ritems:
-      ctx.vals.vars.putIfAbsent(cvar.name, cvar)
+      ctx.vals.vars.putIfAbsent(cvar)
 
 proc applyDeclarations(rules: RuleList; parent, element: Element;
     window: Window; old: CSSValues): CSSValues =
