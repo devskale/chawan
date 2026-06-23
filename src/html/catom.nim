@@ -20,6 +20,7 @@ import monoucha/fromjs
 import monoucha/quickjs
 import monoucha/tojs
 import types/jsopt
+import utils/tabutil
 import utils/twtstr
 
 # create a static enum compatible with chame/tags
@@ -229,7 +230,7 @@ macro makeStaticAtom =
 
 makeStaticAtom
 
-const CAtomFactoryInitSize = 2048 # must be a power of 2
+const CAtomFactoryInitSize* = 2048 # must be a power of 2
 
 type
   CAtom* = distinct uint32
@@ -338,25 +339,19 @@ proc view*(atom: CAtom): lent CAtomTraced =
 template view*(atom: CAtomTraced): CAtom =
   CAtom(atom)
 
-proc put0(factory: var CAtomFactoryObj; atom: uint32; h: Hash) =
-  let mask = (factory.tab.len - 1)
-  var home = h and mask
+proc put0(factory: var CAtomFactoryObj; atom: uint32) =
+  let mask = factory.tab.len - 1
+  var home = CAtom(atom).hash() and mask
   var i = home
-  var dist = 0u32
   var atom = atom
   while true:
     let it = factory.tab[i]
     if it == 0:
       factory.tab[i] = atom
       break
-    let itHome = factory.atomMap[int(it)].hcache and mask
-    let itDist = (uint32(i) - uint32(itHome)) and uint32(mask)
-    if dist > itDist: # displace
+    if tabSwap(home, CAtom(it).hash(), i, mask): # displace
       swap(factory.tab[i], atom)
-      home = itHome
-      dist = itDist
     i = (i + 1) and mask
-    inc dist
 
 proc get(factory: var CAtomFactoryObj; s: openArray[char]; h: Hash): CAtom =
   let mask = (factory.tab.len - 1)
@@ -380,20 +375,15 @@ proc toAtom(factory: var CAtomFactoryObj; s: openArray[char]): CAtom =
     factory.freeHead = factory.atomMap[factory.freeHead].lower
   else:
     # Not found
-    if factory.atomMap.len >= factory.tab.len div 2:
-      # grow
-      var oldTab = move(factory.tab)
-      factory.tab = newSeq[uint32](oldTab.len * 2)
-      for atom in oldTab:
-        if atom != 0:
-          let h = factory.atomMap[int(atom)].hcache
-          factory.put0(atom, h)
+    for atom in factory.tab.prepareTableAdd(factory.atomMap.len, 0):
+      if atom != 0:
+        factory.put0(atom)
     u = uint32(factory.atomMap.len)
     factory.atomMap.add(AtomDesc())
   let lower = if AsciiUpperAlpha notin s: u else: 0'u32
   factory.atomMap[u] = AtomDesc(lower: lower, refc: 1, hcache: h)
   factory.atomMap[u].s = s.substr()
-  factory.put0(u, h)
+  factory.put0(u)
   return CAtom(u)
 
 proc initCAtomFactory*() =
@@ -422,6 +412,9 @@ proc toAtom*(satom: StaticAtom): CAtom =
   assert satom != satUnknown
   return CAtom(satom)
 
+proc toAtomTrace*(satom: StaticAtom): CAtomTraced =
+  satom.toAtom().trace()
+
 template view*(satom: StaticAtom): lent CAtomTraced =
   satom.toAtom().view()
 
@@ -430,6 +423,40 @@ proc `$`*(atom: CAtom): lent string =
 
 proc `$`*(atom: CAtomTraced): lent string =
   $CAtom(atom)
+
+proc find*(atom: CAtom; c: char): int =
+  ($atom).find(c)
+
+proc find*(atom: CAtomTraced; c: char): int =
+  CAtom(atom).find(c)
+
+proc len*(atom: CAtom): int =
+  ($atom).len
+
+proc len*(atom: CAtomTraced): int =
+  CAtom(atom).len
+
+proc substr*(atom: CAtom; first, last: int): CAtom =
+  let atomLen = atom.len
+  if first >= atomLen:
+    return satUempty.toAtom()
+  let last = min(last, atomLen - 1)
+  ($atom).toOpenArray(first, last).toAtom()
+
+proc substr*(atom: CAtom; first: int): CAtom =
+  atom.substr(first, ($atom).high)
+
+proc substrTrace*(atom: CAtomTraced; first, last: int): CAtomTraced =
+  CAtom(atom).substr(first, last).trace()
+
+proc substrTrace*(atom: CAtomTraced; first: int): CAtomTraced =
+  CAtom(atom).substr(first).trace()
+
+proc contains*(atom: CAtomTraced; c: char): bool =
+  c in $atom
+
+proc contains*(atom: CAtomTraced; cs: set[char]): bool =
+  cs in $atom
 
 proc toLowerAscii*(a: CAtom): CAtom =
   let factory = getFactory()
@@ -441,6 +468,12 @@ proc toLowerAscii*(a: CAtom): CAtom =
 
 proc toLowerAscii*(a: CAtomTraced): CAtomTraced =
   CAtom(a).toLowerAscii().trace()
+
+proc toUpperAsciiTrace*(a: CAtom): CAtomTraced =
+  ($a).toUpperAscii().toAtomTrace()
+
+proc toUpperAscii*(a: CAtomTraced): CAtomTraced =
+  CAtom(a).toUpperAsciiTrace()
 
 proc equalsIgnoreCase*(a, b: CAtom): bool =
   a == b or a.toLowerAscii() == b.toLowerAscii()
@@ -655,5 +688,18 @@ proc toJS*(ctx: JSContext; atom: CAtom): JSValue =
 
 proc toJS*(ctx: JSContext; atom: CAtomTraced): JSValue =
   ctx.toJS(CAtom(atom))
+
+when defined(test):
+  proc testSetHash*(atom: CAtom; h: Hash) =
+    getFactory().atomMap[uint32(atom)].hcache = h
+
+  proc testGetIdx*(atom: CAtom): int =
+    let mask = getFactory().tab.high
+    var i = atom.hash() and mask
+    while true:
+      if factory.tab[i] == uint32(atom):
+        break
+      i = (i + 1) and mask
+    i
 
 {.pop.} # raises: []
