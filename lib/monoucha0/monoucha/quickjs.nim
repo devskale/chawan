@@ -128,8 +128,9 @@ type
   JSAtom* {.importc: "JSAtom", header: qjsheader.} = distinct uint32
   JSClassFinalizer* = proc(rt: JSRuntime; val: JSValueConst) {.
     cdecl, raises: [].}
-  JSClassCheckDestroy* = proc(rt: JSRuntime; val: JSValueConst): JS_BOOL
-    {.cdecl, raises: [].}
+  JSClassCanDestroy* =
+    proc(rt: JSRuntime; val: JSValueConst; refCount: ptr cint) {.
+      cdecl, raises: [].}
   JSClassGCMark* = proc(rt: JSRuntime; val: JSValueConst;
     mark_func: JS_MarkFunc) {.cdecl, raises: [].}
   JS_MarkFunc* = proc(rt: JSRuntime; gp: ptr JSGCObjectHeader) {.
@@ -206,7 +207,7 @@ type
     # if the object constructor bit is set (see JS_SetConstructorBit()).
     call*: JSClassCallP
     exotic*: JSClassExoticMethodsConst
-    can_destroy*: JSClassCheckDestroy
+    can_destroy*: JSClassCanDestroy
 
   JSClassDefConst* {.importc: "const JSClassDef *",
     header: qjsheader.} = ptr JSClassDef
@@ -521,7 +522,7 @@ proc JS_FreeAtom*(ctx: JSContext; atom: JSAtom)
 proc JS_FreeAtomRT*(rt: JSRuntime; atom: JSAtom)
 proc JS_AtomToValue*(ctx: JSContext; atom: JSAtom): JSValue
 proc JS_AtomToString*(ctx: JSContext; atom: JSAtom): JSValue
-proc JS_AtomToCStringLen*(ctx: JSContext; plen: ptr csize_t; atom: JSAtom):
+proc JS_AtomToCStringLen*(ctx: JSContext; plen: var csize_t; atom: JSAtom):
   cstringConst
 proc JS_AtomToCString*(ctx: JSContext; atom: JSAtom): cstringConst
 proc JS_ValueToAtom*(ctx: JSContext; val: JSValueConst): JSAtom
