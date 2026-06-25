@@ -2312,12 +2312,17 @@ proc inSameTree*(a, b: Node): bool =
   a.rootNode == b.rootNode
 
 # a == b or a in b's ancestors
-proc contains(a, b: Node): bool {.jsfunc.} =
-  if b != nil:
-    for node in b.branch:
-      if node == a:
-        return true
+proc contains(a, b: Node): bool =
+  for node in b.branch:
+    if node == a:
+      return true
   return false
+
+proc contains(a: Node; b: Option[Node]): bool {.jsfunc.} =
+  let b = b.get(nil)
+  if b == nil:
+    return false
+  a.contains(b)
 
 proc jsParentNode(node: Node): Node {.jsfget: "parentNode".} =
   return node.parentNode
@@ -3623,6 +3628,9 @@ proc setCookie(ctx: JSContext; document: Document; cookie: string):
 proc focus*(document: Document): Element {.jsfget: "activeElement".} =
   return document.internalFocus
 
+proc hasFocus(document: Document): bool {.jsfunc.} =
+  document.internalFocus != nil
+
 proc setFocus*(document: Document; element: Element) =
   if document.focus != nil:
     document.focus.invalidate(dtFocus)
@@ -4384,15 +4392,11 @@ proc item(ctx: JSContext; tokenList: DOMTokenList; u: uint32): JSValue
       return ctx.toJS(tokenList.toks[i])
   return JS_NULL
 
-proc contains(tokenList: DOMTokenList; a: CAtomTraced): bool =
-  return a in tokenList.toks
-
 proc containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool =
   return tokenList.toks.containsIgnoreCase(a)
 
-proc jsContains(tokenList: DOMTokenList; s: string): bool
-    {.jsfunc: "contains".} =
-  return s.toAtom() in tokenList.toks
+proc contains(tokenList: DOMTokenList; s: CAtomTraced): bool {.jsfunc.} =
+  return s in tokenList.toks
 
 proc `$`(tokenList: DOMTokenList): string {.jsfunc: "toString".} =
   var s = ""
@@ -4408,46 +4412,50 @@ proc update(tokenList: DOMTokenList) =
     return
   tokenList.element.attr(tokenList.localName.view(), $tokenList)
 
-proc validateDOMToken(ctx: JSContext; tok: JSValueConst): Opt[CAtom] =
-  var res: string
-  ?ctx.fromJS(tok, res)
-  if res == "":
-    JS_ThrowDOMException(ctx, "SyntaxError", "got an empty string")
-    return err()
-  if AsciiWhitespace in res:
-    JS_ThrowDOMException(ctx, "InvalidCharacterError",
-      "got a string containing whitespace")
-    return err()
-  ok(res.toAtom())
+proc validateDOMTokens(ctx: JSContext; toks: varargs[CAtom]): Opt[void] =
+  for tok in toks:
+    if tok == satUempty:
+      JS_ThrowDOMException(ctx, "SyntaxError", "got an empty string")
+      return err()
+    if AsciiWhitespace in tok:
+      JS_ThrowDOMException(ctx, "InvalidCharacterError",
+        "got a string containing whitespace")
+      return err()
+  ok()
 
 proc add(ctx: JSContext; tokenList: DOMTokenList;
-    tokens: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
-  var toks = newSeqOfCap[CAtom](tokens.len)
-  for tok in tokens:
-    toks.add(?ctx.validateDOMToken(tok))
+    argv: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+  var toks: seq[CAtom]
+  ?ctx.fromJS(argv, toks)
+  if ctx.validateDOMTokens(toks).isErr:
+    freeAtoms(toks)
+    return err()
   tokenList.toks.add(toks)
   tokenList.update()
   ok()
 
 proc remove(ctx: JSContext; tokenList: DOMTokenList;
-    tokens: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
-  var toks = newSeqOfCap[CAtom](tokens.len)
-  for tok in tokens:
-    toks.add(?ctx.validateDOMToken(tok))
+    argv: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+  var toks: seq[CAtom]
+  ?ctx.fromJS(argv, toks)
+  if ctx.validateDOMTokens(toks).isErr:
+    freeAtoms(toks)
+    return err()
   for tok in toks:
     let i = tokenList.toks.find(tok)
     if i != -1:
       tokenList.toks.delete(i)
   tokenList.update()
+  freeAtoms(toks)
   ok()
 
-proc toggle(ctx: JSContext; tokenList: DOMTokenList; token: JSValueConst;
+proc toggle(ctx: JSContext; tokenList: DOMTokenList; token: CAtomTraced;
     force: JSValueConst = JS_UNDEFINED): Opt[bool] {.jsfunc.} =
-  let token = ?ctx.validateDOMToken(token)
+  ?ctx.validateDOMTokens(token.view())
   let forceBool = JS_ToBool(ctx, force)
   if forceBool < 0:
     return err()
-  let i = tokenList.toks.find(token)
+  let i = tokenList.toks.find(token.view())
   if i != -1:
     if JS_IsUndefined(force) or forceBool == 0:
       tokenList.toks.delete(i)
@@ -4455,40 +4463,30 @@ proc toggle(ctx: JSContext; tokenList: DOMTokenList; token: JSValueConst;
       return ok(false)
     return ok(true)
   if JS_IsUndefined(force) or forceBool == 1:
-    tokenList.toks.add(token)
+    tokenList.toks.add(token.dup())
     tokenList.update()
     return ok(true)
   ok(false)
 
 proc replace(ctx: JSContext; tokenList: DOMTokenList;
-    token, newToken: JSValueConst): Opt[bool] {.jsfunc.} =
-  let token = ?ctx.validateDOMToken(token)
-  let newToken = ?ctx.validateDOMToken(newToken)
-  let i = tokenList.toks.find(token)
+    token, newToken: CAtomTraced): Opt[bool] {.jsfunc.} =
+  ?ctx.validateDOMTokens(token.view(), newToken.view())
+  let i = tokenList.toks.find(token.view())
   if i == -1:
     return ok(false)
-  tokenList.toks[i] = newToken
+  freeAtom(tokenList.toks[i])
+  tokenList.toks[i] = newToken.dup()
   tokenList.update()
   return ok(true)
 
-const SupportedTokensMap = {
-  satRel: @[
-    "alternate", "dns-prefetch", "icon", "manifest", "modulepreload",
-    "next", "pingback", "preconnect", "prefetch", "preload", "search",
-    "stylesheet"
-  ]
-}
-
 proc supports(ctx: JSContext; tokenList: DOMTokenList; token: string): JSValue
     {.jsfunc.} =
-  let localName = tokenList.localName
-  for it in SupportedTokensMap:
-    if it[0] == localName:
-      let lowercase = token.toLowerAscii()
-      if lowercase in it[1]:
-        return JS_TRUE
-      return JS_FALSE
-  return JS_ThrowTypeError(ctx, "No supported tokens defined for attribute")
+  case tokenList.localName
+  of satRel:
+    const SupportedTokens = [satAlternate, satStylesheet]
+    return ctx.toJS(token.toLowerAscii().toStaticAtom() in SupportedTokens)
+  else:
+    return JS_ThrowTypeError(ctx, "no supported tokens defined for attribute")
 
 proc value(tokenList: DOMTokenList): string {.jsfget.} =
   return $tokenList
@@ -4549,9 +4547,6 @@ proc names(ctx: JSContext; map: DOMStringMap): JSPropertyEnumList
     if k.startsWith("data-") and AsciiUpperAlpha notin k:
       list.add(k["data-".len .. ^1].kebabToCamelCase())
   return list
-
-proc dataset(ctx: JSContext; element: HTMLElement): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(element, wwmDataset)
 
 # NodeList
 proc length(ctx: JSContext; this: NodeList): Opt[uint32] {.jsfget.} =
@@ -6579,6 +6574,9 @@ proc crossOrigin(element: HTMLElement): CORSAttribute =
 
 proc referrerPolicy(element: HTMLElement): Opt[ReferrerPolicy] =
   parseEnumNoCase[ReferrerPolicy](element.attr(satReferrerpolicy))
+
+proc dataset(ctx: JSContext; element: HTMLElement): JSValue {.jsfget.} =
+  return ctx.getWeakCollection(element, wwmDataset)
 
 # HTMLHyperlinkElementUtils (for <a> and <area>)
 proc reinitURL*(element: Element): Opt[URL] =
