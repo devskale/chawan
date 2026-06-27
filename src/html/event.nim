@@ -440,7 +440,7 @@ proc invoke(ctx: JSContext; listener: EventListener; event: Event): JSValue =
   return ret
 
 proc removeEventListenerData(ctx: JSContext; _: JSValueConst;
-    argc: cint; argv: JSValueConstArray; margic: cint;
+    argc: cint; argv: JSValueConstArray; magic: cint;
     funcData: JSValueConstArray): JSValue {.cdecl.} =
   var this: EventTarget
   ?ctx.fromJS(funcData[0], this)
@@ -796,7 +796,8 @@ proc addEventGetSet*(ctx: JSContext; obj: JSValueConst;
     while EventReflectMap[i] != atom:
       inc i
     let name = "on" & $atom
-    ?ctx.addReflectFunction(obj, name, eventReflectGet, eventReflectSet, i)
+    ?ctx.addReflectFunction(obj, cstring(name), eventReflectGet,
+      eventReflectSet, i)
   ok()
 
 proc addEventGetSet*(ctx: JSContext; classid: JSClassID;
