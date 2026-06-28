@@ -557,11 +557,11 @@ proc queueStatusUpdate(pager: Pager) {.jsfunc.} =
 
 # private
 # called from JS command()
-proc evalCommand(ctx: JSContext; pager: Pager; src: string): JSValue
+proc evalCommand(ctx: JSContext; pager: Pager; s: DOMString): JSValue
     {.jsfunc.} =
   if pager.consoleInit != nil:
     pager.consoleInit.flags.incl(bifTailOnLoad)
-  return ctx.eval(src, "<command>",
+  return JS_Eval(ctx, s.p, csize_t(s.len), "<command>",
     JS_EVAL_TYPE_GLOBAL or JS_EVAL_FLAG_BACKTRACE_BARRIER)
 
 proc toJS(ctx: JSContext; input: MouseInput): JSValue =
@@ -1770,7 +1770,7 @@ type GotoURLDict = object of JSDict
   history {.jsdefault: true.}: bool
   scripting {.jsdefault.}: Option[ScriptingMode]
   cookie {.jsdefault.}: Option[CookieMode]
-  charset {.jsdefault.}: Option[Charset]
+  charset {.jsdefault.}: Charset
   url {.jsdefault.}: Option[URL]
   referrer {.jsdefault.}: Option[BufferInit]
   redirectDepth {.jsdefault.}: int
@@ -1790,8 +1790,8 @@ proc gotoURLImpl(ctx: JSContext; pager: Pager; v: JSValueConst;
   var loaderConfig: LoaderClientConfig
   var bufferConfig: BufferConfig
   var filterCmd: string
-  pager.initGotoURL(request, t.charset.get(csUnknown),
-    t.referrer.get(nil), t.cookie, loaderConfig, bufferConfig, filterCmd)
+  pager.initGotoURL(request, t.charset, t.referrer.get(nil), t.cookie,
+    loaderConfig, bufferConfig, filterCmd)
   bufferConfig.scripting = t.scripting.get(bufferConfig.scripting)
   let init = pager.gotoURL0(request, t.save, t.history, bufferConfig,
     loaderConfig, t.title, t.contentType.get(""), t.redirectDepth,
