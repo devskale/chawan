@@ -66,18 +66,13 @@ type
 
   ProgressEvent {.final.} = ref object of Event
     lengthComputable {.jsget.}: bool
-    loaded {.jsget.}: int64 #TODO should be uint64
-    total {.jsget.}: int64 #TODO ditto
+    loaded {.jsget.}: float64
+    total {.jsget.}: float64
 
   ProgressEventInit = object of EventInit
-    lengthComputable: bool
-    loaded: int64
-    total: int64
-
-jsDestructor(XMLHttpRequestEventTarget)
-jsDestructor(XMLHttpRequestUpload)
-jsDestructor(XMLHttpRequest)
-jsDestructor(ProgressEvent)
+    lengthComputable {.jsdefault.}: bool
+    loaded {.jsdefault.}: float64
+    total {.jsdefault.}: float64
 
 proc newXMLHttpRequest(ctx: JSContext): XMLHttpRequest {.jsctor.} =
   let upload = XMLHttpRequestUpload()
@@ -109,8 +104,8 @@ proc newProgressEvent(ctype: CAtomTraced; init = ProgressEventInit()):
 proc readyState(this: XMLHttpRequest): uint16 {.jsfget.} =
   return uint16(this.readyState)
 
-proc parseMethod(ctx: JSContext; s: string): Opt[HttpMethod] =
-  let m = ?parseEnumNoCase[HttpMethod](s)
+proc parseMethod(ctx: JSContext; s: DOMString): Opt[HttpMethod] =
+  let m = ?parseEnumNoCase[HttpMethod](s.toOpenArray())
   if m in {hmGet, hmDelete, hmHead, hmOptions, hmPatch, hmPost, hmPut}:
     return ok(m)
   if m in {hmConnect, hmTrace, hmTrack}:
@@ -123,11 +118,11 @@ proc fireReadyStateChangeEvent(window: Window; target: EventTarget) =
   window.fireEvent(satReadystatechange, target, bubbles = false,
     cancelable = false, trusted = true)
 
-proc open(ctx: JSContext; this: XMLHttpRequest; httpMethod, url: string;
+proc open(ctx: JSContext; this: XMLHttpRequest; httpMethod, url: DOMString;
     misc: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
   let httpMethod = ?ctx.parseMethod(httpMethod)
   let global = ctx.getGlobal()
-  let parsedURL = parseURL0(url, global.document.baseURL)
+  let parsedURL = parseURL0(url.toOpenArray(), global.document.baseURL)
   if parsedURL == nil:
     JS_ThrowDOMException(ctx, "SyntaxError", "invalid URL")
     return err()
@@ -211,11 +206,11 @@ proc setTimeout(ctx: JSContext; this: XMLHttpRequest; value: uint32): JSValue
 proc fireProgressEvent(window: Window; target: EventTarget; name: StaticAtom;
     loaded, length: int64) =
   let event = newProgressEvent(name.view(), ProgressEventInit(
-    loaded: loaded,
-    total: length,
+    loaded: float64(loaded),
+    total: float64(length),
     lengthComputable: length != 0
   ))
-  event.isTrusted = true
+  event.setTrusted()
   window.fireEvent(event, target)
 
 proc errorSteps(window: Window; this: XMLHttpRequest; name: StaticAtom) =
@@ -256,7 +251,7 @@ proc handleErrors(window: Window; this: XMLHttpRequest; ctx: JSContext):
 type XHROpaque {.final.} = ref object of RootObj
   this: XMLHttpRequest
   window: Window
-  len: int64 #TODO should be uint64
+  len: int64
 
 proc onReadXHR(response: Response) =
   const BufferSize = 4096

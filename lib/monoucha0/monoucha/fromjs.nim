@@ -3,6 +3,7 @@
 import std/algorithm
 import std/macros
 import std/tables
+import std/typetraits
 
 import jsopaque
 import jstypes
@@ -35,7 +36,8 @@ proc fromJS*[T](ctx: JSContext; val: JSValueConst; res: var JSKeyValuePair[T]):
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var bool): FromJSResult
 proc fromJS*[T: enum](ctx: JSContext; val: JSValueConst; res: var T):
   FromJSResult
-proc fromJS*[T](ctx: JSContext; val: JSValueConst; res: var ptr T): FromJSResult
+proc fromJS*[T: ptr object](ctx: JSContext; val: JSValueConst; res: var T):
+  FromJSResult
 proc fromJS*[T: ref object](ctx: JSContext; val: JSValueConst; res: var T):
   FromJSResult
 proc fromJS*[T: JSDict](ctx: JSContext; val: JSValueConst; res: var T):
@@ -368,8 +370,7 @@ proc fromJS*[T: enum](ctx: JSContext; val: JSValueConst; res: var T):
 proc fromJS(ctx: JSContext; val: JSValueConst; nimt: pointer; res: var pointer):
     FromJSResult =
   if not JS_IsObject(val):
-    if not JS_IsException(val):
-      JS_ThrowTypeError(ctx, "value is not an object")
+    JS_ThrowTypeError(ctx, "value is not an object")
     return fjErr
   let ctxOpaque = ctx.getOpaque()
   var classid: JSClassID
@@ -388,27 +389,29 @@ proc fromJS(ctx: JSContext; val: JSValueConst; nimt: pointer; res: var pointer):
   res = p
   fjOk
 
-proc fromJS*[T](ctx: JSContext; val: JSValueConst; res: var ptr T): FromJSResult =
-  let nimt = getTypePtr(T)
-  var x: pointer
-  ?ctx.fromJS(val, nimt, x)
-  res = cast[ptr T](x)
-  fjOk
-
-proc fromJS*[T: ref object](ctx: JSContext; val: JSValueConst; res: var T):
+proc fromJS*[T: ptr object](ctx: JSContext; val: JSValueConst; res: var T):
     FromJSResult =
-  let nimt = getTypePtr(T)
-  var x: pointer
+  let nimt = getTypePtr(ref T.pointerBase)
+  var x {.noinit.}: pointer
   ?ctx.fromJS(val, nimt, x)
   res = cast[T](x)
   fjOk
 
-proc fromJSThis*[T: ref object](ctx: JSContext; val: JSValueConst; res: var T):
+proc fromJS*[T: ref object](ctx: JSContext; val: JSValueConst; res: var T):
+    FromJSResult =
+  var x {.noinit.}: ptr T.pointerBase
+  ?ctx.fromJS(val, x)
+  res = cast[T](x)
+  fjOk
+
+proc fromJSThis*[T: ptr object](ctx: JSContext; val: JSValueConst; res: var T):
     FromJSResult =
   # translate undefined -> global
-  if JS_IsUndefined(val):
-    return ctx.fromJS(ctx.getOpaque().global, res)
-  return ctx.fromJS(val, res)
+  let val = if JS_IsUndefined(val):
+    JSValueConst(ctx.getOpaque().global)
+  else:
+    val
+  ctx.fromJS(val, res)
 
 macro fromJSDictBody(ctx: JSContext; val: JSValueConst; res, t: typed) =
   let impl = t.getTypeInst()[1].getImpl()
@@ -551,7 +554,7 @@ proc fromJS*(ctx: JSContext; atom: JSAtom; res: var JSAtom): FromJSResult =
   fjOk
 
 proc fromJS*(ctx: JSContext; atom: JSAtom; res: var string): FromJSResult =
-  var len: csize_t
+  var len {.noinit.}: csize_t
   let cs = JS_AtomToCStringLen(ctx, len, atom)
   if cs == nil:
     return fjErr
@@ -563,6 +566,18 @@ proc fromJS*(ctx: JSContext; atom: JSAtom; res: var string): FromJSResult =
   if len > 0:
     copyMem(addr res[0], cast[pointer](cs), len)
   JS_FreeCString(ctx, cs)
+  fjOk
+
+proc fromJS*(ctx: JSContext; atom: JSAtom; res: var DOMString): FromJSResult =
+  var len {.noinit.}: csize_t
+  let cs = JS_AtomToCStringLen(ctx, len, atom)
+  if cs == nil:
+    return fjErr
+  if len > csize_t(int.high):
+    JS_FreeCString(ctx, cs)
+    JS_ThrowRangeError(ctx, "string length out of bounds")
+    return fjErr
+  res = initDOMString(cs, cast[int](len))
   fjOk
 
 {.pop.} # raises: []
