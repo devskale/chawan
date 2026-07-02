@@ -404,6 +404,19 @@ type
 
   SelectorList* = seq[ComplexSelector]
 
+static:
+  # If you add more pseudo-elements, you'll want to ensure that it doesn't
+  # bloat Element's size (in dom) by another word.  Some ways to do this:
+  # * peNone does not actually need a relayout flag, it can be updated
+  #   directly.
+  # * Element's other bitmaps still have plenty of padding to fill in
+  #   too.
+  # * If all else fails, it's possible to dynamically search for the
+  #   pseudo-element boxes in the tree by skipping all anonymous boxes,
+  #   and then you could remove the `relayout' bitmap.  It does seem
+  #   painful though.
+  assert sizeof(PseudoElement) == 1
+
 when defined(gcDestructors):
   proc `=destroy`*(a: var CSSTokenUnion) =
     discard
@@ -1843,16 +1856,12 @@ proc parseComplexSelector(state: var SelectorParser): ComplexSelector =
     #    same tree are caught
     # b) stick to descendant combinators as they are very slow, but also
     #    cache child when we only have that
-    # c) unset the class on next/subsequent sibling, as those imply we have
-    #    switched trees
     if ct == ctDescendant:
       if class != CAtomNull:
         prevClass = class
     elif ct == ctChild:
       if prevClass == CAtomNull:
         prevClass = class
-    else:
-      prevClass = CAtomNull
     result[^1].ct = ct
   if result.len == 0 or result[^1].ct != ctNone:
     fail
