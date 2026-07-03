@@ -877,6 +877,7 @@ type
     ckPageDown = "Pagedown"
     ckHome = "Home"
     ckEnd = "End"
+    ckDelete = "Delete"
     ckF1 = "F1"
     ckF2 = "F2"
     ckF3 = "F3"
@@ -973,6 +974,11 @@ proc parseKeyComb(key: openArray[char]; warnings: var seq[string]): string =
             realk &= "\eO" & c
           else:
             realk &= "\e[1;" & $n & c
+        of ckDelete:
+          realk &= "\e[3"
+          let n = mods.toXTermMod()
+          if n > 0:
+            realk &= ";" & $n & '~'
         else:
           realk &= "\e["
           # see ctlseqs(ms) (from XTerm)
@@ -2129,20 +2135,31 @@ proc openConfig*(dir, dataDir: var string; override: string;
     dataDir = getEnvEmpty("CHA_DATA_DIR", dir)
     return chafile.fopen(dir / "config.toml", "r")
   dir = getEnvEmpty("XDG_CONFIG_HOME")
+  var xdg: string
   if dir != "":
     dir = dir / "chawan"
+    xdg = dir
   else:
-    dir = expandPath("~/.config/chawan")
-  if (let fs = chafile.fopen(dir / "config.toml", "r"); fs.isOk):
+    xdg = "~/.config/chawan"
+    dir = expandPath(xdg)
+  let hasXdg = dirExists(dir)
+  if hasXdg and (let fs = chafile.fopen(dir / "config.toml", "r"); fs.isOk):
     let s = getEnvEmpty("XDG_DATA_HOME")
     if s != "":
       dataDir = s / "chawan"
     else:
       dataDir = expandPath("~/.local/share/chawan")
+    if dirExists(expandPath("~/.chawan")):
+      warnings.add("found both ~/.chawan and " & xdg & ", but only " & xdg &
+        " will be used")
     return fs
   dir = expandPath("~/.chawan")
   dataDir = dir
-  return chafile.fopen(dir / "config.toml", "r")
+  let fs = chafile.fopen(dir / "config.toml", "r")
+  if fs.isOk and hasXdg:
+    warnings.add("found both ~/.chawan and " & xdg &
+      ", but only ~/.chawan will be used")
+  fs
 
 # called at pager init
 proc initCommands(ctx: JSContext; config: Config): Opt[void] {.jsfunc.} =
@@ -2316,6 +2333,7 @@ LF line.submit
 C-h line.backspace
 C-? line.backspace
 C-d line.delete
+Delete line.delete
 C-c line.copyOrCancel
 M-w line.copySelection
 C-g line.cancel
@@ -2333,6 +2351,7 @@ C-w line.clearWord
 M-C-h line.clearWord
 M-C-? line.clearWord
 M-d line.killWord
+C-Delete line.killWord
 C-a line.begin
 Home line.begin
 M-[1~ line.begin
