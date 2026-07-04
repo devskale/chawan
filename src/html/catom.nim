@@ -6,8 +6,8 @@
 #
 # As an inbetween solution, we do "semi-automatic" refcounting where local
 # variables are tracked with `=destroy`, but copy/dup hooks are not used
-# and interned string members are still managed manually in finalizers.
-# This makes it so a compiler bug will, at worst, just cause a leak.
+# and atom members are sometimes managed manually in finalizers.  This
+# makes it so a compiler bug will, at worst, just cause a leak.
 #
 # On the different types:
 #
@@ -18,10 +18,8 @@
 # * CAtom is an atom with manual refcounting.
 #
 # TODO: in the past, we didn't bother with refcounting atoms, and there is
-# still some code that straight out leaks them.  Also, as noted above, we
-# don't trust the compiler enough to do automatic refcounting outside of
-# regular procs, so currently you have to free them in the finalizer.
-# (This *is* a problem in non-JS-bound types that have no finalizer.)
+# still some code that straight out leaks them, in particular the HTML
+# parser.  Of course, the goal is to plug all leaks eventually.
 
 {.push raises: [].}
 
@@ -31,6 +29,7 @@ import std/sets
 
 import chame/tags
 import monoucha/fromjs
+import monoucha/jstypes
 import monoucha/quickjs
 import monoucha/tojs
 import types/jsopt
@@ -421,6 +420,9 @@ proc toAtom*(s: openArray[char]): CAtom =
 proc toAtomTrace*(s: openArray[char]): CAtomTraced =
   s.toAtom().trace()
 
+proc toAtomTrace*(s: DOMString): CAtomTraced =
+  s.toOpenArray().toAtomTrace()
+
 proc toStaticAtom*(tagType: TagType): StaticAtom =
   assert tagType != TAG_UNKNOWN
   StaticAtom(uint32(tagType))
@@ -501,6 +503,9 @@ proc toLowerAscii*(a: CAtomTraced): CAtomTraced =
 proc equalsIgnoreCase*(a, b: CAtom): bool =
   a == b or ($a).equalsIgnoreCase($b)
 
+proc equalsIgnoreCase*(a: CAtomTraced; b: CAtom): bool =
+  a.view().equalsIgnoreCase(b)
+
 proc containsIgnoreCase*(aa: openArray[CAtom]; a: CAtom): bool =
   for it in aa:
     if a.equalsIgnoreCase(it):
@@ -509,6 +514,9 @@ proc containsIgnoreCase*(aa: openArray[CAtom]; a: CAtom): bool =
 
 proc toAtomLowerTrace*(s: openArray[char]): CAtomTraced =
   s.toAtom().toLowerAscii().trace()
+
+proc toAtomLowerTrace*(s: DOMString): CAtomTraced =
+  s.toOpenArray().toAtomLowerTrace()
 
 proc containsIgnoreCase*(aa: openArray[CAtom]; a: StaticAtom): bool =
   return aa.containsIgnoreCase(a.toAtom())
@@ -713,12 +721,12 @@ proc fromIdx*(ctx: JSContext; atom: JSAtom; idx: var uint32): FromIdxResult =
     return fiIdx
   fiStr
 
-proc fromIdx*(ctx: JSContext; atom: JSAtom; idx: var uint32; s: var string):
-    FromIdxResult =
+proc fromIdx*(ctx: JSContext; atom: JSAtom; idx: var uint32;
+    ds: var DOMString): FromIdxResult =
   let res = ctx.fromIdx(atom, idx)
   if res != fiStr:
     return res
-  if ctx.fromJS(atom, s).isOk:
+  if ctx.fromJS(atom, ds).isOk:
     return fiStr
   fiErr
 

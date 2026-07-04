@@ -1118,7 +1118,6 @@ proc readSuccess0(bc: BufferContext; s: string; fd: cint): Request =
       of itFile:
         let file = newWebFile(s, fd)
         input.addFile(file)
-        input.invalidate()
       else:
         input.setValue(s)
       if bc.config.scripting != smFalse:
@@ -1143,8 +1142,7 @@ proc readSuccess0(bc: BufferContext; s: string; fd: cint): Request =
       return bc.implicitSubmit(input)
     of TAG_TEXTAREA:
       let textarea = HTMLTextAreaElement(focus)
-      textarea.value = s
-      textarea.invalidate()
+      textarea.setValue(s)
       if bc.config.scripting != smFalse:
         bc.window.fireEvent(satChange, textarea, bubbles = true,
           cancelable = true, trusted = true)
@@ -1566,7 +1564,10 @@ proc onReshape(bc: BufferContext; handle: PagerHandle) {.proxy: pfTask.} =
   bc.savetask = true
 
 proc markURL(bc: BufferContext; handle: PagerHandle) {.proxy.} =
-  if bc.document == nil or bc.document.body == nil:
+  if bc.document == nil:
+    return
+  let body = bc.document.findFirst(TAG_BODY)
+  if body == nil:
     return
   var buf = "("
   for i, scheme in bc.schemes.mypairs:
@@ -1579,7 +1580,7 @@ proc markURL(bc: BufferContext; handle: PagerHandle) {.proxy.} =
   # Dummy element for the fragment parsing algorithm. We can't just use parent
   # there, because e.g. plaintext would not parse the text correctly.
   let html = bc.document.newHTMLElement(TAG_DIV)
-  var stack = @[bc.document.body]
+  var stack = @[body]
   while stack.len > 0:
     let element = stack.pop()
     var texts = newSeq[Text]()
