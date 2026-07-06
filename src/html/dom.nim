@@ -4,7 +4,6 @@ import std/algorithm
 import std/hashes
 import std/math
 import std/options
-import std/posix
 import std/sets
 import std/setutils
 import std/tables
@@ -53,7 +52,6 @@ import types/refstring
 import types/url
 import types/winattrs
 import utils/dtoawrap
-import utils/strwidth
 import utils/tabutil
 import utils/twtstr
 
@@ -4743,7 +4741,8 @@ proc names(ctx: JSContext; this: HTMLCollection): JSPropertyEnumList
       continue
     if element.id != satUempty:
       ids.incl(element.id)
-    if element.namespaceURI == satNamespaceHTML:
+    if element.namespaceURI == satNamespaceHTML and
+        element.name != satUempty:
       ids.incl(element.name)
   for id in ids:
     list.add($id)
@@ -5742,16 +5741,14 @@ proc reflectAttr0(element: Element; name: CAtomTraced; has: bool;
   let name = name.toStaticAtom()
   case name
   of satId:
-    var had = false
     if element.id != satUempty:
       freeAtom(element.id)
       element.document.removeElementId(element)
-      had = true
     if has:
       element.id = value.toAtom()
     else:
       element.id = satUempty.toAtom()
-    if had and element.id != satUempty:
+    if element.id != satUempty:
       let root = element.rootNode
       if root of Document:
         Document(root).addElementId(element)
@@ -7078,7 +7075,7 @@ proc checked*(input: HTMLInputElement): bool {.inline.} =
 proc setChecked*(input: HTMLInputElement; b: bool) {.jsfset: "checked".} =
   # Note: input elements are implemented as a replaced text, so we must
   # fully invalidate them on checked change.
-  if input.inputType == itRadio:
+  if input.inputType == itRadio and b:
     for radio in input.radiogroup:
       radio.invalidate(dtChecked)
       radio.invalidate()
@@ -8098,26 +8095,6 @@ proc setValue*(this: HTMLTextAreaElement; s: sink string) =
 
 proc setValue(this: HTMLTextAreaElement; ds: DOMString) {.jsfset: "value".} =
   this.setValue($ds)
-
-proc textAreaString*(this: HTMLTextAreaElement): string =
-  result = ""
-  let rows = int64(this.attrul(satRows).get(1))
-  let cols = this.attrul(satCols).get(20)
-  var i = 0'i64
-  for line in this.value.split('\n'):
-    if i >= rows:
-      break
-    if cols > 2 and cols <= uint64(int.high):
-      result &= '[' & line.padToWidth(cols - 2) & "]\n"
-    else:
-      result &= "[]\n"
-    inc i
-  while i < rows:
-    if cols > 2 and cols <= uint64(int.high):
-      result &= '[' & ' '.repeat(int(cols - 2)) & "]\n"
-    else:
-      result &= "[]\n"
-    inc i
 
 proc defaultValue(this: HTMLTextAreaElement): string {.jsfget.} =
   this.textContent
