@@ -1,7 +1,7 @@
 {.push raises: [].}
 
+import std/algorithm
 import std/options
-import std/tables
 
 import chame/htmlparser
 import chame/tags
@@ -15,6 +15,7 @@ import monoucha/quickjs
 import monoucha/tojs
 import types/refstring
 import types/url
+import utils/twtstr
 
 # DOMBuilder implementation for Chawan.
 
@@ -56,19 +57,28 @@ proc atomToTagTypeImpl(builder: ChaDOMBuilder; atom: CAtom): TagType =
 proc tagTypeToAtomImpl(builder: ChaDOMBuilder; tagType: TagType): CAtom =
   return tagType.toAtom()
 
+proc namespaceToAtomImpl(builder: ChaDOMBuilder; ns: Namespace): CAtom =
+  return ns.toStaticAtom().toAtom()
+
 proc strToAtomImpl(builder: ChaDOMBuilder; s: string): CAtom =
   return s.toAtom()
 
 proc finish(builder: ChaDOMBuilder) =
-  while builder.document.scriptsToExecOnLoad != nil:
+  let document = builder.document
+  while document.scriptsToExecOnLoad != nil:
     #TODO spin event loop
-    let script = builder.document.scriptsToExecOnLoad
+    let script = document.scriptsToExecOnLoad
     script.execute()
     let next = script.next
-    builder.document.scriptsToExecOnLoad = next
+    document.scriptsToExecOnLoad = next
     if next == nil:
-      builder.document.scriptsToExecOnLoadTail = nil
-  #TODO events
+      document.scriptsToExecOnLoadTail = nil
+  let window = document.window
+  if document.scriptingEnabled:
+    #TODO queue DOM task, then spin event loop
+    window.fireEvent(satDOMContentLoaded, document, bubbles = true,
+      cancelable = false, trusted = true)
+  #TODO ServiceWorkerContainer etc.
 
 proc restart*(wrapper: HTML5ParserWrapper; charset: Charset) =
   let builder = wrapper.builder
@@ -128,15 +138,10 @@ proc createHTMLElementImpl(builder: ChaDOMBuilder): ParentNode =
 
 proc createElementForTokenImpl(builder: ChaDOMBuilder; localName: CAtom;
     namespace: Namespace; intendedParent: ParentNode;
-    htmlAttrs: Table[CAtom, string]; xmlAttrs: seq[ParsedAttr[CAtom]]):
-    ParentNode =
+    attrs: sink seq[ParsedAttr[CAtom]]): ParentNode =
   let document = builder.document
   let element = document.newElement(localName.view(), namespace.toStaticAtom())
-  for k, v in htmlAttrs:
-    element.attr(k.view(), v)
-  for attr in xmlAttrs:
-    element.attrns(attr.name.view(), attr.prefix,
-      attr.namespace.toStaticAtom().view(), attr.value)
+  element.sinkAttrs(move(attrs))
   element.resetElement(nil)
   if element of HTMLScriptElement:
     let script = HTMLScriptElement(element)
@@ -144,7 +149,7 @@ proc createElementForTokenImpl(builder: ChaDOMBuilder; localName: CAtom;
     script.forceAsync = false
     # Note: per standard, we could set already started to true here when we
     # are parsing from document.write, but that sounds like a horrible idea.
-  elif namespace == Namespace.SVG and localName == satSvg:
+  elif namespace == nsSVG and localName == satSvg:
     # hack to distinguish between parser-inserted SVG and dynamically added
     # SVG; TODO get rid of this
     let svg = SVGSVGElement(element)
@@ -191,12 +196,28 @@ proc moveChildrenImpl(builder: ChaDOMBuilder; fromNode, toNode: ParentNode) =
   for child in toMove:
     toNode.insert(child, nil, nil)
 
+proc sortAttrsImpl(builder: ChaDOMBuilder; attrs: var seq[ParsedAttr[CAtom]]) =
+  if attrs.len > 1:
+    attrs.sort(proc(a, b: ParsedAttr[CAtom]): int {.nimcall.} =
+      cmp(uint32(a.name), uint32(b.name))
+    )
+    var j = 1
+    var prev = attrs[0].name
+    for i in 1 ..< attrs.len:
+      let name = attrs[i].name
+      if name != prev:
+        if j < i:
+          attrs[j] = move(attrs[i])
+        inc j
+      prev = name
+    attrs.setLen(j)
+
 proc addAttrsIfMissingImpl(builder: ChaDOMBuilder; handle: ParentNode;
-    attrs: Table[CAtom, string]) =
+    attrs: seq[ParsedAttr[CAtom]]) =
   let element = Element(handle)
-  for k, v in attrs:
-    if not element.attrb(k.view()):
-      element.attr(k.view(), v)
+  for attr in attrs:
+    if not element.attrb(attr.name.view()):
+      element.attr(attr.name.view(), attr.value)
 
 proc setScriptAlreadyStartedImpl(builder: ChaDOMBuilder; script: ParentNode) =
   HTMLScriptElement(script).alreadyStarted = true
@@ -251,29 +272,22 @@ proc parseHTMLFragment*(element: Element; s: openArray[char]): seq[Node] =
   let builder = newChaDOMBuilder(url, nil, ccIrrelevant)
   let document = builder.document
   document.mode = element.document.mode
-  let state = case element.tagType
-  of TAG_TITLE, TAG_TEXTAREA: RCDATA
-  of TAG_STYLE, TAG_XMP, TAG_IFRAME, TAG_NOEMBED, TAG_NOFRAMES, TAG_SCRIPT,
-      TAG_PLAINTEXT:
-    PLAINTEXT
-  of TAG_NOSCRIPT:
-    if element.document != nil and element.document.scriptingEnabled:
-      PLAINTEXT
-    else:
-      DATA
-  else: DATA
   let root = document.newHTMLElement(TAG_HTML)
   document.insert(root, nil, nil)
   let form = element.findAncestorIncl(TAG_FORM)
-  let opts = HTML5ParserOpts[ParentNode, CAtom](
+  var opts = HTML5ParserOpts[ParentNode, CAtom](
     isIframeSrcdoc: false, #TODO?
     scripting: false,
-    ctx: some((ParentNode(element), element.localName)),
-    initialTokenizerState: state,
-    openElementsInit: @[(ParentNode(root), root.localName)],
-    pushInTemplate: element.tagType == TAG_TEMPLATE,
+    ctx: option(ParentNode(element)),
+    openElementsInit: option(ParentNode(root)),
     formInit: option(ParentNode(form))
   )
+  if element.namespaceURI == satNamespaceMathML and
+      element.localName == satAnnotationXml:
+    let encoding = element.attr(satEncoding)
+    opts.ctxIsIntegrationPoint =
+      encoding.equalsIgnoreCase("text/html") or
+      encoding.equalsIgnoreCase("application/xhtml+xml")
   var parser = initHTML5Parser(builder, opts)
   let res = parser.parseChunk(s)
   # scripting is false and confidence is certain -> this must be continue

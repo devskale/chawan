@@ -11,8 +11,8 @@
 import std/algorithm
 import std/hashes
 import std/options
-import std/sets
 import std/streams
+import std/strutils
 import std/tables
 
 import htmlparser
@@ -231,11 +231,7 @@ proc localNameStr*(element: Element): string =
 iterator attrsStr*(element: Element): tuple[name, value: string] =
   let factory = element.document.factory
   for attr in element.attrs:
-    var name = ""
-    if attr.prefix != NO_PREFIX:
-      name &= $attr.prefix & ':'
-    name &= factory.atomToStr(attr.name)
-    yield (name, attr.value)
+    yield (factory.atomToStr(attr.name), attr.value)
 
 # htmlparseriface implementation
 proc strToAtomImpl(builder: MiniDOMBuilder, s: string): MAtom =
@@ -243,6 +239,9 @@ proc strToAtomImpl(builder: MiniDOMBuilder, s: string): MAtom =
 
 proc tagTypeToAtomImpl(builder: MiniDOMBuilder; tagType: TagType): MAtom =
   return builder.factory.tagTypeToAtom(tagType)
+
+proc namespaceToAtomImpl(builder: MiniDOMBuilder; ns: Namespace): MAtom =
+  return builder.factory.strToAtom($ns)
 
 proc atomToTagTypeImpl(builder: MiniDOMBuilder; atom: MAtom): TagType =
   return atom.toTagType()
@@ -256,7 +255,7 @@ proc getParentNodeImpl(builder: MiniDOMBuilder; handle: Node): Option[Node] =
 proc createElement(document: Document; localName: MAtom; namespace: Namespace):
     Element =
   let element = if localName.toTagType() == TAG_TEMPLATE and
-      namespace == Namespace.HTML:
+      namespace == nsHTML:
     HTMLTemplateElement(
       content: DocumentFragment()
     )
@@ -269,16 +268,13 @@ proc createElement(document: Document; localName: MAtom; namespace: Namespace):
 
 proc createHTMLElementImpl(builder: MiniDOMBuilder): Node =
   let localName = builder.factory.tagTypeToAtom(TAG_HTML)
-  return builder.document.createElement(localName, Namespace.HTML)
+  return builder.document.createElement(localName, nsHTML)
 
 proc createElementForTokenImpl(builder: MiniDOMBuilder; localName: MAtom;
-    namespace: Namespace; intendedParent: Node; htmlAttrs: Table[MAtom, string];
-    xmlAttrs: seq[Attribute]): Node =
+    namespace: Namespace; intendedParent: Node; attrs: sink seq[Attribute]):
+    Node =
   let element = builder.document.createElement(localName, namespace)
-  element.attrs = xmlAttrs
-  for k, v in htmlAttrs:
-    element.attrs.add((NO_PREFIX, NO_NAMESPACE, k, v.toValidUTF8()))
-  element.attrs.sort(proc(a, b: Attribute): int = cmp(a.name, b.name))
+  element.attrs = move(attrs)
   return element
 
 proc getLocalNameImpl(builder: MiniDOMBuilder; handle: Node): MAtom =
@@ -446,21 +442,21 @@ proc moveChildrenImpl(builder: MiniDOMBuilder; fromNode, toNode: Node) =
 
 proc elementPoppedImpl(builder: MiniDOMBuilder; node: Node) =
   let popped = Element(node)
-  if popped.namespace != Namespace.HTML or popped.tagType != TAG_OPTION:
+  if popped.namespace != nsHTML or popped.tagType != TAG_OPTION:
     return
   let selected = popped.hasAttribute("selected")
   for ancestor in popped.ancestors:
     if not (ancestor of Element):
       break
     let ancestor = Element(ancestor)
-    if ancestor.namespace != Namespace.HTML or ancestor.tagType != TAG_SELECT:
+    if ancestor.namespace != nsHTML or ancestor.tagType != TAG_SELECT:
       continue
     var found: Element = nil
     for child in ancestor.descendants:
       if not (child of Element):
         continue
       let child = Element(child)
-      if child.namespace == Namespace.HTML:
+      if child.namespace == nsHTML:
         if child.tagType == TAG_OPTION and child != popped and not selected:
           # emulate selectedness by declaring the first option selected
           found = nil
@@ -475,16 +471,27 @@ proc elementPoppedImpl(builder: MiniDOMBuilder; node: Node) =
         found.childList.add(child.clone(deep = true))
     break
 
+proc sortAttrsImpl(builder: MiniDOMBuilder; attrs: var seq[Attribute]) =
+  if attrs.len > 1:
+    attrs.sort(proc(a, b: Attribute): int {.nimcall.} =
+      cmp(a.name, b.name)
+    )
+    var j = 1
+    var prev = attrs[0].name
+    for i in 1 ..< attrs.len:
+      let name = attrs[i].name
+      if name != prev:
+        if j < i:
+          attrs[j] = move(attrs[i])
+        inc j
+      prev = name
+    attrs.setLen(j)
+
 proc addAttrsIfMissingImpl(builder: MiniDOMBuilder; handle: Node;
-    attrs: Table[MAtom, string]) =
+    attrs: seq[Attribute]) =
   let element = Element(handle)
-  var oldNames = initHashSet[MAtom]()
-  for attr in element.attrs:
-    oldNames.incl(attr.name)
-  for name, value in attrs:
-    if name notin oldNames:
-      element.attrs.add((NO_PREFIX, NO_NAMESPACE, name, value.toValidUTF8()))
-  element.attrs.sort(proc(a, b: Attribute): int = cmp(a.name, b.name))
+  element.attrs.add(attrs)
+  builder.sortAttrsImpl(element.attrs)
 
 method setEncodingImpl(builder: MiniDOMBuilder; encoding: string):
     SetEncodingResult {.base.} =
@@ -505,7 +512,7 @@ proc parseFromStream(parser: var HTML5Parser[Node, MAtom];
   while true:
     let n = inputStream.readData(addr buffer[0], buffer.len)
     if n == 0: break
-    # res can be PRES_CONTINUE or PRES_SCRIPTING. PRES_STOP is only returned
+    # res can be PRES_CONTINUE or PRES_SCRIPT. PRES_STOP is only returned
     # on charset switching, and minidom does not support that.
     var res = parser.parseChunk(buffer.toOpenArray(0, n - 1))
     # Important: we must repeat parseChunk with the same contents for the script
@@ -544,32 +551,27 @@ proc parseHTMLFragment*(inputStream: Stream; element: Element;
   ## For details on the HTML fragment parsing algorithm, see
   ## https://html.spec.whatwg.org/multipage/parsing.html#parsing-html-fragments
   ##
-  ## Note: the members `ctx`, `initialTokenizerState`, `openElementsInit` and
-  ## `pushInTemplate` of `opts` are overridden (in accordance with the standard).
+  ## Note: the members `ctx` and `openElementsInit` of `opts` are
+  ## overridden (in accordance with the standard).
   let builder = newMiniDOMBuilder(factory)
   let document = builder.document
-  let state = if element.namespace != Namespace.HTML:
-    DATA
-  else:
-    case element.tagType
-    of TAG_TITLE, TAG_TEXTAREA: RCDATA
-    of TAG_STYLE, TAG_XMP, TAG_IFRAME, TAG_NOEMBED, TAG_NOFRAMES: RAWTEXT
-    of TAG_SCRIPT: SCRIPT_DATA
-    of TAG_NOSCRIPT: DATA # no scripting
-    of TAG_PLAINTEXT: PLAINTEXT
-    else: DATA
   let htmlAtom = builder.factory.tagTypeToAtom(TAG_HTML)
   let root = Element(
     localName: htmlAtom,
-    namespace: HTML,
+    namespace: nsHTML,
     document: document
   )
   document.childList = @[Node(root)]
   var opts = opts
-  opts.ctx = some((Node(element), element.localName))
-  opts.initialTokenizerState = state
-  opts.openElementsInit = @[(Node(root), htmlAtom)]
-  opts.pushInTemplate = element.tagType == TAG_TEMPLATE
+  opts.ctx = option(Node(element))
+  opts.openElementsInit = option(Node(root))
+  if element.namespace == nsMathML and
+      element.localName.toTagType() == TAG_ANNOTATION_XML:
+    let i = element.findAttribute("encoding")
+    if i >= 0:
+      let val = element.attrs[i].value.toLowerAscii()
+      opts.ctxIsIntegrationPoint =
+        val == "text/html" or val == "application/xhtml+xml"
   var parser = initHTML5Parser(builder, opts)
   parser.parseFromStream(inputStream)
   return root.childList
@@ -585,7 +587,6 @@ proc parseHTMLFragment*(s: string; element: Element): seq[Node] =
   let inputStream = newStringStream(s)
   let opts = HTML5ParserOpts[Node, MAtom](
     isIframeSrcdoc: false,
-    scripting: false,
-    pushInTemplate: element.tagType == TAG_TEMPLATE
+    scripting: false
   )
   return parseHTMLFragment(inputStream, element, opts)
