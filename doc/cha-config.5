@@ -294,6 +294,12 @@ For backwards\-compatibility, if this is \(lqmailcap\(rq and the file
 does not exist, Chawan will also check \(lqauto.mailcap\(rq.
 .RE
 .TP
+auto\-browsecap = \(lq$CHA_DIR/browsecap\(rq
+\f[B]path\f[R]
+.RS
+Browsecap file for entries that are automatically executed.
+.RE
+.TP
 cgi\-dir = [\(lq$CHA_DIR/cgi\-bin\(rq, \(lq$CHA_LIBEXEC_DIR/cgi\-bin\(rq]
 \f[B]array of paths\f[R]
 .RS
@@ -315,6 +321,16 @@ Enable local CGI compatibility with w3m.
 In short, it redirects \f[CR]file:///cgi\-bin/*\f[R] and
 \f[CR]file:///$LIB/cgi\-bin/*\f[R] to \f[CR]cgi\-bin:*\f[R].
 See \f[B]cha\-cgi\f[R](5) for details.
+Note: parts of Chawan\(cqs security model depend on not confusing
+protocols with each other, so this option is deprecated.
+If you \f[I]really\f[R] need it for some reason, you can use an
+\f[CR]auto\-browsecap\f[R] entry like
+.IP
+.EX
+file; %s%?; x\-resource; x\-cgioutput; \(rs
+  x\-match=\(ha(file:///home/me/.chawan/cgi\-bin/.*)|(file:///cgi\-bin/.*)$
+.EE
+to achive the same results (with the same caveat).
 .RE
 .TP
 download\-dir = \(lq${TMPDIR:\-/tmp}/\(rq
@@ -729,7 +745,7 @@ Currently, these are:
 .IP \(bu 2
 \f[CR]wk:\f[R] \- English Wikipedia.
 .IP \(bu 2
-\f[CR]wd:\f[R] \- English Wikitionary.
+\f[CR]wd:\f[R] \- English Wiktionary.
 .IP \(bu 2
 \f[CR]mo:\f[R] \- Mojeek.
 .PP

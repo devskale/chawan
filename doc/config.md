@@ -307,6 +307,11 @@ auto-mailcap = "\$CHA_DIR/mailcap"
   For backwards-compatibility, if this is "mailcap" and the file does not
   exist, Chawan will also check "auto.mailcap".
 
+auto-browsecap = "\$CHA_DIR/browsecap"
+: **path**
+
+: Browsecap file for entries that are automatically executed.
+
 cgi-dir = ["\$CHA_DIR/cgi-bin", "\$CHA_LIBEXEC_DIR/cgi-bin"]
 : **array of paths**
 
@@ -325,6 +330,17 @@ w3m-cgi-compat = false
 : Enable local CGI compatibility with w3m.  In short, it redirects
   `file:///cgi-bin/*` and `file:///$LIB/cgi-bin/*` to `cgi-bin:*`.
   See [**cha-cgi**](cgi.md)(5) for details.
+
+  Note: parts of Chawan's security model depend on not confusing
+  protocols with each other, so this option is deprecated.  If you *really*
+  need it for some reason, you can use an `auto-browsecap` entry like
+
+  ```
+  file; %s%?; x-resource; x-cgioutput; \
+    x-match=^(file:///home/me/.chawan/cgi-bin/.*)|(file:///cgi-bin/.*)$
+  ```
+
+  to achive the same results (with the same caveat).
 
 download-dir = "\${TMPDIR:-/tmp}/"
 : **path**
@@ -703,7 +719,7 @@ Currently, these are:
 * `ddg:` - DuckDuckGo Lite.
 * `br:` - Brave Search.
 * `wk:` - English Wikipedia.
-* `wd:` - English Wikitionary.
+* `wd:` - English Wiktionary.
 * `mo:` - Mojeek.
 
 Omnirule options:
@@ -1077,6 +1093,7 @@ searchForward, searchBackward
 
 isearchForward, searchBackward
 : **/**, **?**
+
 : Incremental-search for a string, highlighting the first result, forwards
   or backwards.
 
@@ -1152,8 +1169,7 @@ If no preceding number is input, then it is left unspecified.
 Default keybindings are highlighted in **bold**.
 
 cursorUp, cursorDown
-: **j**/**C-p**/**Up**,
-**k**/**C-n**/**Down**
+: **j**/**C-p**/**Up**, **k**/**C-n**/**Down**
 
 : Move the cursor upwards/downwards by `n` lines, or if `n` is unspecified,
   by 1.
