@@ -630,7 +630,7 @@ const PublicIdentifierStartsWith = [
   "-//WebTechs//DTD Mozilla HTML//",
 ]
 
-const SystemIdentifierMissingAndPublicIdentifierStartsWith = [
+const PublicIdentifierStartsWith2 = [
   "-//W3C//DTD HTML 4.01 Frameset//",
   "-//W3C//DTD HTML 4.01 Transitional//"
 ]
@@ -640,40 +640,32 @@ const PublicIdentifierStartsWithLimited = [
   "-//W3C//DTD XHTML 1.0 Transitional//"
 ]
 
-const SystemIdentifierNotMissingAndPublicIdentifierStartsWith = [
-  "-//W3C//DTD HTML 4.01 Frameset//",
-  "-//W3C//DTD HTML 4.01 Transitional//"
-]
-
-proc quirksConditions(name, pubid, sysid: string; flags: set[TokenFlag]): bool =
-  if tfQuirks in flags:
-    return true
+proc quirksConditions(name, pubid, sysid: string): bool =
   if name != "html":
     return true
   if sysid == "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd":
     return true
-  if tfPubid in flags:
+  if pubid != "":
     for id in PublicIdentifierEquals:
       if pubid.equalsIgnoreCase(id):
         return true
     for id in PublicIdentifierStartsWith:
       if pubid.startsWithIgnoreCase(id):
         return true
-    if tfSysid notin flags:
-      for id in SystemIdentifierMissingAndPublicIdentifierStartsWith:
+    if sysid == "":
+      for id in PublicIdentifierStartsWith2:
         if pubid.startsWithIgnoreCase(id):
           return true
   return false
 
-proc limitedQuirksConditions(pubid: string; flags: set[TokenFlag]): bool =
-  if tfPubid notin flags: return false
+proc limitedQuirksConditions(pubid, sysid: string): bool =
   for id in PublicIdentifierStartsWithLimited:
     if pubid.startsWithIgnoreCase(id):
       return true
-  if tfSysid notin flags: return false
-  for id in SystemIdentifierNotMissingAndPublicIdentifierStartsWith:
-    if pubid.startsWithIgnoreCase(id):
-      return true
+  if sysid != "":
+    for id in PublicIdentifierStartsWith2:
+      if pubid.startsWithIgnoreCase(id):
+        return true
   return false
 
 # 13.2.6.2
@@ -821,40 +813,32 @@ proc until(s: string; c1, c2: char; starti: int): string =
 
 proc extractEncFromMeta(s: string): string =
   var i = 0
-  while true: # Loop:
+  while true:
     var j = 0
-    while i < s.len:
+    while j < 7:
+      if i >= s.len:
+        return "" # "charset" not found
       let cc = s[i].toLowerAscii()
-      template check(cc: char; c: static char) =
-        if cc == c:
-          inc j
-        else:
-          j = 0
-      case j
-      of 0: check cc, 'c'
-      of 1: check cc, 'h'
-      of 2: check cc, 'a'
-      of 3: check cc, 'r'
-      of 4: check cc, 's'
-      of 5: check cc, 'e'
-      of 6: check cc, 't'
-      of 7:
+      if cc == "charset"[j]:
         inc j
-        break
-      else: discard
+      else:
+        j = int(cc == 'c') # reset to 1 on 'c' in the middle of "charset"
       inc i
-    if j < 7: return ""
-    while i < s.len and s[i] in AsciiWhitespace: inc i
-    if i >= s.len or s[i] != '=': continue
-    while i < s.len and s[i] in AsciiWhitespace: inc i
+    while i < s.len and s[i] in AsciiWhitespace:
+      inc i
+    if i >= s.len or s[i] != '=':
+      continue
+    while i < s.len and s[i] in AsciiWhitespace:
+      inc i
     break
   inc i
-  if i >= s.len: return ""
+  if i >= s.len:
+    return ""
   if s[i] in {'"', '\''}:
-    let s2 = s.until('"', '\'', i + 1)
+    var s2 = s.until('"', '\'', i + 1)
     if s2.len == 0 or s2[^1] != s[i]:
       return ""
-    return s2
+    return move(s2)
   return s.until(';', ' ', i)
 
 # Find a node in the list of active formatting elements, or return -1.
@@ -1076,9 +1060,10 @@ proc processInHTML[Handle, Atom](parser: var HTML5Parser[Handle, Atom];
         pubid.setLen(i)
       parser.appendDocumentType(name, pubid, sysid)
       if not parser.isIframeSrcdoc:
-        if quirksConditions(name, pubid, sysid, parser.tok.flags):
+        if tfQuirks in parser.tok.flags or
+            quirksConditions(name, pubid, sysid):
           parser.setQuirksMode(qmQuirks)
-        elif limitedQuirksConditions(pubid, parser.tok.flags):
+        elif limitedQuirksConditions(pubid, sysid):
           parser.setQuirksMode(qmLimitedQuirks)
       parser.insertionMode = imBeforeHtml
     else:
