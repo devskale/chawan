@@ -667,6 +667,42 @@ type
 
   HTMLParagraphElement {.final.} = ref object of HTMLElement
 
+  HTMLDivElement {.final.} = ref object of HTMLElement
+
+  HTMLDListElement {.final.} = ref object of HTMLElement
+
+  HTMLFontElement {.final.} = ref object of HTMLElement
+
+  HTMLBodyElement {.final.} = ref object of HTMLElement
+
+  HTMLHRElement {.final.} = ref object of HTMLElement
+
+  HTMLPreElement {.final.} = ref object of HTMLElement
+
+  HTMLPictureElement {.final.} = ref object of HTMLElement
+
+  HTMLEmbedElement {.final.} = ref object of HTMLElement
+
+  HTMLTrackElement {.final.} = ref object of HTMLElement
+
+  HTMLMapElement {.final.} = ref object of HTMLElement
+
+  HTMLTableColElement {.final.} = ref object of HTMLElement
+
+  HTMLTableCellElement {.final.} = ref object of HTMLElement
+
+  HTMLDataListElement {.final.} = ref object of HTMLElement
+
+  HTMLMeterElement {.final.} = ref object of HTMLElement
+
+  HTMLFieldSetElement {.final.} = ref object of HTMLElement
+
+  HTMLLegendElement {.final.} = ref object of HTMLElement
+
+  HTMLSelectedContentElement {.final.} = ref object of HTMLElement
+
+  HTMLDialogElement {.final.} = ref object of HTMLElement
+
   HTMLUnknownElement {.final.} = ref object of HTMLElement
 
 jsDestructor(Navigator)
@@ -856,8 +892,8 @@ var clickImpl*: proc(bc: RootRef; element: HTMLElement) {.nimcall, raises: [].}
 # Reflected attributes.
 type
   ReflectType = enum
-    rtStr, rtUrl, rtBool, rtLong, rtUlongGz, rtUlong, rtDoubleGz, rtFunction,
-    rtReferrerPolicy, rtCrossOrigin, rtMethod, rtForm
+    rtStr, rtStrNull, rtUrl, rtBool, rtLong, rtUlongGz, rtUlong, rtDoubleGz,
+    rtFunction, rtReferrerPolicy, rtCrossOrigin, rtMethod, rtForm
 
   ReflectEntry = object
     attrname: StaticAtom
@@ -877,6 +913,16 @@ proc makes(attrname, funcname: StaticAtom; ts: varargs[TagType]):
       attrname: attrname,
       funcname: funcname,
       t: rtStr,
+    )
+  )
+
+proc makesnull(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
+  ReflectEntryTag(
+    tags: @ts,
+    e: ReflectEntry(
+      attrname: name,
+      funcname: name,
+      t: rtStrNull,
     )
   )
 
@@ -1010,15 +1056,18 @@ proc makeform(ts: varargs[TagType]): ReflectEntryTag =
 # Note: this table only works for tag types with a registered interface.
 const ReflectMap0 = [
   # non-global attributes
-  makes(satTarget, ttA, ttArea, ttLabel, ttLink),
+  makes(satTarget, ttA, ttArea, ttBase, ttLabel, ttLink),
   makes(satHref, ttLink),
+  makesnull(satColor, ttFont),
+  makes(satFace, ttFont),
+  makes(satSize, ttFont),
   makes(satValue, ttButton, ttData),
   makel(satValue, ttLi),
   makeb(satRequired, ttInput, ttSelect, ttTextarea),
   makes(satName, ttA, ttInput, ttSelect, ttTextarea, ttMeta,
     ttIframe, ttFrame, ttImg, ttObject, ttParam, ttObject, ttMap,
-    ttForm, ttOutput, ttFieldset, ttDetails, ttSlot, ttOutput),
-  makes(satOpen, ttDetails),
+    ttForm, ttOutput, ttFieldset, ttDetails, ttSlot, ttOutput, ttFieldset),
+  makes(satOpen, ttDetails, ttDialog),
   makeb(satNovalidate, satHNoValidate, ttForm),
   makeb(satSelected, satDefaultSelected, ttOption),
   makes(satRel, ttA, ttLink, ttLabel),
@@ -1043,7 +1092,7 @@ const ReflectMap0 = [
   makem(satFormmethod, satHFormMethod, ttInput, ttButton),
   makes(satUsemap, satHUseMap, ttImg),
   makeb(satIsmap, satHIsMap, ttImg),
-  makeb(satDisabled, ttLink, ttOption, ttSelect, ttOptgroup),
+  makeb(satDisabled, ttLink, ttOption, ttSelect, ttOptgroup, ttFieldset),
   makeurl(satSrc, ttImg, ttScript, ttIframe, ttFrame, ttInput,
     ttSource),
   makeurl(satCite, ttBlockquote, ttQ, ttIns, ttDel),
@@ -2364,6 +2413,9 @@ proc removeImpl*(node: Node; suppressObservers = false) =
   let parentElement = node.parentElement
   if parentElement != nil:
     parentElement.invalidate()
+  else:
+    # we're removing all elements; the document must still be invalidated
+    document.invalid = true
   let prev = node.internalPrev
   let next = node.internalNext
   if next != nil and next.parentNode != nil:
@@ -2382,14 +2434,9 @@ proc removeImpl*(node: Node; suppressObservers = false) =
   node.parentNode = nil
   document.invalidateCollections()
   if element != nil:
-    if parentElement == nil:
-      element.invalidate()
-    element.box = nil
     if parentElement != nil and next.parentNode == parent:
       parentElement.flags.incl(efChildElIndicesInvalid)
     element.internalElIndex = 0
-    if element of SheetElement:
-      SheetElement(element).removeSheet()
   #TODO assigned
   if oldRootNode of ShadowRoot:
     let shadow = ShadowRoot(oldRootNode)
@@ -2408,7 +2455,7 @@ proc removeImpl*(node: Node; suppressObservers = false) =
       document.applyStyleDependencies(element, DependencyInfo.default)
       element.removingSteps()
       if element.custom == cesCustom and parentConnected:
-        discard #TODO call disconnectedCallback
+        discard #TODO queue disconnectedCallback
   #TODO registered observers
   if not suppressObservers:
     discard #TODO queue tree mutation record
@@ -2497,8 +2544,6 @@ proc replaceChildWith*(parent, child, node: Node; ctx: JSContext):
     node.nextSibling
   else:
     childNextSibling
-  #NOTE the standard says "if parent is not null", but the adoption step
-  # that made it necessary has been removed.
   child.removeImpl(suppressObservers = true)
   parent.insert(node, referenceChild, ctx, suppressObservers = true)
   #TODO tree mutation record
@@ -4034,6 +4079,7 @@ proc jsReflectGet0(ctx: JSContext; element: HTMLElement; magic: cint):
   let entry = ReflectMap[uint16(magic) and 0x1FF]
   case entry.t
   of rtStr: return ctx.toJS(element.attr(entry.attrname))
+  of rtStrNull: return ctx.toJS(element.attr(entry.attrname))
   of rtUrl:
     let s = element.attr(entry.attrname)
     if url := element.document.parseURL(s):
@@ -4070,10 +4116,13 @@ proc jsReflectSet0(ctx: JSContext; element: HTMLElement; val: JSValueConst;
     magic: cint): JSValue {.cdecl.} =
   let entry = ReflectMap[uint16(magic) and 0x1FF]
   case entry.t
-  of rtStr, rtUrl, rtReferrerPolicy, rtMethod:
-    var x: DOMString
-    ?ctx.fromJS(val, x)
-    element.attr(entry.attrname, x)
+  of rtStr, rtUrl, rtReferrerPolicy, rtMethod, rtStrNull:
+    if entry.t == rtStrNull and JS_IsNull(val):
+      element.attr(entry.attrname, "")
+    else:
+      var x: DOMString
+      ?ctx.fromJS(val, x)
+      element.attr(entry.attrname, x)
   of rtCrossOrigin:
     if JS_IsNull(val):
       let i = element.findAttr(entry.attrname.view())
@@ -4168,6 +4217,7 @@ proc applyQuirksSheet*(document: Document) =
   let sheet = parseStylesheet(quirks, nil, addr document.window.settings,
     coUserAgent, CAtomNullTraced)
   document.uaSheetsHead.next = sheet
+  sheet.prev = document.uaSheetsHead
   if document.documentElement != nil:
     document.documentElement.invalidate()
 
@@ -5791,7 +5841,7 @@ proc reflectAttr0(element: Element; name: CAtomTraced; has: bool;
       else:
         element.cachedStyle.decls = value.parseDeclarations()
     else:
-      element.cachedStyle = nil
+      element.cachedStyle.decls.setLen(0)
   of satUnknown: discard # early return
   elif element.scriptingEnabled and element.reflectScriptAttr(name, value):
     discard
@@ -5902,8 +5952,6 @@ proc newHTMLElement(tagType: TagType; document: Document): HTMLElement =
     let templ = HTMLTemplateElement(content: newDocumentFragment(document))
     templ.content.host = templ
     templ
-  of ttUnknown:
-    HTMLUnknownElement()
   of ttScript:
     HTMLScriptElement(forceAsync: true)
   of ttBase:
@@ -5980,8 +6028,48 @@ proc newHTMLElement(tagType: TagType; document: Document): HTMLElement =
     HTMLHtmlElement()
   of ttP:
     HTMLParagraphElement()
-  else:
+  of ttDiv:
+    HTMLDivElement()
+  of ttDl:
+    HTMLDListElement()
+  of ttFont:
+    HTMLFontElement()
+  of ttBody:
+    HTMLBodyElement()
+  of ttHr:
+    HTMLHRElement()
+  of ttPre:
+    HTMLPreElement()
+  of ttPicture:
+    HTMLPictureElement()
+  of ttEmbed:
+    HTMLEmbedElement()
+  of ttTrack:
+    HTMLTrackElement()
+  of ttMap:
+    HTMLMapElement()
+  of ttCol, ttColgroup:
+    HTMLTableColElement()
+  of ttTd, ttTh:
+    HTMLTableCellElement()
+  of ttDatalist:
+    HTMLDataListElement()
+  of ttMeter:
+    HTMLMeterElement()
+  of ttFieldset:
+    HTMLFieldSetElement()
+  of ttLegend:
+    HTMLLegendElement()
+  of ttSelectedcontent:
+    HTMLSelectedContentElement()
+  of ttArticle, ttSection, ttNav, ttAside, ttHgroup, ttHeader, ttFooter,
+      ttAddress, ttDt, ttDd, ttFigure, ttFigcaption, ttMain, ttSearch, ttEm,
+      ttStrong, ttSmall, ttS, ttCite, ttDfn, ttAbbr, ttRuby, ttRt, ttRp,
+      ttCode, ttVar, ttSamp, ttKbd, ttSub, ttSup, ttI, ttB, ttU, ttMark,
+      ttBdi, ttBdo, ttWbr, ttSummary, ttNoscript:
     HTMLElement()
+  else:
+    HTMLUnknownElement()
 
 #TODO custom elements
 proc newElement(document: Document;
@@ -6128,9 +6216,15 @@ proc insertionSteps(element: Element): bool =
   false
 
 proc removingSteps(element: Element) =
+  # We'll have to restyle on insert anyway, so don't keep style/layout data
+  # alive for out-of-tree elements.
+  element.box = nil
+  element.computed = nil
   if element of FormAssociatedElement:
     let element = FormAssociatedElement(element)
     element.resetFormOwner()
+  elif element of SheetElement:
+    SheetElement(element).removeSheet()
 
 proc postConnectionSteps(element: Element) =
   case element.tagType
@@ -7178,14 +7272,18 @@ proc isDisabled(this: SheetElement): bool =
 
 proc insertSheet(this: SheetElement) =
   if this.sheetHead != nil:
+    assert this.sheetHead.prev == nil and this.sheetTail.next == nil
     let document = this.document
     let prev = this.findPrevSheet()
     let next = this.findNextSheet()
     if prev != nil:
       prev.next = this.sheetHead
+      this.sheetHead.prev = prev
     else:
       document.authorSheetsHead = this.sheetHead
     this.sheetTail.next = next
+    if next != nil:
+      next.prev = this.sheetTail
     if document.ruleMap != nil and not this.isDisabled():
       if next == nil:
         for sheet in this.sheets:
@@ -7199,14 +7297,17 @@ proc insertSheet(this: SheetElement) =
 proc removeSheet(this: SheetElement) =
   if this.sheetHead != nil:
     let document = this.document
+    let prev = this.sheetHead.prev
     let next = this.sheetTail.next
-    let prev = this.findPrevSheet()
     if prev == nil:
       document.authorSheetsHead = next
     else:
       prev.next = next
+    if next != nil:
+      next.prev = prev
     if not this.isDisabled():
       document.ruleMap = nil
+    this.sheetHead.prev = nil
     this.sheetTail.next = nil
     let html = document.documentElement
     if html != nil:
@@ -8261,7 +8362,25 @@ proc registerElements(ctx: JSContext; nodeCID: JSClassID): Opt[void] =
   register(HTMLOutputElement, ttOutput)
   register(HTMLHtmlElement, ttHtml)
   register(HTMLParagraphElement, ttP)
-  # 48/127 (warning: the 128th interface won't fit in the top 7 bits of
+  register(HTMLDivElement, ttDiv)
+  register(HTMLDListElement, ttDl)
+  register(HTMLFontElement, ttFont)
+  register(HTMLBodyElement, ttBody)
+  register(HTMLHRElement, ttHr)
+  register(HTMLPreElement, ttPre)
+  register(HTMLPictureElement, ttPicture)
+  register(HTMLEmbedElement, ttEmbed)
+  register(HTMLTrackElement, ttTrack)
+  register(HTMLMapElement, ttMap)
+  register(HTMLTableColElement, [ttCol, ttColgroup])
+  register(HTMLTableCellElement, [ttTd, ttTh])
+  register(HTMLDataListElement, ttDatalist)
+  register(HTMLMeterElement, ttMeter)
+  register(HTMLFieldSetElement, ttFieldset)
+  register(HTMLLegendElement, ttLegend)
+  register(HTMLSelectedContentElement, ttSelectedcontent)
+  register(HTMLDialogElement, ttDialog)
+  # 65/127 (warning: the 128th interface won't fit in the top 7 bits of
   # the getter/setter magic)
   let svgElementCID = ctx.registerType(SVGElement, parent = elementCID)
   if svgElementCID == JS_INVALID_CLASS_ID:
