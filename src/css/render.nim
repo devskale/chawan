@@ -1,5 +1,6 @@
 {.push raises: [].}
 
+import config/conftypes
 import css/box
 import css/cssvalues
 import css/lunit
@@ -7,7 +8,6 @@ import html/dom
 import types/bitmap
 import types/cell
 import types/color
-import types/winattrs
 import utils/strwidth
 import utils/twtstr
 
@@ -137,8 +137,8 @@ proc setTextFormat(line: var FlexibleLine; x, cx, targetX, nx: int;
     hadStr: bool; format: Format; node: Element) =
   var fi = line.findFormatN(cx) - 1 # Skip unchanged formats before new string
   var lformat = initFormat()
-  var lnode: Element = nil
-  if fi != -1:
+  var lnode: Element
+  if fi >= 0:
     # Start by saving the old formatting before padding for later use.
     # This is important because the following code will gladly overwrite
     # said formatting.
@@ -167,10 +167,10 @@ proc setTextFormat(line: var FlexibleLine; x, cx, targetX, nx: int;
         # First format < cx => split it up
         assert pos < cx
         inc fi # insert after first format
-        line.insertFormat(cx, fi, initFormat(), nil)
+        line.insertFormat(cx, fi, initFormat(), Element(nil))
   # Now for the text's formats:
   var format = format
-  if fi == -1:
+  if fi < 0:
     # No formats => just insert a new format at 0
     inc fi
     line.insertFormat(x, fi, format, node)
@@ -335,7 +335,7 @@ proc paintBackground(grid: var FlexibleGrid; state: var RenderState;
     var sfi = line.findFormatN(startx) - 1
     if sfi == -1:
       # No format <= startx
-      line.insertFormat(startx, 0, initFormat(), nil)
+      line.insertFormat(startx, 0, initFormat(), Element(nil))
       inc sfi
     elif line.formats[sfi].pos == startx:
       # Last format equals startx => next comes after, nothing to be done
@@ -344,14 +344,14 @@ proc paintBackground(grid: var FlexibleGrid; state: var RenderState;
       # Last format lower than startx => separate format from startx
       if cx < startx and sfi == line.formats.high:
         inc sfi
-        line.insertFormat(cx, sfi, initFormat(), nil)
+        line.insertFormat(cx, sfi, initFormat(), Element(nil))
       var copy = line.formats[sfi]
       inc sfi
       copy.pos = startx
       line.insertFormat(sfi, copy)
     # Paint format backgrounds between startx and endx
     var lformat = initFormat()
-    var lnode: Element = nil
+    var lnode: Element
     var ifi = 0
     for fi, it in line.formats.toOpenArray(sfi, line.formats.high).mpairs:
       if it.pos >= endx:
@@ -368,7 +368,7 @@ proc paintBackground(grid: var FlexibleGrid; state: var RenderState;
       ifi = fi
     # Process formatting around endx
     let efi = line.findFormatN(endx, ifi) - 1
-    if efi != -1 and line.formats[efi].pos < endx and hadStr:
+    if efi >= 0 and line.formats[efi].pos < endx and hadStr:
       assert line.formats[efi].pos < endx
       line.insertFormat(endx, efi + 1, lformat, lnode)
 
@@ -536,10 +536,12 @@ proc paintBorder(grid: var FlexibleGrid; state: var RenderState;
       let sy = y.toLUnit() * state.cellSize.h
       if hasLeft:
         soff.y = sy
-        grid.setText(state, buf, soff, formatLeft, nil, box.render.clipBox)
+        grid.setText(state, buf, soff, formatLeft, Element(nil),
+          box.render.clipBox)
       if hasRight:
         eoff.y = sy
-        grid.setText(state, rbuf, eoff, formatRight, nil, box.render.clipBox)
+        grid.setText(state, rbuf, eoff, formatRight, Element(nil),
+          box.render.clipBox)
     buf.setLen(0)
   if bottom notin BorderStyleNoneHidden and not colorBottom.rgbTransparent:
     let proprietary = bottom in BorderStyleInput
@@ -588,7 +590,9 @@ proc renderBlock(grid: var FlexibleGrid; state: var RenderState;
     let bgcolor0 = box.computed{"background-color"}
     let bgcolor = bgcolor0.cellColor()
     let endOffset = offset + box.state.size
-    if bgcolor != defaultColor:
+    if bgcolor != defaultColor or
+        box.input.border.right notin BorderStyleNoneHidden and
+        not box.computed{"border-right-color"}.rgbTransparent:
       if box.computed{"-cha-bgcolor-is-canvas"} and
           state.bgcolor == defaultColor:
         #TODO bgimage

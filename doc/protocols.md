@@ -25,8 +25,8 @@ into a single `tohtml` program that dispatches based on its `argv[0]`.
 	- [Gopher](#gopher)
 	- [Finger](#finger)
 	- [Spartan](#spartan)
-* [Local schemes: file:, man:](#local-schemes-file-man)
-* [Internal schemes: cgi-bin:, stream:, cache:, data:, about:](#internal-schemes-cgi-bin-stream-cache-data-about)
+* [Local schemes: file:, man:, cgi-bin:](#local-schemes-file-man-cgi-bin)
+* [Internal schemes: stream:, cache:, data:, about:](#internal-schemes-stream-cache-data-about)
 * [Custom protocols](#custom-protocols)
 
 <!-- MANON -->
@@ -53,7 +53,7 @@ of the public domain tinfl.h decompressor by Rich Geldreich.
 Brotli decompression (Accept-Encoding: br) is supported using the
 decoder provided by the reference implementation.
 
-The `bonus` directory contains two alternative HTTP clients:
+The `bonus` directory includes two alternative HTTP clients:
 
 * curlhttp; this is the old HTTP client based on libcurl.  It can be
   built using curl-impersonate; see [README.md](../bonus/README.md) in
@@ -135,7 +135,7 @@ protocol-specific line type.  This is implemented as a sed filter for
 gemtext outputs in the CGI script (in other words, no modification to
 gmi2html was done to support this).
 
-## Local schemes: file:, man:
+## Local schemes: file:, man:, cgi-bin:
 
 While these are not necessarily *protocols*, they are implemented
 similarly to the protocols listed above (and thus can also be replaced,
@@ -151,17 +151,21 @@ also exists; this has an interface similar to `man`.  (This used to be
 based on w3mman2html.cgi, but it has been rewritten as a standalone Nim
 program.)
 
-## Internal schemes: cgi-bin:, stream:, cache:, data:, about:
+`cgi-bin:` executes a local CGI script.  This protocol is useful in cases
+where you want to wrap an external program (or a personal script), but do
+not need a custom URI scheme for it.  In fact, it simply maps to the
+browsecap entry
 
-Five internal protocols exist: `cgi-bin:`, `stream:`, `cache:`,
-`data:` and `about:`.  These are the basic building blocks for the
-implementation of every protocol mentioned above; for this reason, these
-can *not* be replaced, and are implemented in the main browser binary.
+```
+cgi-bin; %s%?; cgioutput
+```
 
-`cgi-bin:` executes a local CGI script.  This scheme is used for the
-actual implementation of the non-internal protocols mentioned above.
-Local CGI scripts can also be used to implement wrappers of other
-programs inside Chawan (e.g. dictionaries).
+See [**cha-cgi**](cgi.md)(5) for details.
+
+## Internal schemes: stream:, cache:, data:, about:
+
+These protocols are implemented directly in Chawan.  Technically, it *is*
+possible to replace them, but it is highly recommended that you don't.
 
 `stream:` is used for streams returned by external programs.  It differs
 from `cgi-bin:` in that it does not cooperate with the external process,
@@ -177,49 +181,48 @@ the buffer is discarded.
 rewinding or re-interpreting streams already downloaded.
 
 Caching works differently than in most other browsers; files are
-deterministically loaded from the cache upon certain actions, and from
-the network upon others, but neither is used as a fallback to the other.
+deterministically loaded from the cache upon certain actions, and from the
+network upon others, but neither is used as a fallback to the other.
 
-`data:` decodes a data URL as defined in RFC 2397.  This used to be a
-CGI module, but has been moved back into the loader process because
-these URLs can get so long that they no longer fit into the environment.
+`data:` decodes a data URL as defined in RFC 2397.  This cannot be
+implemented as CGI because data URLs can get so long that they no longer
+fit into the environment.
 
-`about:` is inside the loader to allow for an implementation of the
-download list panel.  It should be turned into a CGI module once the
-loader gets RPC capabilities.
-
+`about:` is inside the loader because some pages it offers require
+information about the browser's internal state (downloads in particular).
 The following about pages are available: `about:chawan`, `about:blank`,
 `about:license`, `about:downloads`.
 
 ## Custom protocols
 
-The `cha` binary itself does not know much about the protocols listed
-above; instead, it loads these through a combination of [local CGI](cgi.md),
-[urimethodmap](urimethodmap.md), and if conversion to HTML or plain text is
-necessary, [mailcap](mailcap.md) (using x-htmloutput, x-ansioutput and
-copiousoutput).
+The `cha` binary itself does not know much about the protocols
+listed above; instead, it loads these by looking up built-in browsecap
+definitions, converting them to HTML using mailcap when necessary.  See
+[**cha-cgi**](cgi.md)(5) and [**cha-mailcap**](mailcap.md)(5) for details.
 
-urimethodmap can also be used to override default handlers for the
-protocols listed above.  This is similar to how w3m allows you to
-override the default directory listing display, but much more powerful;
-this way, any library or program that can retrieve and output text
-through a certain protocol can be combined with Chawan.
+The default handlers for the protocols listed above can also be overridden
+using browsecap.  This way, any library or program (in any programming
+language) that can retrieve and output text through a certain protocol can
+be combined with Chawan.
 
-For example, consider the urimethodmap definition of `finger`:
+For example, consider the browsecap definition of `finger`:
 
 ```
-finger:		cgi-bin:finger
+finger/get;	/cgi-bin/finger %h %p %s;	cgioutput; netpath
 ```
 
-This commands Chawan to load the `finger` CGI script, setting the
-`$MAPPED_URI_*` variables to the target URL's parts in the process.
+This commands Chawan to load the `finger` CGI script, passing the hostname
+as the first parameter, the port as the second (note: this is usually the
+empty string), and the URI path as the third.  "cgioutput" means that this
+is a CGI script; "netpath" means that the protocol should have a hostname
+(so `finger:/blah` is not accepted, only `finger://example.org/blah`).
 
-Then, finger uses these passed parts to construct an appropriate
-curl command that will retrieve the specified `finger:` URL; it prints
-the header 'Content-Type: text/plain' to the output, then an empty line,
-then the body of the retrieved resource.  If an error is encountered,
-it prints a `Cha-Control` header with an error code and a specific error
-message instead.
+The script uses these arguments to construct an appropriate `nc`
+command that fetches the specified `finger:` URL; it prints the header
+'Content-Type: text/plain' to the output, then an empty line, then the
+body of the retrieved resource.  If an error is encountered, it prints
+a `Cha-Control` header with an error code and a specific error message
+instead.
 
 ### Adding a new protocol
 
@@ -253,10 +256,10 @@ printf 'Cha-Control: ControlDone\n'
 # As in HTTP, send an empty line before the body.
 printf '\n'
 
-# Print the body.  We take the path passed to the URL, which urimethodmap
-# sets as MAPPED_URI_PATH.  This is URI-encoded, so we also run the urldec
-# utility on it.
-printf '%s\n' "$MAPPED_URI_PATH" | "$CHA_LIBEXEC_DIR"/urldec | cowsay
+# Print the body.  We take the path passed to the URL, which browsecap
+# sets as the first parameter (%s).  This is URI-encoded, so we also run
+# the urldec utility on it.
+printf '%s\n' "$1" | "$CHA_LIBEXEC_DIR"/urldec | cowsay
 ```
 
 Don't forget to set the executable bit, e.g.
@@ -265,11 +268,11 @@ Don't forget to set the executable bit, e.g.
 chmod +x ~/.config/chawan/cgi-bin/cowsay.cgi
 ```
 
-Finally, create a ".urimethodmap" file in your `$HOME` directory, with the
-following content:
+Finally, create a ".chawan/browsecap" (or ~/.config/chawan/browsecap)
+with the following content:
 
 ```
-cowsay:		/cgi-bin/cowsay.cgi
+cowsay;	/cgi-bin/cowsay.cgi %s; cgioutput; resource
 ```
 
 Now try `cha cowsay:Hello,%20world.`.  If you did everything correctly,
@@ -278,4 +281,4 @@ it should wait one second, then print a cow saying "Hello, world.".
 ## See also
 
 [**cha**](cha.md)(1), [**cha-cgi**](cgi.md)(5),
-[**cha-urimethodmap**](urimethodmap.md)(5), [**cha-mailcap**](mailcap.md)(5)
+[**cha-mailcap**](mailcap.md)(5)

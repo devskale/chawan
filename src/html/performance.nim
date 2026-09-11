@@ -1,40 +1,47 @@
+{.push raises: [].}
+
 import std/math
 import std/times
 
 import config/conftypes
 import html/event
 import io/timeout
-import monoucha/fromjs
-import monoucha/jsbind
-import monoucha/jstypes
-import monoucha/quickjs
-import monoucha/tojs
-import types/jsopt
+import js/fromjs
+import js/jsbind
+import js/jsref
+import js/jstypes
+import js/jsutils
+import js/quickjs
+import js/tojs
 import types/opt
 
 type
-  Performance* {.final.} = ref object of EventTarget
-    timeOrigin {.jsget.}: float64
+  PerformanceObj {.final.} = object of EventTargetObj
+    timeOrigin: float64
     scripting: ScriptingMode
     id: uint64
 
-  PerformanceEntry = ref object of JSRootObj
-    id {.jsget.}: uint64
-    name {.jsget.}: string
-    startTime {.jsget.}: float64
-    duration {.jsget.}: float64
-    navigationId {.jsget.}: uint64
+  Performance* = JSRef[PerformanceObj]
 
-  PerformanceMark {.final.} = ref object of PerformanceEntry
-    detail {.jsget.}: JSValue
+  PerformanceEntryObj {.pure.} = object of JSRootObj
+    id: uint64
+    name: string
+    startTime: float64
+    duration: float64
+    navigationId: uint64
 
-proc finalize(rt: JSRuntime; this: PerformanceMark) {.jsfin.} =
-  JS_FreeValueRT(rt, this.detail)
+  PerformanceEntry = JSRef[PerformanceEntryObj]
 
-proc mark(rt: JSRuntime; this: PerformanceMark; markFun: JS_MarkFunc)
-    {.jsmark.} =
-  JS_MarkValue(rt, this.detail, markFun)
+  PerformanceMarkObj {.pure, final.} = object of PerformanceEntryObj
+    detail: JSValue
 
+  PerformanceMark = JSRef[PerformanceMarkObj]
+
+# Forward declarations
+proc getClassID(t: typedesc[Performance]): JSClassID
+proc getClassID(t: typedesc[PerformanceMark]): JSClassID
+
+# Performance
 proc getTime(scripting: ScriptingMode): float64 =
   if scripting == smApp:
     let t = getTime()
@@ -42,61 +49,76 @@ proc getTime(scripting: ScriptingMode): float64 =
   return float64(getUnixMillis())
 
 proc newPerformance*(scripting: ScriptingMode): Performance =
-  return Performance(timeOrigin: getTime(scripting), scripting: scripting)
-
-proc now(performance: Performance): float64 {.jsfunc.} =
-  return getTime(performance.scripting) - performance.timeOrigin
-
-proc getEntries(ctx: JSContext; performance: Performance): JSValue {.jsfunc.} =
-  return JS_NewArray(ctx)
-
-proc getEntriesByType(ctx: JSContext; performance: Performance; t: DOMString):
-    JSValue {.jsfunc.} =
-  return JS_NewArray(ctx)
-
-proc getEntriesByName(ctx: JSContext; performance: Performance;
-    name: DOMString; t: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
-  return JS_NewArray(ctx)
+  jsNew PerformanceObj(timeOrigin: getTime(scripting), scripting: scripting)
 
 proc getEntryId(this: Performance): uint64 =
   result = this.id
   inc this.id
 
+jsClassDef(Performance):
+  jsextends EventTargetDef
+
+  jsget Performance, timeOrigin
+
+  proc now(this: Performance): float64 {.jsfunc.} =
+    return getTime(this.scripting) - this.timeOrigin
+
+  proc getEntries(ctx: JSContext; this: Performance): JSValue {.jsfunc.} =
+    return JS_NewArray(ctx)
+
+  proc getEntriesByType(ctx: JSContext; this: Performance;
+      t: DOMString): JSValue {.jsfunc.} =
+    return JS_NewArray(ctx)
+
+  proc getEntriesByName(ctx: JSContext; this: Performance;
+      name: DOMString; t: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
+    return JS_NewArray(ctx)
+
+  proc mark(ctx: JSContext; this: Performance; name: DOMString;
+      init: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
+    var startTime: float64
+    if ?ctx.fromJSGetProp(init, "startTime", startTime):
+      if startTime < 0:
+        return JS_ThrowTypeError(ctx, "startTime must not be negative")
+    else:
+      startTime = this.now()
+    var detail: JSValue
+    if not ?ctx.fromJSGetProp(init, "detail", detail):
+      detail = JS_NULL
+    #TODO serialize/deserialize detail
+    let mark = jsNew PerformanceMarkObj(
+      id: this.getEntryId(),
+      name: $name,
+      startTime: startTime,
+      detail: detail
+    )
+    ctx.toJSNew(mark)
+
 # PerformanceEntry
-proc entryType(this: PerformanceEntry): string {.jsfget.} =
-  if this of PerformanceMark:
-    return "mark"
-  return ""
+jsClassDef(PerformanceEntry):
+  jsget PerformanceEntry, id
+  jsget PerformanceEntry, name
+  jsget PerformanceEntry, startTime
+  jsget PerformanceEntry, duration
+  jsget PerformanceEntry, navigationId
+
+  proc entryType(this: PerformanceEntry): string {.jsfget.} =
+    if this of PerformanceMark:
+      return "mark"
+    return ""
 
 # PerformanceMark
-#TODO constructor
+jsClassDef(PerformanceMark):
+  jsextends PerformanceEntryDef
 
-proc mark(ctx: JSContext; this: Performance; name: DOMString;
-    init: JSValueConst = JS_UNDEFINED): Opt[PerformanceMark] {.jsfunc.} =
-  var startTime: float64
-  if ?ctx.fromJSGetProp(init, "startTime", startTime):
-    if startTime < 0:
-      JS_ThrowTypeError(ctx, "startTime must not be negative")
-      return err()
-  else:
-    startTime = this.now()
-  var detail: JSValue
-  if not ?ctx.fromJSGetProp(init, "detail", detail):
-    detail = JS_NULL
-  #TODO serialize/deserialize detail
-  let mark = PerformanceMark(
-    id: this.getEntryId(),
-    name: $name,
-    startTime: startTime,
-    detail: detail
-  )
-  ok(mark)
+  jsget PerformanceMark, detail
 
-proc addPerformanceModule*(ctx: JSContext; eventTargetCID: JSClassID):
-    Opt[void] =
-  ?ctx.registerType(Performance, parent = eventTargetCID)
-  let performanceEntryCID = ctx.registerType(PerformanceEntry)
-  if performanceEntryCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(PerformanceMark, performanceEntryCID)
+  #TODO constructor
+
+proc addPerformanceModule*(ctx: JSContext): Opt[void] =
+  ?ctx.registerClass(PerformanceDef)
+  ?ctx.registerClass(PerformanceEntryDef)
+  ?ctx.registerClass(PerformanceMarkDef)
   ok()
+
+{.pop.}

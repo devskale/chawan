@@ -1,6 +1,7 @@
 {.push raises: [].}
 
 import std/algorithm
+import std/bitops
 
 import types/opt
 import utils/dtoawrap
@@ -20,6 +21,29 @@ type
     b*: uint8
     a*: uint8
 
+  # L: lightness scaled to 0..0xFFFF
+  # ua: abs(A) scaled to 0..0xFFFF
+  # ub: abs(B) scaled to 0..0xFFFF
+  # asign: sign of A
+  # bsign: sign of B
+  OklabColor* = object
+    L*: uint16
+    ua: uint16
+    ub: uint16
+    asign: int8
+    bsign: int8
+
+  HSLColor* = object
+    h*: uint16 # 0..359
+    s*: uint8 # 0..100
+    l*: uint8 # 0..100
+
+  HSLAColor* = object
+    h*: uint16 # 0..359
+    s*: uint8 # 0..100
+    l*: uint8 # 0..100
+    a*: uint8 # 0..255
+
   # Either a 3-bit ANSI color (0..7), a 3-bit bright ANSI color (8..15),
   # a color on the RGB cube (16..231), or a grayscale color (232..255).
   ANSIColor* = distinct uint8
@@ -35,16 +59,32 @@ type
   CellColor* = distinct uint32
 
   CSSColorType* = enum
-    cctARGB, cctCell, cctCurrent
+    cctArgb, cctOklab, cctCell, cctCurrent
 
-  # Color that can be represented in CSS.
-  # As an extension, we also recognize ANSI colors, so ARGB does not suffice.
-  # (Actually, it would, but then we'd have to copy over the ANSI color
-  # table and then re-quantize on render. I'm fine with wasting a few
-  # bytes instead.)
+  # Color that can be represented in CSS.  The top 6 bits are reserved for
+  # the tag.  Values (most significant bit to least significant):
+  # cctArgb: 6 bits tag, 28 bits padding, 32 bits ARGBColor.
+  # cctOklab:
+  #  tag (6 bits)
+  #  alpha (8 bits)
+  #  asign shr 7, i.e. 1 if negative, 0 if positive (1 bit)
+  #  bsign shr 7, i.e. 1 if negative, 0 if positive (1 bit)
+  #  L (16 bits)
+  #  abs(A) (16 bits)
+  #  abs(B) (16 bits)
+  # cctCell: 6 bits tag, 28 bits padding, 32 bits CellColor.
+  # cctCurrent: currentColor placeholder.
+  #  (TODO sadly, the spec says this can be used in calc(), so we'll
+  #  probably have to special case it at cascade time like var().)
   CSSColor* = distinct uint64
 
+# Forward declarations
 proc rgba*(r, g, b, a: uint8): ARGBColor
+proc oklab*(c: CSSColor): OklabColor
+proc rgb*(c: OklabColor): RGBColor
+proc oklab*(c: RGBColor): OklabColor
+proc A*(c: OklabColor): int32
+proc B*(c: OklabColor): int32
 
 # bitmasked so nimvm doesn't choke on it
 proc r*(c: ARGBColor): uint8 =
@@ -103,10 +143,10 @@ proc cellColor*(c: ANSIColor): CellColor =
 const defaultColor* = cellColor(ctNone, 0)
 
 proc cssColor(t: CSSColorType; n: uint32): CSSColor =
-  CSSColor((uint64(t) shl 32) or uint64(n))
+  CSSColor((uint64(t) shl 58) or uint64(n))
 
 proc cssColor*(c: ARGBColor): CSSColor =
-  return cssColor(cctARGB, uint32(c))
+  return cssColor(cctArgb, uint32(c))
 
 proc cssColor*(c: RGBColor): CSSColor =
   return c.argb.cssColor()
@@ -121,23 +161,54 @@ proc cssCurrentColor*(): CSSColor =
   return cssColor(cctCurrent, 0)
 
 template t*(c: CSSColor): CSSColorType =
-  cast[CSSColorType](uint64(c) shr 32)
+  cast[CSSColorType](uint64(c) shr 58)
 
-template n*(c: CSSColor): uint32 =
+template n(c: CSSColor): uint32 =
   uint32(uint64(c) and 0xFFFFFFFF'u32)
 
-proc argb*(c: CSSColor): ARGBColor =
-  return ARGBColor(c.n)
+template nw(c: CSSColor): uint64 =
+  uint64(c) and 0x3FFFFFFFFFFFFFF'u64
 
 proc a*(c: CSSColor): uint8 =
-  if c.t == cctCell:
+  case c.t
+  of cctOklab:
+    return uint8(c.nw shr 50)
+  of cctArgb:
+    return uint8(c.n shr 24)
+  of cctCell:
     if CellColor(c.n).t == ctNone:
       return 0
     return 255
-  return c.argb().a
+  of cctCurrent:
+    return 0
+
+proc argb*(c: CSSColor): ARGBColor =
+  case c.t
+  of cctArgb:
+    return ARGBColor(c.n)
+  of cctOklab:
+    return c.oklab().rgb().argb(c.a)
+  of cctCell, cctCurrent: # invalid conversion, pretend it's transparent
+    return ARGBColor(0)
+
+proc oklab*(c: CSSColor): OklabColor =
+  case c.t
+  of cctArgb:
+    return c.argb().rgb().oklab()
+  of cctOklab:
+    let n = c.nw
+    #TODO we should have an OklabColor variant with alpha
+    let asign = cast[int8](0'u8 - uint8((n shr 49) and 1))
+    let bsign = cast[int8](0'u8 - uint8((n shr 48) and 1))
+    let L = uint16(n shr 32)
+    let ua = uint16(n shr 16)
+    let ub = uint16(n)
+    return OklabColor(asign: asign, bsign: bsign, L: L, ua: ua, ub: ub)
+  of cctCell, cctCurrent: # invalid conversion, pretend it's transparent
+    return OklabColor()
 
 proc rgbTransparent*(c: CSSColor): bool =
-  return c.t == cctARGB and c.argb().a == 0
+  return c.t in {cctArgb, cctOklab} and c.a == 0
 
 proc cellColor*(c: CSSColor): CellColor =
   if c.t == cctCell:
@@ -307,32 +378,44 @@ proc namedRGBColor*(s: string): Opt[RGBColor] =
   return err()
 
 # https://html.spec.whatwg.org/#serialisation-of-a-color
-proc serialize*(c: ARGBColor): string =
-  if c.a == 255:
+proc serialize*(c: ARGBColor; html: bool): string =
+  if html and c.a == 255:
     var res = "#"
     res.pushHex(c.r)
     res.pushHex(c.g)
     res.pushHex(c.b)
     return move(res)
   let a = float64(c.a) / 255
-  result = "rgba(" & $c.r & ", " & $c.g & ", " & $c.b & ", "
-  result.addDouble(a)
-  result &= ')'
+  var res = "rgba(" & $c.r & ", " & $c.g & ", " & $c.b & ", "
+  res.addDouble(a)
+  res &= ')'
+  move(res)
 
 proc `$`*(c: ARGBColor): string =
-  return c.serialize()
+  return c.serialize(html = false)
 
 proc `$`*(c: RGBColor): string =
-  return c.argb().serialize()
+  return c.argb().serialize(html = false)
 
 proc `$`*(c: CSSColor): string =
   case c.t
   of cctCell: return "-cha-ansi(" & $c.n & ")"
   of cctCurrent: return "currentcolor"
-  of cctARGB:
+  of cctOklab:
+    #TODO should add oklch tag with same internal representation but
+    # different serialization
+    let oc = c.oklab()
+    var s = "oklab(" & $oc.L & " " & $oc.A & " " & $oc.B
+    let a = c.a
+    if a < 255:
+      s &= " / "
+      s.addDouble(float64(a) / 255)
+    s &= ')'
+    return move(s)
+  of cctArgb:
     let c = c.argb()
     if c.a != 255:
-      return c.serialize()
+      return c.serialize(html = false)
     return "rgb(" & $c.r & ", " & $c.g & ", " & $c.b & ")"
 
 proc `$`*(color: CellColor): string =
@@ -370,19 +453,14 @@ proc straight(c: ARGBColor): ARGBColor =
   let b = ((uint32(c.b) * 0xFF00 div a + 0x80) shr 8) and 0xFF
   return ARGBColor((a shl 24) or (r shl 16) or (g shl 8) or b)
 
-# Note: this is a very poor approximation, as the premultiplication
-# already discards fractions...
+# Note: this could be done more accurately, right now we discard fractions
+# too often.  (On the bright side, it's very fast.)
 proc blend*(c0, c1: ARGBColor): ARGBColor =
   let pc0 = c0.premul()
   let pc1 = c1.premul()
   let k = 255 - pc1.a
   let mc = pc0.fastmul(uint32(k))
-  let rr = pc1.r + mc.r
-  let rg = pc1.g + mc.g
-  let rb = pc1.b + mc.b
-  let ra = pc1.a + mc.a
-  let pres = rgba(rr, rg, rb, ra)
-  return straight(pres)
+  return ARGBColor(uint32(pc1) + uint32(mc)).straight()
 
 # Blending operation for cell colors.
 # Normally, this should only happen with RGB color, so if either color is
@@ -456,6 +534,11 @@ proc rgba*(r, g, b, a: int): ARGBColor =
 proc gray*(n: uint8): RGBColor =
   return rgb(n, n, n)
 
+proc roundU8(n: uint16): uint8 =
+  var n = n + 0x80
+  n += n shr 8
+  uint8(n shr 8)
+
 # I found this algorithm in yaft, but as far as I can tell, it
 # originates from Microsoft.
 proc hue2rgb(n1, n2, h: uint32): uint32 =
@@ -468,10 +551,16 @@ proc hue2rgb(n1, n2, h: uint32): uint32 =
     return n1 + ((n2 - n1) * (240 - h) + 30) div 60
   return n1
 
-proc hsla*(h: uint16; s, l, a: uint8): ARGBColor =
-  let h = uint32(h)
-  let s = uint32(s)
-  let l = uint32(l)
+proc hsla*(h: uint16; s, l, a: uint8): HSLAColor =
+  return HSLAColor(h: h, s: s, l: l, a: a)
+
+proc hsl*(h: uint16; s, l: uint8): HSLColor =
+  return HSLColor(h: h, s: s, l: l)
+
+proc rgb*(c: HSLColor): RGBColor =
+  let h = uint32(c.h)
+  let s = uint32(c.s)
+  let l = uint32(c.l)
   let magic2 = if l <= 50:
     (l * (100 + s) + 50) div 100
   else:
@@ -480,15 +569,152 @@ proc hsla*(h: uint16; s, l, a: uint8): ARGBColor =
   let r = uint8((hue2rgb(magic1, magic2, h + 120) * 255 + 50) div 100)
   let g = uint8((hue2rgb(magic1, magic2, h) * 255 + 50) div 100)
   let b = uint8((hue2rgb(magic1, magic2, h + 240) * 255 + 50) div 100)
-  return rgba(r, g, b, a)
+  return rgb(r, g, b)
 
-# Oklab -> sRGB, based on
+proc hsl*(c: RGBColor): HSLColor =
+  let r = int32(c.r)
+  let g = int32(c.g)
+  let b = int32(c.b)
+  let lo = min(r, min(g, b))
+  let hi = max(r, max(g, b))
+  var h = 0'u16
+  let ls = (uint32(lo) + uint32(hi)) * 50
+  let d = hi - lo
+  var s = 0'u32
+  if d > 0:
+    if ls > 0 and ls < 255 * 100:
+      let ld = min(ls, 255 * 100 - ls)
+      let ldmid = ld div 2
+      s = ((uint16(hi) * 100 - ls) * 100 + ldmid) div ld
+    if hi == r:
+      h = uint16(360 + (g - b) * 60 div d)
+    elif hi == g:
+      h = uint16(120 + (b - r) * 60 div d)
+    else:
+      h = uint16(240 + (r - g) * 60 div d)
+  if h >= 360:
+    h -= 360
+  return hsl(h, uint8(s), roundU8(uint16(ls)))
+
+proc hsl*(c: HSLAColor): HSLColor =
+  return hsl(c.h, c.s, c.l)
+
+proc hsla*(c: HSLColor; a: uint8): HSLAColor =
+  return hsla(c.h, c.s, c.l, a)
+
+proc hsla*(c: ARGBColor): HSLAColor =
+  return c.rgb().hsl().hsla(c.a)
+
+proc argb*(c: HSLAColor): ARGBColor =
+  return c.hsl().rgb().argb(c.a)
+
+# Oklab <-> sRGB, based on
 # http://blog.pkh.me/p/38-porting-oklab-colorspace-to-integer-arithmetic.html
-# We use a range of [-0x10000, 0x10000] to avoid integer divisions; the
-# additional bit isn't really an issue since we need a way to represent
-# "non-existent" colors anyway.
 # Also see https://bottosson.github.io/posts/oklab/
-#
+
+proc A*(c: OklabColor): int32 =
+  int32(c.ua) * c.asign
+
+proc B*(c: OklabColor): int32 =
+  int32(c.ub) * c.bsign
+
+proc roundU16(u: uint32): uint32 =
+  # Assumes u <= 0xFFFE8001.
+  var u = u
+  u += 0x8000'u32 + u shr 16
+  return uint32(u shr 16)
+
+proc roundU32(u: uint64): uint32 =
+  var u = uint64(u)
+  u += 0x80000000'u32 + u shr 32
+  return uint32(u shr 32)
+
+{.push overflowChecks: off.}
+proc roundI16(n: int64): int32 =
+  var sign = 1'i32
+  var n = n
+  if n < 0:
+    sign = -1
+    n *= -1
+  var u = uint64(n)
+  u += 0x8000'u32
+  u += u shr 16
+  return sign * int32(min(u shr 16, uint64(int32.high)))
+
+proc icbrt(x: uint32): int32 =
+  if x <= 0:
+    return 0
+  if x >= 0xFFFF:
+    return 0xFFFF
+  let x = int64(x)
+  var u = (x * ((x * (x - 0x232EB) shr 16) + 0x20412) shr 16) + 0x382B
+  # halley iterations
+  block:
+    let u3 = uint64(u * u * u)
+    let den = x + int64(roundU32(2 * u3))
+    u = (u * (2 * x + int64(roundU32(u3))) + den div 2) div den
+  block:
+    let u3 = uint64(u * u * u)
+    let den = x + int64(roundU32(2 * u3))
+    u = (u * (2 * x + int64(roundU32(u3))) + den div 2) div den
+  return int32(u)
+
+# f = (x) => x < 0.04045 ? x / 12.92 : Math.pow(((x + 0.055) / 1.055), 2.4)
+# x = [];
+# for (i = 0; i < 255; i++)
+#   x.push(Math.round(f(i/255)*0xFFFF));
+# x.join(', ')
+const SRGBToLinear = [
+  uint16 0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288,
+  313, 340, 367, 396, 427, 458, 491, 526, 562, 599, 637, 677, 718, 761, 805,
+  851, 898, 947, 997, 1048, 1101, 1156, 1212, 1270, 1330, 1391, 1453, 1517,
+  1583, 1651, 1720, 1790, 1863, 1937, 2013, 2090, 2170, 2250, 2333, 2418, 2504,
+  2592, 2681, 2773, 2866, 2961, 3058, 3157, 3258, 3360, 3464, 3570, 3678, 3788,
+  3900, 4014, 4129, 4247, 4366, 4488, 4611, 4736, 4864, 4993, 5124, 5257, 5392,
+  5530, 5669, 5810, 5953, 6099, 6246, 6395, 6547, 6700, 6856, 7014, 7174, 7335,
+  7500, 7666, 7834, 8004, 8177, 8352, 8528, 8708, 8889, 9072, 9258, 9445, 9635,
+  9828, 10022, 10219, 10417, 10619, 10822, 11028, 11235, 11446, 11658, 11873,
+  12090, 12309, 12530, 12754, 12980, 13209, 13440, 13673, 13909, 14146, 14387,
+  14629, 14874, 15122, 15371, 15623, 15878, 16135, 16394, 16656, 16920, 17187,
+  17456, 17727, 18001, 18277, 18556, 18837, 19121, 19407, 19696, 19987, 20281,
+  20577, 20876, 21177, 21481, 21787, 22096, 22407, 22721, 23038, 23357, 23678,
+  24002, 24329, 24658, 24990, 25325, 25662, 26001, 26344, 26688, 27036, 27386,
+  27739, 28094, 28452, 28813, 29176, 29542, 29911, 30282, 30656, 31033, 31412,
+  31794, 32179, 32567, 32957, 33350, 33745, 34143, 34544, 34948, 35355, 35764,
+  36176, 36591, 37008, 37429, 37852, 38278, 38706, 39138, 39572, 40009, 40449,
+  40891, 41337, 41785, 42236, 42690, 43147, 43606, 44069, 44534, 45002, 45473,
+  45947, 46423, 46903, 47385, 47871, 48359, 48850, 49344, 49841, 50341, 50844,
+  51349, 51858, 52369, 52884, 53401, 53921, 54445, 54971, 55500, 56032, 56567,
+  57105, 57646, 58190, 58737, 59287, 59840, 60396, 60955, 61517, 62082, 62650,
+  63221, 63795, 64372, 64952, 65535
+]
+
+proc linear(u: uint8): uint16 =
+  SRGBToLinear[u]
+
+proc oklab0(L, ua, ub: uint16; asign, bsign: int8): OklabColor =
+  OklabColor(L: L, ua: ua, ub: ub, asign: asign, bsign: bsign)
+
+proc oklab*(c: RGBColor): OklabColor =
+  let r = uint32(linear(c.r))
+  let g = uint32(linear(c.g))
+  let b = uint32(linear(c.b))
+  # the shift trick would overflow a 32-bit register with l and s
+  let l = (0x6987 * r + 0x894D * g + 0x0D2C * b + 0x7FFF) div 0xFFFF
+  let m = roundU16(0x363F * r + 0xAE42 * g + 0x1B7E * b)
+  let s = (0x169B * r + 0x481F * g + 0xA146 * b + 0x7FFF) div 0xFFFF
+  let lcr = icbrt(l)
+  let mcr = icbrt(m)
+  let scr = icbrt(s)
+  let L = roundU16(uint32(0x35E0 * lcr + 0xCB2A * mcr - 0x010B * scr))
+  let sa = 0x1FA5C * lcr - 0x26DB6 * mcr + 0x735A * scr
+  let sb = 0x006A2 * lcr + 0x0C863 * mcr - 0xCF05 * scr
+  let asign = if sa < 0: -1'i8 else: 1'i8
+  let bsign = if sb < 0: -1'i8 else: 1'i8
+  let ua = roundU16(uint32(sa * asign))
+  let ub = roundU16(uint32(sb * bsign))
+  return oklab0(uint16(L), uint16(ua), uint16(ub), asign, bsign)
+
 # f = (x) => x < 0.0031308 ? x*12.92 : (1.055)*Math.pow(x,(1/2.4))-0.055
 # x = [];
 # for (i = 0; i < 512; i++)
@@ -531,73 +757,83 @@ const LinearToSRGB = [
   254, 255, 255, 255
 ]
 
-proc unlinear(x: int64): uint8 =
-  if x <= 0:
+proc unlinearRound(xs: int64): uint8 =
+  if xs <= 0:
     return 0
-  if x >= 0x10000:
+  if xs >= 0xFFFD8004:
     return 255
+  let x = roundU16(uint32(xs))
   let xP = uint32(x) * 0x1FF
-  let idx = xP shr 16
-  let m = xP and 0xFFFF
+  let idx = (xP + (xP shr 16)) shr 16
+  let m = xP - 0xFFFF * idx
   let y0 = LinearToSRGB[idx]
   let y1 = LinearToSRGB[idx + 1]
-  return uint8((m * uint32(y1 - y0) + 0x8000) shr 16) + y0
+  return uint8(roundU16(m * uint32(y1 - y0))) + y0
 
-{.push overflowChecks: off.}
-proc shiftRound16(n: int64): int64 =
-  let r = if n < 0: -0x8000'i64 else: 0x8000'i64
-  (n + r) shr 16
+proc lmscr2rgb(lcr, mcr, scr: int64): RGBColor =
+  let l = (lcr * lcr * lcr) shr 32
+  let m = (mcr * mcr * mcr) shr 32
+  let s = (scr * scr * scr) shr 32
+  let r = unlinearRound(+0x413A1 * l - 0x34EC3 * m + 0x03B21 * s)
+  let g = unlinearRound(-0x144B7 * l + 0x29C16 * m - 0x05760 * s)
+  let b = unlinearRound(-0x00113 * l - 0x0B413 * m + 0x1B525 * s)
+  return rgb(r, g, b)
 
-proc shiftRound32(n: int64): int64 =
-  let r = if n < 0: -0x80000000'i64 else: 0x80000000'i64
-  (n + r) shr 32
+proc rgb*(c: OklabColor): RGBColor =
+  let L = int64(c.L)
+  let A = int64(c.A)
+  let B = int64(c.B)
+  let lcr = L + roundI16(0x6576 * A + 0x0373F * B)
+  let mcr = L - roundI16(0x1B06 * A + 0x01059 * B)
+  let scr = L - roundI16(0x16E8 * A + 0x14A9E * B)
+  lmscr2rgb(lcr, mcr, scr)
 
-# L: 0..0x10000
-# A, B: -int32.low..int32.high (with -1..1 -> -0x10000..0x10000)
-# alpha: 0..0xFF
-proc oklab*(L, A, B: int32; alpha: uint8): ARGBColor =
-  let L = int64(L)
-  let A = int64(A)
-  let B = int64(B)
-  var lc = L + shiftRound16(0x6576 * A + 0x0373F * B)
-  var mc = L - shiftRound16(0x1B06 * A + 0x01059 * B)
-  var sc = L - shiftRound16(0x16E8 * A + 0x14A9F * B)
-  if unlikely(abs(A) > 0x10000 or abs(B) > 0x10000):
-    let H = max(abs(lc), max(abs(mc), abs(sc)))
-    if H >= 0x100000:
-      # CSS has no limit on A and B range, so we scale LMS to reflect
-      # incidental behavior others exhibit on colors that "don't exist
-      # in the real world."
+# L: 0..0xFFFF
+# A, B: (int32.low + 1)..int32.high, scaled to -0xFFFF..0xFFFF
+proc oklab*(L: uint16; A, B: int32): OklabColor =
+  let asign = if A < 0: -1'i8 else: 1'i8
+  let bsign = if B < 0: -1'i8 else: 1'i8
+  var ua = uint32(A * asign)
+  var ub = uint32(B * bsign)
+  if unlikely(ua > 0xFFFF or ub > 0xFFFF):
+    # CSS has no limit on A and B range, so we scale LMS to reflect
+    # incidental behavior others exhibit on colors that "don't exist
+    # in the real world."
+    let L = int64(L)
+    let A = int64(A)
+    let B = int64(B)
+    var lcr = L + roundI16(0x6576 * A + 0x0373F * B)
+    var mcr = L - roundI16(0x1B06 * A + 0x01059 * B)
+    var scr = L - roundI16(0x16E8 * A + 0x14A9E * B)
+    let H = max(abs(lcr), max(abs(mcr), abs(scr)))
+    # Limit the lms values to a range where we can be sure they won't
+    # overflow.
+    if H > 0xFFFFF:
       let hmid = H div 2
-      lc = (lc * 0x100000 + (if lc < 0: -hmid else: hmid)) div H
-      mc = (mc * 0x100000 + (if mc < 0: -hmid else: hmid)) div H
-      sc = (sc * 0x100000 + (if sc < 0: -hmid else: hmid)) div H
-  let l = shiftRound32(lc * lc * lc)
-  let m = shiftRound32(mc * mc * mc)
-  let s = shiftRound32(sc * sc * sc)
-  let rf = (+0x413A5 * l - 0x34EC6 * m + 0x03B21 * s + 0x8000) shr 16
-  let gf = (-0x144B8 * l + 0x29C19 * m - 0x05761 * s + 0x8000) shr 16
-  let bf = (-0x00113 * l - 0x0B413 * m + 0x1B526 * s + 0x8000) shr 16
-  return rgba(unlinear(rf), unlinear(gf), unlinear(bf), alpha)
+      lcr = (lcr * 0xFFFFF + (if lcr < 0: -hmid else: hmid)) div H
+      mcr = (mcr * 0xFFFFF + (if mcr < 0: -hmid else: hmid)) div H
+      scr = (scr * 0xFFFFF + (if scr < 0: -hmid else: hmid)) div H
+    return lmscr2rgb(lcr, mcr, scr).oklab()
+  return oklab0(L, uint16(ua), uint16(ub), asign, bsign)
 
 # x=[];
-# for (i = 0; i < 90; i++)
-#   x.push(Math.round((Math.sin(i*Math.PI/180))*0x10000))
+# for (i = 0; i <= 90; i++)
+#   x.push(Math.round((Math.sin(i*Math.PI/180))*0xFFFF))
 # x.join(', ')
 const SinMap = [
-  uint16 0, 1144, 2287, 3430, 4572, 5712, 6850, 7987, 9121, 10252, 11380,
-  12505, 13626, 14742, 15855, 16962, 18064, 19161, 20252, 21336, 22415, 23486,
-  24550, 25607, 26656, 27697, 28729, 29753, 30767, 31772, 32768, 33754, 34729,
-  35693, 36647, 37590, 38521, 39441, 40348, 41243, 42126, 42995, 43852, 44695,
-  45525, 46341, 47143, 47930, 48703, 49461, 50203, 50931, 51643, 52339, 53020,
-  53684, 54332, 54963, 55578, 56175, 56756, 57319, 57865, 58393, 58903, 59396,
-  59870, 60326, 60764, 61183, 61584, 61966, 62328, 62672, 62997, 63303, 63589,
-  63856, 64104, 64332, 64540, 64729, 64898, 65048, 65177, 65287, 65376, 65446,
-  65496, 65526
+  uint16 0, 1144, 2287, 3430, 4571, 5712, 6850, 7987, 9121, 10252, 11380,
+  12505, 13625, 14742, 15854, 16962, 18064, 19161, 20251, 21336, 22414, 23486,
+  24550, 25607, 26655, 27696, 28729, 29752, 30767, 31772, 32767, 33753, 34728,
+  35693, 36647, 37589, 38521, 39440, 40347, 41243, 42125, 42995, 43851, 44695,
+  45524, 46340, 47142, 47929, 48702, 49460, 50203, 50930, 51642, 52339, 53019,
+  53683, 54331, 54962, 55577, 56174, 56755, 57318, 57864, 58392, 58902, 59395,
+  59869, 60325, 60763, 61182, 61583, 61965, 62327, 62671, 62996, 63302, 63588,
+  63855, 64103, 64331, 64539, 64728, 64897, 65047, 65176, 65286, 65375, 65445,
+  65495, 65525, 65535
 ]
 
 # n assumed to be in degrees (0..359).
-# return value is scaled to -0x10000..0x10000
+# return value is scaled to -0xFFFF..0xFFFF
 proc isin(n: uint16): int64 =
   var n = n
   var sign = 1'i64
@@ -605,24 +841,92 @@ proc isin(n: uint16): int64 =
     n -= 180
     sign = -1
   # n's range: 0..179
-  if n == 90: # won't fit in the LUT with just 16 bits
-    return sign * 0x10000
   if n > 90:
     n = 180 - n
   sign * int64(SinMap[n])
 
-# L: 0..0x10000
-# C: 0..int32.high (scaled to 0..0x10000)
+# L: 0..0xFFFF
+# C: 0..int32.high (scaled to 0..0xFFFF)
 # H: 0..359
-proc oklch*(L, C: int32; H: uint16; alpha: uint8): ARGBColor =
+proc oklch*(L: uint16; C: int32; H: uint16): OklabColor =
   var rotH = H + 90
   if rotH >= 360:
     rotH -= 360
   let cosH = isin(rotH)
   let sinH = isin(H)
-  let A = int32(shiftRound16(int64(C) * cosH))
-  let B = int32(shiftRound16(int64(C) * sinH))
-  oklab(L, A, B, alpha)
+  let A = roundI16(int64(C) * cosH)
+  let B = roundI16(int64(C) * sinH)
+  return oklab(L, A, B)
+
+proc C*(c: OklabColor): int32 =
+  # limit of A**2 + B**2 is 0xFFFF**2*2, which exceeds 32 bits
+  let A = int64(c.A)
+  let B = int64(c.B)
+  let n = A * A + B * B
+  # https://stackoverflow.com/a/63452286
+  var shift = fastLog2(n) + 1
+  shift += shift and 1
+  var res = 0
+  while shift > 0:
+    shift -= 2
+    res = (res shl 1) or 1
+    if res * res > n shr shift:
+      dec res
+  return int32(res)
+
+# Approximation from
+# S. Rajan, Sichun Wang, R. Inkol and A. Joyal,
+# "Efficient approximations for the arctangent function,"
+# in IEEE Signal Processing Magazine, vol. 23, no. 3, pp. 108-111, May 2006
+# https://ieeexplore.ieee.org/document/1628884
+# (expressed here in terms of integer arithmetic)
+# y, x: 0..0xFFFF
+proc iatan2aux(y, x: uint32): int32 =
+  var x = x
+  var y = y
+  var d = 0'i32
+  var sign = 1'i32
+  if y > x: # ensure y <= x
+    d = 90
+    sign = -1
+    swap(x, y)
+  let xmid = x div 2
+  # (45 * 0xFFFF) << 10 fits into 32 bits
+  let n1 = ((45 * y) shl 10 + xmid) div x
+  let n2 = (y * (x - y) + xmid) div x
+  # 0x3CC74 * 0xFFFF > (1 << 32) - 1, so drop some precision here
+  let lx = (x + 3) shr 2
+  let n3 = (0x3CC74 * ((y + 3) shr 2) + (lx div 2)) div lx
+  var n4 = (n2 * (0xE0523 + n3) + xmid) div x
+  n4 += 0x8000'u32 + (n4 shr 16)
+  return d + sign * int32((n1 + (n4 shr 6) + 0x80) shr 10)
+
+proc iatan2(y, x: int32): uint16 =
+  if x == 0:
+    if y > 0:
+      return 90
+    elif y < 0:
+      return 270
+    else:
+      return 0
+  var x = x
+  var y = y
+  var d = 0'u16
+  var sign = 1'i32
+  if x < 0:
+    d = 180
+    sign *= -1
+    x *= -1
+  if y < 0:
+    sign *= -1
+    y *= -1
+  d += uint16(360 + sign * iatan2aux(uint32(y), uint32(x)))
+  if d > 360:
+    d -= 360
+  return uint16(d)
+
+proc H*(c: OklabColor): uint16 =
+  return iatan2(c.B, c.A)
 {.pop.} # overflowChecks: off
 
 # Note: this assumes n notin 0..15 (which would be ANSI 4-bit)
@@ -715,17 +1019,20 @@ proc myHexValue(c: char): uint32 =
     return uint32(n)
   return 0
 
-proc parseLegacyColor0*(s: string): RGBColor =
-  if s.len <= 0:
-    return rgb(0, 0, 0)
+proc parseLegacyColor*(s: string): Result[RGBColor, cstring] =
+  if s <= "":
+    return err(cstring"color value must not be the empty string")
+  let s = s.strip(chars = AsciiWhitespace)
+  if s.equalsIgnoreCase("transparent"):
+    return err(cstring"color must not be transparent")
   if x := namedRGBColor(s):
-    return x
+    return ok(x)
   if s.len == 4 and s[0] == '#':
     let r = hexValue(s[1])
     let g = hexValue(s[2])
     let b = hexValue(s[3])
     if r != -1 and g != -1 and b != -1:
-      return rgb(uint8(r * 17), uint8(g * 17), uint8(b * 17))
+      return ok(rgb(uint8(r * 17), uint8(g * 17), uint8(b * 17)))
   # o_0
   var s2 = if s[0] == '#':
     s.substr(1)
@@ -742,6 +1049,6 @@ proc parseLegacyColor0*(s: string): RGBColor =
     (myHexValue(s2[0]) shl 20) or (myHexValue(s2[1]) shl 16) or
     (myHexValue(s2[l]) shl 12) or (myHexValue(s2[l + 1]) shl 8) or
     (myHexValue(s2[l * 2]) shl 4) or myHexValue(s2[l * 2 + 1])
-  return RGBColor(c)
+  ok(RGBColor(c))
 
 {.pop.} # raises: []

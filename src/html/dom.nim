@@ -1,13 +1,10 @@
 {.push raises: [].}
 
 import std/algorithm
-import std/hashes
 import std/math
 import std/options
 import std/setutils
-import std/tables
 import std/times
-import std/typetraits
 
 import chame/tags
 import config/conftypes
@@ -28,78 +25,37 @@ import html/script
 import io/console
 import io/dynstream
 import io/timeout
-import monoucha/fromjs
-import monoucha/jsbind
-import monoucha/jsnull
-import monoucha/jsopaque
-import monoucha/jspropenumlist
-import monoucha/jstypes
-import monoucha/jsutils
-import monoucha/quickjs
-import monoucha/tojs
+import js/fromjs
+import js/jsbind
+import js/jsnull
+import js/jsopaque
+import js/jspropenumlist
+import js/jsref
+import js/jstypes
+import js/jsutils
+import js/quickjs
+import js/tojs
 import server/headers
 import server/loaderiface
 import server/request
 import types/bitmap
 import types/blob
 import types/color
-import types/jsopt
 import types/opt
-import types/path
-import types/referrer
 import types/refstring
 import types/url
-import types/winattrs
+import utils/chahash
 import utils/dtoawrap
 import utils/tabutil
 import utils/twtstr
 
 type
-  FormMethod* = enum
-    fmGet = "get"
-    fmPost = "post"
-    fmDialog = "dialog"
-
-  FormEncodingType* = enum
-    fetUrlencoded = "application/x-www-form-urlencoded",
-    fetMultipart = "multipart/form-data",
-    fetTextPlain = "text/plain"
-
   DocumentReadyState* = enum
     rsLoading = "loading"
     rsInteractive = "interactive"
     rsComplete = "complete"
 
 type
-  InputType* = enum
-    itText = "text"
-    itButton = "button"
-    itCheckbox = "checkbox"
-    itColor = "color"
-    itDate = "date"
-    itDatetimeLocal = "datetime-local"
-    itEmail = "email"
-    itFile = "file"
-    itHidden = "hidden"
-    itImage = "image"
-    itMonth = "month"
-    itNumber = "number"
-    itPassword = "password"
-    itRadio = "radio"
-    itRange = "range"
-    itReset = "reset"
-    itSearch = "search"
-    itSubmit = "submit"
-    itTel = "tel"
-    itTime = "time"
-    itURL = "url"
-    itWeek = "week"
-
-  ButtonType* = enum
-    btSubmit = "submit"
-    btReset = "reset"
-    btButton = "button"
-
   NodeType = enum
     ntElement = (1u16, "ELEMENT_NODE")
     ntAttribute = (2u16, "ATTRIBUTE_NODE")
@@ -118,9 +74,18 @@ type
   DependencyType* = enum
     dtHover, dtChecked, dtFocus, dtTarget
 
+  DependencyItem = object
+    key: ptr ElementObj
+    value: ptr ElementObj
+    hcache: Hash
+
   DependencyMap = object
-    dependsOn: Table[Element, seq[Element]]
-    dependedBy: Table[Element, seq[Element]]
+    tab: seq[DependencyItem]
+    load: int
+
+  DependencyMapPair = object
+    dependsOn: DependencyMap
+    dependedBy: DependencyMap
 
   DependencyInfo* = array[DependencyType, seq[Element]]
 
@@ -128,83 +93,52 @@ type
     head: CSSStylesheet
     tail: CSSStylesheet
 
-  Location = ref object
-    window: Window
-
-  CachedURLImage {.final.} = ref object of StrMapItem
-    window: Window
+  CachedURLImage* {.final.} = ref object of StrMapItem
+    window*: Window #TODO weak?
     expiry: int64
     loading: bool
-    shared: seq[HTMLImageElement]
+    shared*: seq[HTMLImageElement]
     bmp: NetworkBitmap
     cacheId: int
-    t: string
+    subtype: string
 
-  WindowWeakMap* = enum
-    wwmChildren, wwmChildNodes, wwmSelectedOptions, wwmTBodies, wwmCells,
-    wwmDataset, wwmAttributes
+  CachedSVG* {.final.} = ref object of StrMapItem
+    window*: Window #TODO weak?
+    shared*: seq[SVGSVGElement] # elements that serialize to the same string
+    bmp: NetworkBitmap
+    cacheId: int
+    imageId: int
 
-  Window* {.final.} = ref object of EventTarget
+  Window* = JSRef[WindowObj]
+
+  WindowObj* {.pure, final.} = object of EventTargetObj
     bc*: RootRef # backref to BufferContext
     console*: Console
-    navigator* {.jsget.}: Navigator
-    screen* {.jsget.}: Screen
-    history* {.jsget.}: History
-    localStorage* {.jsget.}: Storage
-    sessionStorage* {.jsget.}: Storage
-    crypto* {.jsget.}: Crypto
     event*: Event
     settings*: EnvironmentSettings
     loader*: FileLoader
-    location* {.jsget.}: Location
     jsctx*: JSContext
-    document* {.jsufget.}: Document
+    document*: Document
     timeouts*: TimeoutState
     importMapsAllowed*: bool
-    inMicrotaskCheckpoint: bool
+    inMicrotaskCheckpoint*: bool
     dangerAlwaysSameOrigin*: bool # for client, insecure if Window sets true
     remoteSheetNum*: uint32
     loadedSheetNum*: uint32
     remoteImageNum*: uint32
     loadedImageNum*: uint32
-    imageURLCache: StrMap
-    svgCache*: Table[string, SVGSVGElement]
+    imageURLCache*: StrMap
+    svgCache*: StrMap
     # ID of the next image
-    imageId: int
+    imageId*: int
     # list of streams that must be closed for canvas rendering on load
     pendingCanvasCtls*: seq[CanvasRenderingContext2D]
     imageTypes*: MimeTypesImages
     userAgent*: string
-    referrer* {.jsget.}: string
-    performance* {.jsget.}: Performance
-    weakMap*: array[WindowWeakMap, JSValue]
-    customElements* {.jsget.}: CustomElementRegistry
-
-  # Navigator stuff
-  # (most of these are just shims; really there should be a framework for
-  # this so we generate less code)
-  Navigator* = ref object
-    plugins* {.jsget.}: PluginArray
-    mimeTypes* {.jsget.}: MimeTypeArray
-    permissions* {.jsget.}: Permissions
-
-  PluginArray* = ref object
-
-  MimeTypeArray* = ref object
-
-  Screen* = ref object
-
-  History* = ref object
-
-  Storage* = ref object
-    map*: seq[tuple[key, value: string]]
-
-  Crypto* = ref object
+    referrer*: string
+    performance*: Performance
+    customElements*: CustomElementRegistry
     urandom*: PosixStream
-
-  Notification* = ref object
-
-  Permissions* = ref object
 
   CECallbackType = enum
     cctConnected = "connectedCallback"
@@ -218,7 +152,7 @@ type
     cctFormDisabled = "formDisabledCallback"
     cctFormStateRestore = "formStateRestoreCallback"
 
-  CECallbackMap = array[CECallbackType, JSValue]
+  CECallbackMap = array[CECallbackType, JSCallback]
 
   CustomElementFlag = enum
     cefFormAssociated, cefInternals, cefShadow
@@ -226,21 +160,29 @@ type
   CustomElementDef = ref object
     name: CAtom
     localName: CAtom
-    ctor: JSValue
+    ctor: JSObject
     observedAttrs: seq[CAtom]
     callbacks: CECallbackMap
     flags: set[CustomElementFlag]
     next: CustomElementDef
 
-  CustomElementRegistry* = ref object
-    rt*: JSRuntime
+  CustomElementRegistryObj* = object
     defsHead: CustomElementDef
     defsTail: CustomElementDef
     inDefine: bool
     scoped: bool
     scopedDocuments: seq[Document]
 
-  NamedNodeMap = ref object
+  CustomElementRegistry = JSRef[CustomElementRegistryObj]
+
+  ElementAccessor = JSRef[ElementAccessorObj]
+
+  ElementAccessorObj {.pure.} = object of JSRootObj
+    nextAccessor: ElementAccessor
+
+  NamedNodeMap = JSRef[NamedNodeMapObj]
+
+  NamedNodeMapObj {.pure, final.} = object of ElementAccessorObj
     element: Element
     attrlist: seq[Attr]
 
@@ -266,16 +208,6 @@ type
   CollectionMatchFun = proc(this: Collection; node: Node): bool {.
     nimcall, raises: [].}
 
-  LoadSheetEnv {.final.} = ref object of BlobOpaque
-    window: Window
-    this: SheetElement
-    url: URL
-    finish: LoadSheetFinish
-    charset: Charset
-    layer: CAtomTraced
-    i: int
-    parseEnv: ParseSheetEnv
-
   ParseSheetEnv = ref object
     sheet: CSSStylesheet
     sheets: seq[LoadSheetResult]
@@ -287,58 +219,86 @@ type
   LoadSheetFinish = proc(window: Window; this: SheetElement;
     res: LoadSheetResult; env: ParseSheetEnv; i: int) {.  nimcall, raises: [].}
 
-  CollectionLikeObj = object of JSRootObj
-    root: Node
-    # if not nil, this is a live collection.  (uses a ptr instead of a ref
-    # because ORC likes to set refs to nil before the destructor is called)
+  CollectionName* = enum
+    cnUnknown # reserved for unmarked collections
+    cnChildren
+    cnChildNodes
+    cnForms
+    cnLinks
+    cnImages
+    cnGetElementsByName
+    cnGetElementsByTagName
+    cnGetElementsByClassName
+    cnGetElementsById
+    cnSelectedOptions
+    cnTBodies
+    cnRows
+    cnCells
+    cnOptions
+    cnAll
+    cnElements
+
+  CollectionLike = JSRef[CollectionLikeObj]
+
+  CollectionLikeObj {.pure.} = object of JSRootObj
+    hcache: Hash
+    root*: Node
+    # If not nil, this is a live collection.
     document: ptr DocumentObj
-    prev: ptr CollectionLikeObj
-    next: ptr CollectionLikeObj
 
-  CollectionLike = ref CollectionLikeObj
+  Collection* = JSRef[CollectionObj]
 
-  Collection = ref object of CollectionLikeObj
-    childonly: bool
-    invalid: bool
-    match: CollectionMatchFun
-    snapshot: seq[Node]
-    atoms: seq[CAtom]
+  CollectionMode* = enum
+    cmSubtree, cmChildren, cmTree
 
-  NodeIteratorLike = ref object of CollectionLikeObj
+  CollectionObj {.pure.} = object of CollectionLikeObj
+    mode*: CollectionMode
+    invalid*: bool
+    match*: CollectionMatchFun
+    snapshot*: seq[Node]
+    atoms*: seq[CAtom]
+
+  NodeIteratorLike = JSRef[NodeIteratorLikeObj]
+
+  NodeIteratorLikeObj {.pure.} = object of CollectionLikeObj
     active: bool
     whatToShow: uint32
-    filter: JSValue
+    filter: JSObject
+    currentNode: Node
 
-  NodeIterator {.final.} = ref object of NodeIteratorLike
-    referenceNode {.jsget.}: Node
+  NodeIteratorObj {.pure, final.} = object of NodeIteratorLikeObj
     iterNode: Node
-    before {.jsget: "pointerBeforeReferenceNode".}: bool
+    before: bool
     iterBefore: bool
 
-  TreeWalker {.final.} = ref object of NodeIteratorLike
-    currentNode {.jsgetset.}: Node
+  NodeIterator = JSRef[NodeIteratorObj]
 
-  NodeList = ref object of Collection
+  TreeWalkerObj {.pure, final.} = object of NodeIteratorLikeObj
 
-  HTMLCollection = ref object of Collection
+  TreeWalker = JSRef[TreeWalkerObj]
 
-  HTMLFormControlsCollection {.final.} = ref object of HTMLCollection
-    form: HTMLFormElement
+  NodeListObj* {.pure.} = object of CollectionObj
 
-  HTMLOptionsCollection {.final.} = ref object of HTMLCollection
+  NodeList = JSRef[NodeListObj]
 
-  RadioNodeList {.final.} = ref object of NodeList
-    parent: HTMLFormControlsCollection
+  HTMLCollectionObj* {.pure.} = object of CollectionObj
 
-  HTMLAllCollection {.final.} = ref object of Collection
+  HTMLCollection* = JSRef[HTMLCollectionObj]
 
-  DOMTokenList = ref object
-    toks: seq[CAtom]
+  HTMLAllCollectionObj {.pure, final.} = object of CollectionObj
+
+  HTMLAllCollection = JSRef[HTMLAllCollectionObj]
+
+  DOMTokenList* = JSRef[DOMTokenListObj]
+
+  DOMTokenListObj {.pure, final.} = object of ElementAccessorObj
+    toks: DOMTokenArrayView
     element: Element
-    localName: StaticAtom
 
-  DOMStringMap = ref object
+  DOMStringMapObj {.pure, final.} = object of ElementAccessorObj
     target: HTMLElement
+
+  DOMStringMap = JSRef[DOMStringMapObj]
 
   # Nodes are organized as doubly linked lists, which normally have
   # two unused pointers (prev of head, next of tail).  We exploit this
@@ -353,49 +313,58 @@ type
   # the next sibling by testing its parent against 0.  Do note that this
   # is also true for internalFirst if it holds a shadow root, but the two
   # cases do not conflict because a root node cannot be firstChild.
-  Node* = ref object of EventTarget
+  Node* = JSRef[NodeObj]
+
+  NodeNil = JSNullRef[NodeObj]
+
+  NodeObj {.pure.} = object of EventTargetObj
     parentNode*: ParentNode
     internalNext: Node # either nextSibling, rootNode or ownerDocument
     internalPrev: Node # either previousSibling or parentNode.lastChild
 
-  ParentNode* = ref object of Node
+  ParentNode* = JSRef[ParentNodeObj]
+
+  ParentNodeObj {.pure.} = object of NodeObj
     internalFirst: Node # either firstChild or shadow root
 
-  Attr {.final.} = ref object of Node
+  RootNode = JSRef[RootNodeObj]
+
+  RootNodeObj {.pure.} = object of ParentNodeObj
+    elementIdMap: seq[ptr ElementObj]
+    elementIdMapLoad: int
+
+  Attr = JSRef[AttrObj]
+
+  AttrObj* {.final.} = object of NodeObj
     dataIdx: int
     ownerElement: Element
-    prefix {.jsget.}: CAtom
-    localName {.jsget.}: CAtom
 
-  DOMImplementation = ref object
-    document: Document
+  DOMImplementation = distinct Document # strong ref
 
   DocumentWriteBuffer* = ref object
     data*: string
     i*: int
     prev*: DocumentWriteBuffer
 
-  Document* = ref DocumentObj
+  Document* = JSRef[DocumentObj]
 
-  DocumentObj = object of ParentNode
+  DocumentObj {.pure.} = object of RootNodeObj
     activeParserWasAborted: bool
     invalid*: bool # whether the document must be rendered again
-    charset* {.jsget, jsget: "characterSet", jsget: "inputEncoding".}: Charset
-    mode*: QuirksMode
-    readyState* {.jsget.}: DocumentReadyState
-    contentType* {.jsget.}: StaticAtom
-    window* {.jsget: "defaultView".}: Window
+    charset*: Charset
+    quirksMode*: QuirksMode
+    readyState*: DocumentReadyState
+    contentType*: StaticAtom
+    window*: Window
     url*: URL # not nil
-    currentScript {.jsget.}: HTMLScriptElement
-    implementation {.jsget.}: DOMImplementation
-    elementIdMap: seq[Element]
-    elementIdMapLoad: int
+    currentScript: HTMLScriptElement
+    implementation: JSObject
     origin: Origin
     # document.write
     ignoreDestructiveWrites: int
     throwOnDynamicMarkupInsertion*: int
     writeBuffersTop*: DocumentWriteBuffer
-    styleDependencies: array[DependencyType, DependencyMap]
+    styleDependencies: array[DependencyType, DependencyMapPair]
     scriptsToExecSoon: HTMLScriptElement
     scriptsToExecInOrder: HTMLScriptElement
     scriptsToExecInOrderTail: HTMLScriptElement
@@ -410,31 +379,42 @@ type
     authorSheetsHead: CSSStylesheet
     sheetTitle: string
     ruleMap: CSSRuleMap
-    cachedForms: HTMLCollection
-    cachedLinks: HTMLCollection
-    cachedImages: HTMLCollection
     parser*: RootRef
-    liveCollectionsHead: ptr CollectionLikeObj
-    cachedAll: HTMLAllCollection
+    liveCollections: seq[ptr CollectionLikeObj]
+    liveCollectionsLoad: int
     customElements: CustomElementRegistry #TODO ?
 
-  XMLDocument {.final.} = ref object of Document
+  XMLDocumentObj {.pure, final.} = object of DocumentObj
 
-  CharacterData* = ref object of Node
+  XMLDocument = JSRef[XMLDocumentObj]
+
+  CharacterDataObj {.pure.} = object of NodeObj
     # Note: layout assumes this is only modified directly by appending text.
-    data* {.jsgetset.}: RefString
+    data*: RefString
 
-  Text* = ref object of CharacterData
+  CharacterData* = JSRef[CharacterDataObj]
 
-  Comment* {.final.} = ref object of CharacterData
+  TextObj {.pure.} = object of CharacterDataObj
 
-  CDATASection {.final.} = ref object of Text
+  Text* = JSRef[TextObj]
 
-  ProcessingInstruction {.final.} = ref object of CharacterData
-    target {.jsget.}: string
+  CommentObj* {.pure, final.} = object of CharacterDataObj
 
-  DocumentFragment* = ref object of ParentNode
+  Comment* = JSRef[CommentObj]
+
+  CDATASectionObj {.pure, final.} = object of TextObj
+
+  CDATASection = JSRef[CDATASectionObj]
+
+  ProcessingInstructionObj {.final.} = object of CharacterDataObj
+    target: string
+
+  ProcessingInstruction = JSRef[ProcessingInstructionObj]
+
+  DocumentFragmentObj = object of RootNodeObj
     host*: Element
+
+  DocumentFragment* = JSRef[DocumentFragmentObj]
 
   ShadowRootInit = object of JSDict
     mode: ShadowRootMode
@@ -450,21 +430,25 @@ type
   SlotAssignmentMode = enum
     samNamed = "named", samManual = "manual"
 
-  ShadowRoot {.final.} = ref object of DocumentFragment
-    mode {.jsget.}: ShadowRootMode
-    delegatesFocus {.jsget.}: bool
-    slotAssignment {.jsget.}: SlotAssignmentMode
-    clonable {.jsget.}: bool
-    serializable {.jsget.}: bool
+  ShadowRootObj {.pure, final.} = object of DocumentFragmentObj
+    mode: ShadowRootMode
+    delegatesFocus: bool
+    slotAssignment: SlotAssignmentMode
+    clonable: bool
+    serializable: bool
     declarative: bool
     unsetCustomElements: bool
     customElements: CustomElementRegistry
     #TODO onslotchange
 
-  DocumentType* {.final.} = ref object of Node
-    name* {.jsget.}: string
-    publicId* {.jsget.}: string
-    systemId* {.jsget.}: string
+  ShadowRoot = JSRef[ShadowRootObj]
+
+  DocumentTypeObj {.pure, final.} = object of NodeObj
+    name*: string
+    publicId*: string
+    systemId*: string
+
+  DocumentType = JSRef[DocumentTypeObj]
 
   # Note: the `name` field in AttrData is treated as the qualified name.
   AttrData* = ParsedAttr[CAtom]
@@ -477,109 +461,87 @@ type
     cesCustom = "custom"
 
   ElementFlag = enum
-    efHint, efHover, efShadowRoot, efChildElIndicesInvalid, efRestyle
+    efHint, efHover, efShadowRoot, efChildElIndicesInvalid, efRestyle,
+    efQuirks
 
-  Element* = ref object of ParentNode
-    namespaceURI* {.jsget.}: CAtom # 4
-    tagName: CAtom # 8, like DOM tagName but not upper-cased
-    relayout*: set[PseudoElement] # 9
-    flags: set[ElementFlag] # 10
-    selfDepends: set[DependencyType] # 11
-    custom: CustomElementState # 12
-    localName* {.jsget.}: CAtom # 16
-    id* {.jsget.}: CAtom # 20
-    name: CAtom # 24
-    internalElIndex: uint32 # 28
-    # 4 bytes free
-    classList* {.jsget.}: DOMTokenList # 40
-    attrs*: seq[AttrData] # 48, sorted by int(qualifiedName)
-    cachedStyle*: CSSStyleDeclaration # 56
-    computed*: CSSValues # 64
-    box*: RootRef # 72, CSSBox
-
-  AttrDummyElement {.final.} = ref object of Element
-
-  CSSStyleDeclaration* = ref object
+  CSSStyleDeclarationObj* = object
     computed: bool
     readonly: bool
     updating: bool
     decls*: seq[CSSDeclaration]
     element: Element
 
-  HTMLElement* = ref object of Element
+  CSSStyleDeclaration* = JSRef[CSSStyleDeclarationObj]
 
-  SVGElement = ref object of Element
+  Element* = JSRef[ElementObj]
 
-  SVGSVGElement* {.final.} = ref object of SVGElement
+  ElementObj* {.pure.} = object of ParentNodeObj
+    # magic is internalElIndex
+    namespaceURI*: CAtom # 4
+    tagName: CAtom # 8
+    relayout*: set[PseudoElement] # 9
+    flags: set[ElementFlag] # 10
+    selfDepends: set[DependencyType] # 11
+    custom: CustomElementState # 12
+    localName*: CAtom # 16
+    id*: CAtom # 20
+    name*: CAtom # 24
+    classList*: DOMTokenArray # 32
+    attrs*: seq[AttrData] # 48, sorted by int(qualifiedName)
+    cachedStyle*: CSSStyleDeclaration # 56
+    computed*: CSSValues # 64
+    box*: RootRef # 72, CSSBox
+    accessorsHead: ElementAccessor # 80, JS-specific helper objects
+
+  AttrDummyElementObj {.pure, final.} = object of ElementObj
+
+  AttrDummyElement = JSRef[AttrDummyElementObj]
+
+  HTMLElementObj* {.pure.} = object of ElementObj
+
+  HTMLElement* = JSRef[HTMLElementObj]
+
+  SVGElementObj {.pure.} = object of ElementObj
+
+  SVGElement = JSRef[SVGElementObj]
+
+  SVGSVGElement* = JSRef[SVGSVGElementObj]
+
+  SVGSVGElementObj {.pure, final.} = object of SVGElementObj
     bitmap*: NetworkBitmap
     parserDocument*: Document
-    shared: seq[SVGSVGElement] # elements that serialize to the same string
     fetchStarted: bool
 
-  FormAssociatedElement* = ref object of HTMLElement
-    form*: HTMLFormElement
-    prev: FormAssociatedElement # previous control in form
-    next: FormAssociatedElement # next control in form
-    parserInserted*: bool
+  HTMLAnchorElement* = JSRef[HTMLAnchorElementObj]
 
-  HTMLInputElement* {.final.} = ref object of FormAssociatedElement
-    inputType* {.jsget: "type".}: InputType
-    internalValue: RefString
-    internalChecked {.jsget: "checked".}: bool
-    internalFiles: FileList # may be nil
-    xcoord*: int
-    ycoord*: int
+  HTMLAnchorElementObj* {.pure, final.} = object of HTMLElementObj
+    relList: DOMTokenArray
 
-  HTMLAnchorElement* {.final.} = ref object of HTMLElement
-    relList {.jsget.}: DOMTokenList
+  SheetElement = JSRef[SheetElementObj]
 
-  HTMLSelectElement* {.final.} = ref object of FormAssociatedElement
-    userValidity: bool
-    cachedOptions: HTMLOptionsCollection
-
-  HTMLSpanElement {.final.} = ref object of HTMLElement
-
-  HTMLOptGroupElement {.final.} = ref object of HTMLElement
-
-  HTMLOptionElement* {.final.} = ref object of HTMLElement
-    selected* {.jsget.}: bool
-    dirty: bool
-
-  HTMLHeadingElement {.final.} = ref object of HTMLElement
-
-  HTMLBRElement {.final.} = ref object of HTMLElement
-
-  HTMLMenuElement {.final.} = ref object of HTMLElement
-
-  HTMLUListElement {.final.} = ref object of HTMLElement
-
-  HTMLOListElement {.final.} = ref object of HTMLElement
-
-  HTMLLIElement* {.final.} = ref object of HTMLElement
-
-  SheetElement = ref object of HTMLElement
+  SheetElementObj {.pure.} = object of HTMLElementObj
     sheetHead: CSSStylesheet
     sheetTail: CSSStylesheet
 
-  HTMLStyleElement* {.final.} = ref object of SheetElement
+  HTMLStyleElement* = JSRef[HTMLStyleElementObj]
 
-  HTMLLinkElement* {.final.} = ref object of SheetElement
-    relList {.jsget.}: DOMTokenList
+  HTMLStyleElementObj {.pure, final.} = object of SheetElementObj
+
+  HTMLLinkElement* = JSRef[HTMLLinkElementObj]
+
+  HTMLLinkElementObj {.pure, final.} = object of SheetElementObj
+    relList: DOMTokenArray
     fetchStarted: bool
     enabled: Option[bool]
 
-  HTMLFormElement* {.final.} = ref object of HTMLElement
-    constructingEntryList*: bool
-    firing*: bool
-    controlsHead: FormAssociatedElement
-    controlsTail: FormAssociatedElement
-    cachedElements: HTMLFormControlsCollection
-    relList {.jsget.}: DOMTokenList
+  HTMLTemplateElement* = JSRef[HTMLTemplateElementObj]
 
-  HTMLTemplateElement* {.final.} = ref object of HTMLElement
-    content* {.jsget.}: DocumentFragment
+  HTMLTemplateElementObj {.pure, final.} = object of HTMLElementObj
+    content*: DocumentFragment
 
-  HTMLScriptElement* {.final.} = ref object of HTMLElement
+  HTMLScriptElement* = JSRef[HTMLScriptElementObj]
+
+  HTMLScriptElementObj {.pure, final.} = object of HTMLElementObj
     parserDocument*: Document
     preparationTimeDocument*: Document
     forceAsync*: bool
@@ -587,7 +549,7 @@ type
     readyForParserExec*: bool
     alreadyStarted*: bool
     delayingTheLoadEvent: bool
-    ctype: ScriptType
+    scriptType: ScriptType
     internalNonce: string
     scriptResult*: ScriptResult
     onReady: (proc(element: HTMLScriptElement) {.nimcall, raises: [].})
@@ -595,245 +557,175 @@ type
 
   OnCompleteProc = proc(element: HTMLScriptElement; res: ScriptResult)
 
-  HTMLBaseElement {.final.} = ref object of HTMLElement
+  HTMLBaseElement = JSRef[HTMLBaseElementObj]
 
-  HTMLAreaElement {.final.} = ref object of HTMLElement
-    relList {.jsget.}: DOMTokenList
+  HTMLBaseElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLButtonElement* {.final.} = ref object of FormAssociatedElement
-    ctype* {.jsget: "type".}: ButtonType
+  HTMLCanvasElement* = JSRef[HTMLCanvasElementObj]
 
-  HTMLTextAreaElement* {.final.} = ref object of FormAssociatedElement
-    dirty: bool
-    internalValue: string
-
-  HTMLLabelElement* {.final.} = ref object of HTMLElement
-
-  HTMLOutputElement {.final.} = ref object of FormAssociatedElement
-    dirty: bool
-    internalValue: string
-
-  HTMLCanvasElement* {.final.} = ref object of HTMLElement
+  HTMLCanvasElementObj {.pure, final.} = object of HTMLElementObj
     ctx2d*: CanvasRenderingContext2D
     bitmap*: NetworkBitmap
 
-  HTMLImageElement* {.final.} = ref object of HTMLElement
+  HTMLImageElement* = JSRef[HTMLImageElementObj]
+
+  HTMLImageElementObj {.pure, final.} = object of HTMLElementObj
     bitmap*: NetworkBitmap
     fetchStarted: bool
 
-  HTMLVideoElement* {.final.} = ref object of HTMLElement
+  HTMLVideoElement* = JSRef[HTMLVideoElementObj]
 
-  HTMLAudioElement* {.final.} = ref object of HTMLElement
+  HTMLVideoElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLIFrameElement {.final.} = ref object of HTMLElement
+  HTMLAudioElement* = JSRef[HTMLAudioElementObj]
 
-  HTMLTableElement {.final.} = ref object of HTMLElement
-    cachedRows: HTMLCollection
+  HTMLAudioElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLTableCaptionElement {.final.} = ref object of HTMLElement
+  HTMLIFrameElement = JSRef[HTMLIFrameElementObj]
 
-  HTMLTableSectionElement {.final.} = ref object of HTMLElement
-    cachedRows: HTMLCollection
+  HTMLIFrameElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLTableRowElement {.final.} = ref object of HTMLElement
+  HTMLTableElement = JSRef[HTMLTableElementObj]
 
-  HTMLMetaElement {.final.} = ref object of HTMLElement
+  HTMLTableElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLDetailsElement {.final.} = ref object of HTMLElement
+  HTMLTableSectionElement = JSRef[HTMLTableSectionElementObj]
 
-  HTMLFrameElement {.final.} = ref object of HTMLElement
+  HTMLTableSectionElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLTimeElement {.final.} = ref object of HTMLElement
+  HTMLTableRowElement = JSRef[HTMLTableRowElementObj]
 
-  HTMLQuoteElement {.final.} = ref object of HTMLElement
+  HTMLTableRowElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLDataElement {.final.} = ref object of HTMLElement
+  HTMLFrameElement = JSRef[HTMLFrameElementObj]
 
-  HTMLHeadElement {.final.} = ref object of HTMLElement
+  HTMLFrameElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLTitleElement {.final.} = ref object of HTMLElement
+  HTMLHeadElement = JSRef[HTMLHeadElementObj]
 
-  HTMLObjectElement {.final.} = ref object of HTMLElement
+  HTMLHeadElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLSourceElement {.final.} = ref object of HTMLElement
+  HTMLObjectElement = JSRef[HTMLObjectElementObj]
 
-  HTMLModElement {.final.} = ref object of HTMLElement
+  HTMLObjectElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLProgressElement {.final.} = ref object of HTMLElement
+  HTMLSlotElement = JSRef[HTMLSlotElementObj]
 
-  HTMLSlotElement {.final.} = ref object of HTMLElement
-
-  HTMLHtmlElement {.final.} = ref object of HTMLElement
-
-  HTMLParagraphElement {.final.} = ref object of HTMLElement
-
-  HTMLDivElement {.final.} = ref object of HTMLElement
-
-  HTMLDListElement {.final.} = ref object of HTMLElement
-
-  HTMLFontElement {.final.} = ref object of HTMLElement
-
-  HTMLBodyElement {.final.} = ref object of HTMLElement
-
-  HTMLHRElement {.final.} = ref object of HTMLElement
-
-  HTMLPreElement {.final.} = ref object of HTMLElement
-
-  HTMLPictureElement {.final.} = ref object of HTMLElement
-
-  HTMLEmbedElement {.final.} = ref object of HTMLElement
-
-  HTMLTrackElement {.final.} = ref object of HTMLElement
-
-  HTMLMapElement {.final.} = ref object of HTMLElement
-
-  HTMLTableColElement {.final.} = ref object of HTMLElement
-
-  HTMLTableCellElement {.final.} = ref object of HTMLElement
-
-  HTMLDataListElement {.final.} = ref object of HTMLElement
-
-  HTMLMeterElement {.final.} = ref object of HTMLElement
-
-  HTMLFieldSetElement {.final.} = ref object of HTMLElement
-
-  HTMLLegendElement {.final.} = ref object of HTMLElement
-
-  HTMLSelectedContentElement {.final.} = ref object of HTMLElement
-
-  HTMLDialogElement {.final.} = ref object of HTMLElement
-
-  HTMLUnknownElement {.final.} = ref object of HTMLElement
-
-jsDestructor(Navigator)
-jsDestructor(PluginArray)
-jsDestructor(MimeTypeArray)
-jsDestructor(Screen)
-jsDestructor(History)
-jsDestructor(Storage)
-jsDestructor(Crypto)
-jsDestructor(Notification)
-jsDestructor(Permissions)
-
-jsDestructor(Location)
-jsDestructor(DOMImplementation)
-jsDestructor(DOMTokenList)
-jsDestructor(DOMStringMap)
-jsDestructor(NamedNodeMap)
-jsDestructor(CSSStyleDeclaration)
-jsDestructor(CustomElementRegistry)
+  HTMLSlotElementObj {.pure, final.} = object of HTMLElementObj
 
 # Forward declarations
 proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
-  layer: CAtomTraced; finish: LoadSheetFinish; i: int; parseEnv: ParseSheetEnv)
+  layer: CAtom; finish: LoadSheetFinish; i: int; parseEnv: ParseSheetEnv)
 
 proc newCDATASection(document: Document; data: RefString): CDATASection
-proc newComment(document: Document; data: RefString): Comment
-proc newText*(document: Document; data: string): Text
-proc newText(document: Document; data: DOMString): Text
+proc newComment*(document: Document; data: RefString): Comment
+proc newText*(document: Document; data: sink string): Text
+proc newText*(document: Document; data: DOMString): Text
 proc newText(ctx: JSContext; data = initDOMStringLit("")): Text
 proc newDocument*(url: URL): Document
+proc newDOMImplementation(ctx: JSContext; document: Document): JSValue
 proc newDocumentType*(document: Document; name, publicId, systemId: string):
   DocumentType
 proc newDocumentFragment(document: Document): DocumentFragment
 proc newProcessingInstruction(document: Document; target: string;
   data: RefString): ProcessingInstruction
-proc newElement*(document: Document; localName: CAtomTraced;
+proc newElement*(document: Document; localName: CAtom;
   namespace = satNamespaceHTML): Element
 proc newElement(document: Document;
-  localName, namespaceURI, tagName: CAtomTraced): Element
+  localName, namespaceURI, tagName: sink CAtom): Element
 proc newHTMLElement*(document: Document; tagType: TagType): HTMLElement
-proc newHTMLCollection(root: Node; match: CollectionMatchFun; childonly: bool):
-  HTMLCollection
+proc newHTMLCollection(root: Node; match: CollectionMatchFun;
+  mode: CollectionMode; name: CollectionName): HTMLCollection
 proc newEmptyNodeList(): NodeList
-proc newNodeList(root: Node; match: CollectionMatchFun;
-  islive, childonly: bool): NodeList
-proc newDOMTokenList(element: Element; name: StaticAtom): DOMTokenList
+proc newNodeList(nodes: openArray[Node]): NodeList
+proc newNodeList(root: Node; match: CollectionMatchFun; mode: CollectionMode;
+  name: CollectionName): NodeList
 proc newCSSStyleDeclaration(element: Element; value: string; computed = false;
   readonly = false): CSSStyleDeclaration
 
-proc document*(node: Node): Document
-proc isConnected(node: Node): bool
-proc lastChild*(node: Node): Node
+proc isConnected*(node: Node): bool
+proc lastChild(node: Node): Node
 proc nextDescendant(node, start: Node): Node
 proc nextDescendantShadow(node, start: Node): Node
 proc parentElement*(node: Node): Element
 proc parentNodeHost(node: Node): Node
-proc parentNodeShadow(node: Node): Node
+proc previousSibling*(node: Node): Node
 proc serializeFragment(res: var string; node: Node; writeShadow: bool)
 proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
   writeShadow: bool)
 
-proc countChildren(node: ParentNode; t: NodeType): int
-proc hasChild(node: ParentNode; t: NodeType): bool
-proc hasChildExcept(node: ParentNode; t: NodeType; ex: Node): bool
-proc insert*(parent: ParentNode; node, before: Node; ctx: JSContext;
+proc getChildList*(node: ParentNode): seq[Node]
+proc insert*(parent: ParentNode; ctx: JSContext; node, before: Node;
   suppressObservers = false)
-proc replaceAll(parent: ParentNode; node: Node; ctx: JSContext)
-proc replaceAll(parent: ParentNode; ds: DOMString; ctx: JSContext)
-proc firstChild(parent: ParentNode): Node
-proc firstChildShadow(parent: ParentNode): Node
+proc replaceAll(parent: ParentNode; ctx: JSContext; node: Node)
+proc replaceAll*(parent: ParentNode; ctx: JSContext; ds: DOMString)
+proc firstChild(parent: ParentNode): lent Node
+proc lastChild*(parent: ParentNode): lent Node
+proc firstChildShadow(parent: ParentNode): lent Node
 proc nextSibling(node: Node): Node
+proc previousElementSiblingImpl(this: Node): Element
 proc setFirstChild(node: ParentNode; child: Node)
 
-proc addElementId(document: Document; element: Element)
+proc addElementId(this: RootNode; element: Element)
+proc removeElementId(this: RootNode; element: Element)
+
+proc setData(ctx: JSContext; this: CharacterData; data: DOMStringNull)
+
+proc addLiveCollection(document: Document; collection: CollectionLike)
+proc removeLiveCollection(document: Document; collection: CollectionLike)
 proc adopt(document: Document; node: Node; ctx: JSContext)
 proc applyStyleDependencies*(document: Document; element: Element;
   depends: DependencyInfo)
 proc baseURL*(document: Document): URL
 proc documentElement*(document: Document): Element
-proc getElementById*(document: Document; id: CAtomTraced): Element
-proc invalidateCollections(document: Document)
+proc findFirst*(document: Document; tagType: TagType): HTMLElement
+proc focus*(document: Document): Element
+proc invalidateCollections*(document: Document)
 proc invalidateCollectionsRemove(document: Document; node: Node)
 proc parseURL0*(document: Document; s: string): URL
 proc parseURL*(document: Document; s: string): Opt[URL]
-proc reflectEvent(document: Document; target: EventTarget;
-  name, ctype: StaticAtom; value: string; target2 = none(EventTarget))
-proc removeElementId(document: Document; element: Element)
 
 proc adjustForRemoval(iter: NodeIterator; node: Node)
 
-proc containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool
-
-proc newAttr(element: Element; dataIdx: int): Attr
+proc newAttr(document: Document; data: AttrData): Attr
 proc data(attr: Attr): lent AttrData
-proc setValue(attr: Attr; ds: DOMString)
+proc setValue(ctx: JSContext; attr: Attr; ds: DOMString)
 
 proc attachShadow(ctx: JSContext; this: Element; init: ShadowRootInit):
   Opt[ShadowRoot]
-proc attr*(element: Element; name: CAtomTraced; value: sink string)
-proc attr(element: Element; name: StaticAtom; value: sink string)
-proc attr(element: Element; name: CAtomTraced; value: DOMString)
-proc attr(element: Element; name: StaticAtom; value: DOMString)
+proc setAttr(element: Element; ctx: JSContext; name: CAtom;
+  value: DOMString)
+proc setAttr*(element: Element; ctx: JSContext; name: StaticAtom;
+  value: DOMString)
+proc setAttr(element: Element; ctx: JSContext; name: CAtom;
+  value: sink string)
+proc setAttr*(element: Element; ctx: JSContext; name: StaticAtom;
+  value: sink string)
 proc attr*(element: Element; s: StaticAtom): lent string
 proc attrb*(element: Element; at: StaticAtom): bool
-proc attrb*(element: Element; s: CAtomTraced): bool
-proc attrd(element: Element; name: StaticAtom; value: float64)
-proc attrd*(element: Element; s: StaticAtom): Opt[float64]
-proc attrdgz*(element: Element; s: StaticAtom): Opt[float64]
-proc attrl(element: Element; name: StaticAtom; value: int32)
-proc attrl*(element: Element; s: StaticAtom): Opt[int32]
-proc attrul(element: Element; name: StaticAtom; value: uint32)
-proc attrul*(element: Element; s: StaticAtom): Opt[uint32]
-proc attrulgz(element: Element; name: StaticAtom; value: uint32)
-proc attrulgz*(element: Element; s: StaticAtom): Opt[uint32]
-proc delAttr(ctx: JSContext; element: Element; i: int)
-proc dupAttrs(element: Element): seq[AttrData]
+proc delAttr(element: Element; ctx: JSContext; i: int)
+proc delAttr(element: Element; ctx: JSContext; name: CAtom)
 proc elIndex*(this: Element): uint32
 proc ensureStyle*(element: Element)
-proc findAttr(element: Element; qualifiedName: CAtomTraced): int
-proc findAttrNS(element: Element; namespace, localName: CAtomTraced): int
+proc findAttr(element: Element; qualifiedName: CAtom): int
+proc findAttrNS(element: Element; namespace, localName: CAtom): int
+proc getCachedAttributes(element: Element): NamedNodeMap
+proc getBoundingClientRect(element: Element): DOMRect
 proc getCharset(element: Element): Charset
 proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues
+proc hasClass*(element: Element; class: CAtom): bool
+proc hasInsertionSteps(element: Element): bool
 proc insertionSteps(element: Element): bool
 proc invalidate*(element: Element)
 proc invalidate*(element: Element; dep: DependencyType)
-proc jsTagName(ctx: JSContext; element: Element): JSValue
 proc nextDisplayedElement(element: Element): Element
+proc nextElementSibling*(element: Element): Element
 proc outerHTML(element: Element): string
-proc postConnectionSteps(element: Element)
+proc postConnectionSteps(element: Element; ctx: JSContext)
 proc precedes(this, other: Element): bool
 proc previousElementSibling*(element: Element): Element
+proc reflectTokens*(element: Element; arr: var DOMTokenArray; name: StaticAtom;
+  value: string)
 proc removingSteps(element: Element)
 proc scriptingEnabled(element: Element): bool
 proc shadowRoot(this: Element): ShadowRoot
@@ -841,298 +733,118 @@ proc tagType*(element: Element; namespace = satNamespaceHTML): TagType
 
 proc globalCustomElements(this: ShadowRoot): CustomElementRegistry
 
-proc crossOrigin(element: HTMLElement): CORSAttribute
-proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint):
-  JSValue {.cdecl.}
-proc referrerPolicy(element: HTMLElement): Opt[ReferrerPolicy]
+proc tagType*(element: HTMLElement): TagType
 
-proc resetFormOwner(element: FormAssociatedElement)
-proc insertSheet(this: SheetElement)
 proc removeSheet(this: SheetElement)
 proc updateSheet(this: SheetElement; head, tail: CSSStylesheet)
-proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
+proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSCallback;
   contentType = "image/png"; qualityVal: JSValueConst = JS_UNDEFINED)
 proc getImageRect(this: HTMLImageElement): tuple[w, h: float64]
-proc checked*(input: HTMLInputElement): bool {.inline.}
-proc setChecked*(input: HTMLInputElement; b: bool)
-proc value*(this: HTMLInputElement): lent string
-proc setValue*(this: HTMLInputElement; value: sink string)
 proc isDisabled(link: HTMLLinkElement): bool
-proc value*(option: HTMLOptionElement): string
-proc defaultValue(this: HTMLOutputElement): string
-proc setSelectedness(select: HTMLSelectElement)
-proc updateSheet*(this: HTMLStyleElement)
 proc execute*(element: HTMLScriptElement)
-proc prepare*(element: HTMLScriptElement)
+proc prepare*(element: HTMLScriptElement; ctx: JSContext)
 proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
   destination: RequestDestination; onComplete: OnCompleteProc)
 proc fetchSingleModule(element: HTMLScriptElement; url: URL;
   destination: RequestDestination; options: ScriptOptions; referrer: URL;
   isTopLevel: bool; onComplete: OnCompleteProc)
+proc updateSheet*(this: HTMLStyleElement)
+
+proc cssText(this: CSSStyleDeclaration): string
+
+proc getClassID(t: typedesc[AttrDummyElement]): JSClassID
+proc getClassID(t: typedesc[Attr]): JSClassID
+proc getClassID(t: typedesc[CDATASection]): JSClassID
+proc getClassID(t: typedesc[CSSStyleDeclaration]): JSClassID
+proc getClassID(t: typedesc[CharacterData]): JSClassID
+proc getClassID(t: typedesc[Collection]): JSClassID
+proc getClassID(t: typedesc[Comment]): JSClassID
+proc getClassID(t: typedesc[DOMStringMap]): JSClassID
+proc getClassID(t: typedesc[DOMTokenList]): JSClassID
+proc getClassID(t: typedesc[DocumentFragment]): JSClassID
+proc getClassID(t: typedesc[DocumentType]): JSClassID
+proc getClassID(t: typedesc[HTMLAllCollection]): JSClassID
+proc getClassID(t: typedesc[HTMLHeadElement]): JSClassID
+proc getClassID(t: typedesc[HTMLLinkElement]): JSClassID
+proc getClassID(t: typedesc[HTMLTableRowElement]): JSClassID
+proc getClassID(t: typedesc[HTMLTableSectionElement]): JSClassID
+proc getClassID(t: typedesc[NamedNodeMap]): JSClassID
+proc getClassID(t: typedesc[NodeIterator]): JSClassID
+proc getClassID(t: typedesc[ProcessingInstruction]): JSClassID
+proc getClassID(t: typedesc[RootNode]): JSClassID
+proc getClassID(t: typedesc[ShadowRoot]): JSClassID
+proc getClassID(t: typedesc[SheetElement]): JSClassID
+proc getClassID(t: typedesc[TreeWalker]): JSClassID
+proc getClassID(t: typedesc[XMLDocument]): JSClassID
+proc getClassID*(t: typedesc[Document]): JSClassID
+proc getClassID*(t: typedesc[Element]): JSClassID
+proc getClassID*(t: typedesc[HTMLAnchorElement]): JSClassID
+proc getClassID*(t: typedesc[HTMLCanvasElement]): JSClassID
+proc getClassID*(t: typedesc[HTMLCollection]): JSClassID
+proc getClassID*(t: typedesc[HTMLElement]): JSClassID
+proc getClassID*(t: typedesc[HTMLImageElement]): JSClassID
+proc getClassID*(t: typedesc[HTMLScriptElement]): JSClassID
+proc getClassID*(t: typedesc[HTMLStyleElement]): JSClassID
+proc getClassID*(t: typedesc[HTMLTemplateElement]): JSClassID
+proc getClassID*(t: typedesc[NodeList]): JSClassID
+proc getClassID*(t: typedesc[Node]): JSClassID
+proc getClassID*(t: typedesc[ParentNode]): JSClassID
+proc getClassID*(t: typedesc[SVGSVGElement]): JSClassID
+proc getClassID*(t: typedesc[Text]): JSClassID
 
 # Forward declaration hacks
-# set in css/match
-var matchesImpl*: proc(element: Element; cxsels: SelectorList): bool {.nimcall,
-  raises: [].}
-# set in html/chadombuilder
-var parseHTMLFragmentImpl*: proc(element: Element; s: openArray[char]):
-  seq[Node] {.nimcall, raises: [].}
-var parseDocumentWriteChunkImpl*: proc(wrapper: RootRef) {.nimcall, raises: [].}
-var applyStyleImpl*: proc(element: Element) {.nimcall, raises: [].}
-var getClientRectsImpl*: proc(element: Element; firstOnly, blockOnly: bool):
-  seq[DOMRect] {.nimcall, raises: [].}
-# set in server/buffer
-var sheetLoadedImpl*: proc(bc: RootRef) {.nimcall, raises: [].}
-var imageLoadedImpl*: proc(bc: RootRef) {.nimcall, raises: [].}
-var navigateImpl*: proc(bc: RootRef; url: URL) {.nimcall, raises: [].}
-var ensureLayoutImpl*: proc(bc: RootRef; element: Element) {.
-  nimcall, raises: [].}
-var clickImpl*: proc(bc: RootRef; element: HTMLElement) {.nimcall, raises: [].}
-
-# Reflected attributes.
-type
-  ReflectType = enum
-    rtStr, rtStrNull, rtUrl, rtBool, rtLong, rtUlongGz, rtUlong, rtDoubleGz,
-    rtFunction, rtReferrerPolicy, rtCrossOrigin, rtMethod, rtForm
-
-  ReflectEntry = object
-    attrname: StaticAtom
-    funcname: StaticAtom
-    t: ReflectType
-    u: uint32 # 32 bits of opaque associated data (mostly default values)
-
-  ReflectEntryTag = object
-    tags: seq[TagType]
-    e: ReflectEntry
-
-proc makes(attrname, funcname: StaticAtom; ts: varargs[TagType]):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: attrname,
-      funcname: funcname,
-      t: rtStr,
-    )
-  )
-
-proc makesnull(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtStrNull,
-    )
-  )
-
-proc makes(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
-  makes(name, name, ts)
-
-proc makeurl(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtUrl,
-    )
-  )
-
-proc makeb(attrname, funcname: StaticAtom; ts: varargs[TagType]):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: attrname,
-      funcname: funcname,
-      t: rtBool,
-    )
-  )
-
-proc makeb(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
-  makeb(name, name, ts)
-
-proc makel(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtLong,
-      u: default
-    )
-  )
-
-proc makeul(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtUlong,
-      u: default
-    )
-  )
-
-proc makeulgz(name: StaticAtom; ts: varargs[TagType]; default = 0u32):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtUlongGz,
-      u: default
-    )
-  )
-
-proc makef(name, ctype: StaticAtom): ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @[],
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtFunction,
-      u: uint32(ctype)
-    )
-  )
-
-proc makerp(attrName, funcName: StaticAtom; ts: varargs[TagType]):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: attrName,
-      funcname: funcName,
-      t: rtReferrerPolicy,
-    )
-  )
-
-proc makeco(attrName, funcName: StaticAtom; ts: varargs[TagType]):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: attrName,
-      funcname: funcName,
-      t: rtCrossOrigin,
-    )
-  )
-
-proc makem(attrname, funcname: StaticAtom; ts: varargs[TagType]):
-    ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(
-      attrname: attrname,
-      funcname: funcname,
-      t: rtMethod
-    )
-  )
-
-proc makedgz(name: StaticAtom; t: TagType; u: uint32): ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @[t],
-    e: ReflectEntry(
-      attrname: name,
-      funcname: name,
-      t: rtDoubleGz,
-      u: u,
-    )
-  )
-
-proc makem(name: StaticAtom; ts: varargs[TagType]): ReflectEntryTag =
-  makem(name, name, ts)
-
-proc makeform(ts: varargs[TagType]): ReflectEntryTag =
-  ReflectEntryTag(
-    tags: @ts,
-    e: ReflectEntry(attrname: satForm, funcname: satForm, t: rtForm)
-  )
-
-# Note: this table only works for tag types with a registered interface.
-const ReflectMap0 = [
-  # non-global attributes
-  makes(satTarget, ttA, ttArea, ttBase, ttLabel, ttLink),
-  makes(satHref, ttLink),
-  makesnull(satColor, ttFont),
-  makes(satFace, ttFont),
-  makes(satSize, ttFont),
-  makes(satValue, ttButton, ttData),
-  makel(satValue, ttLi),
-  makeb(satRequired, ttInput, ttSelect, ttTextarea),
-  makes(satName, ttA, ttInput, ttSelect, ttTextarea, ttMeta,
-    ttIframe, ttFrame, ttImg, ttObject, ttParam, ttObject, ttMap,
-    ttForm, ttOutput, ttFieldset, ttDetails, ttSlot, ttOutput, ttFieldset),
-  makes(satOpen, ttDetails, ttDialog),
-  makeb(satNovalidate, satHNoValidate, ttForm),
-  makeb(satSelected, satDefaultSelected, ttOption),
-  makes(satRel, ttA, ttLink, ttLabel),
-  makes(satFor, satHtmlFor, ttLabel, ttOutput),
-  makes(satHttpEquiv, satHHttpEquiv, ttMeta),
-  makes(satContent, ttMeta),
-  makes(satMedia, ttMeta, ttSource),
-  makes(satDatetime, satHDateTime, ttTime, ttIns, ttDel),
-  makes(satType, ttSource, ttA, ttOl, ttLink, ttScript, ttObject),
-  makeul(satCols, ttTextarea, 20u32),
-  makeul(satRows, ttTextarea, 1u32),
-  makeulgz(satSize, ttSelect, 0u32),
-  makeulgz(satSize, ttInput, 20u32),
-  makeul(satWidth, ttCanvas, ttSource, 300u32),
-  makeul(satHeight, ttCanvas, ttSource, 150u32),
-  makes(satAlt, ttImg),
-  makes(satSrcset, ttImg, ttSource),
-  makes(satSizes, ttImg, ttSource),
-  makeco(satCrossorigin, satHCrossOrigin, ttImg, ttScript),
-  makerp(satReferrerpolicy, satHReferrerPolicy, ttImg, ttScript),
-  makem(satMethod, ttForm),
-  makem(satFormmethod, satHFormMethod, ttInput, ttButton),
-  makes(satUsemap, satHUseMap, ttImg),
-  makeb(satIsmap, satHIsMap, ttImg),
-  makeb(satDisabled, ttLink, ttOption, ttSelect, ttOptgroup, ttFieldset),
-  makeurl(satSrc, ttImg, ttScript, ttIframe, ttFrame, ttInput,
-    ttSource),
-  makeurl(satCite, ttBlockquote, ttQ, ttIns, ttDel),
-  makeurl(satHref, ttLink),
-  makeurl(satData, ttObject),
-  makedgz(satValue, ttProgress, 0),
-  makedgz(satMax, ttProgress, 1),
-  makeform(ttButton, ttInput, ttOutput, ttSelect, ttTextarea),
-  # super-global attributes
-  makes(satClass, satClassName),
-  makef(satOnclick, satClick),
-  makef(satOninput, satInput),
-  makef(satOnchange, satChange),
-  makef(satOnload, satLoad),
-  makef(satOnerror, satError),
-  makef(satOnblur, satBlur),
-  makef(satOnfocus, satFocus),
-  makef(satOnsubmit, satSubmit),
-  makef(satOncontextmenu, satContextmenu),
-  makef(satOndblclick, satDblclick),
-  makes(satSlot),
-  makes(satTitle),
-  makes(satLang),
-]
-
-static:
-  # In the reflection magic we allocate 9 bits to attribute names and 7 bits
-  # to class names.
-  doAssert ReflectMap0.len < 512
-
-const LabelableElements = {
-  # input only if type not hidden
-  ttButton, ttInput, ttMeter, ttOutput, ttProgress, ttSelect,
-  ttTextarea
-}
+proc matchesList(element: Element; cxsels: SelectorList): bool {.
+  importc: "cha_$1".}
+proc parseHTMLFragment(ctx: JSContext; element: Element; s: openArray[char]):
+  seq[Node] {.importc: "cha_$1".}
+proc parseDocumentWriteChunk(wrapper: RootRef) {.importc: "cha_$1".}
+proc applyStyle(element: Element) {.importc: "cha_$1".}
+proc getClientRects(element: Element; firstOnly, blockOnly: bool): seq[DOMRect]
+  {.importc: "cha_$1".}
+proc sheetLoaded(bc: RootRef) {.importc: "cha_$1".}
+proc imageLoaded(bc: RootRef) {.importc: "cha_$1".}
+proc navigate(bc: RootRef; url: URL) {.importc: "cha_$1".}
+proc ensureLayout(bc: RootRef; element: Element) {.importc: "cha_$1".}
+proc clickCallback(bc: RootRef; element: HTMLElement) {.importc: "cha_$1".}
+proc unlinkElementBox(element: Element) {.importc: "cha_$1".}
+proc insertionStepsForm(element: Element) {.importc: "cha_$1".}
+proc removingStepsForm(element: Element) {.importc: "cha_$1".}
+proc cloningStepsForm(old, clone: Element) {.importc: "cha_$1".}
+proc reflectAttributeForm(element: Element; name: StaticAtom; has: bool;
+  value: string) {.importc: "cha_$1".}
+proc hasInsertionStepsForm(element: Element): bool {.importc: "cha_$1".}
+proc getElementForm(element: Element): HTMLElement {.importc: "cha_$1".}
+proc getFormMethodAttr(element: Element; name: StaticAtom): string {.
+  importc: "cha_$1".}
+proc newHTMLElementForm(tagType: TagType): HTMLElement {.importc: "cha_$1".}
 
 const VoidElements = {
   ttArea, ttBase, ttBr, ttCol, ttEmbed, ttHr, ttImg, ttInput,
   ttLink, ttMeta, ttSource, ttTrack, ttWbr
 }
+
+# Converters
+template asNode*[T: NodeObj](x: JSRef[T]): Node =
+  Node(x)
+
+template asParentNode*[T: ParentNodeObj](x: JSRef[T]): ParentNode =
+  ParentNode(x)
+
+template asRootNode*[T: RootNodeObj](x: JSRef[T]): RootNode =
+  RootNode(x)
+
+template asElement*[T: ElementObj](x: JSRef[T]): Element =
+  Element(x)
+
+template asSheetElement[T: SheetElementObj](x: JSRef[T]): SheetElement =
+  SheetElement(x)
+
+template asHTMLElement*[T: HTMLElementObj](x: JSRef[T]): HTMLElement =
+  HTMLElement(x)
+
+template asElementAccessor[T: ElementAccessorObj](x: JSRef[T]):
+    ElementAccessor =
+  ElementAccessor(x)
 
 # Iterators
 iterator childList*(node: ParentNode): Node {.inline.} =
@@ -1156,7 +868,7 @@ iterator shadowChildList*(node: ParentNode): Node {.inline.} =
   var it = node.firstChildShadow
   if it != nil:
     if it.parentNode == nil: # shadow root
-      it = ParentNode(it).firstChildShadow
+      it = (it as ParentNode).firstChildShadow
     if it != nil:
       while true:
         yield it
@@ -1195,26 +907,26 @@ iterator subsequentSiblings*(node: Node): Node {.inline.} =
 
 iterator elementList*(node: ParentNode): Element {.inline.} =
   for child in node.childList:
-    if child of Element:
-      yield Element(child)
+    if (let child = child as Element; child != nil):
+      yield child
 
 iterator relementList*(node: ParentNode): Element {.inline.} =
   for child in node.rchildList:
-    if child of Element:
-      yield Element(child)
+    if (let child = child as Element; child != nil):
+      yield child
 
 iterator ancestors*(node: Node): Element {.inline.} =
   var element = node.parentElement
   while element != nil:
     yield element
-    element = element.parentElement
+    element = element.asNode.parentElement
 
 # inclusive ancestors
 iterator branch*(node: Node): Node {.inline.} =
   var node = node
   while node != nil:
     yield node
-    node = node.parentNode
+    node = node.parentNode.asNode
 
 iterator branchHost(node: Node): Node {.inline.} =
   var node = node.parentNodeHost
@@ -1226,13 +938,13 @@ iterator branchElems*(element: Element): Element {.inline.} =
   var element = element
   while element != nil:
     yield element
-    element = element.parentElement
+    element = element.asNode.parentElement
 
 iterator descendants*(node: ParentNode): Node {.inline.} =
   var it = node.firstChild
   while it != nil:
     yield it
-    it = it.nextDescendant(node)
+    it = it.nextDescendant(node.asNode)
 
 iterator descendantsShadowIncl(node: Node): Node {.inline.} =
   var it = node
@@ -1242,20 +954,22 @@ iterator descendantsShadowIncl(node: Node): Node {.inline.} =
 
 iterator elementDescendants*(node: ParentNode): Element {.inline.} =
   for child in node.descendants:
-    if child of Element:
-      yield Element(child)
+    if (let child = child as Element; child != nil):
+      yield child
 
-iterator elementDescendants*(node: ParentNode; tag: TagType): Element
+iterator elementDescendants*(node: ParentNode; tag: TagType): HTMLElement
     {.inline.} =
-  for desc in node.elementDescendants:
-    if desc.tagType == tag:
-      yield desc
+  for desc in node.descendants:
+    if (let desc = desc as HTMLElement; desc != nil):
+      if desc.tagType == tag:
+        yield desc
 
-iterator elementDescendants*(node: ParentNode; tag: set[TagType]): Element
+iterator elementDescendants*(node: ParentNode; tag: set[TagType]): HTMLElement
     {.inline.} =
-  for desc in node.elementDescendants:
-    if desc.tagType in tag:
-      yield desc
+  for desc in node.descendants:
+    if (let desc = desc as HTMLElement; desc != nil):
+      if desc.tagType in tag:
+        yield desc
 
 iterator displayedElements*(window: Window): Element
     {.inline.} =
@@ -1263,45 +977,6 @@ iterator displayedElements*(window: Window): Element
   while element != nil:
     yield element
     element = element.nextDisplayedElement
-
-iterator controls*(form: HTMLFormElement): FormAssociatedElement {.inline.} =
-  var control = form.controlsHead
-  while control != nil:
-    yield control
-    control = control.next
-
-iterator inputs(form: HTMLFormElement): HTMLInputElement {.inline.} =
-  for control in form.controls:
-    if control of HTMLInputElement:
-      yield HTMLInputElement(control)
-
-iterator radiogroup*(input: HTMLInputElement): HTMLInputElement {.inline.} =
-  let name = input.name
-  if name != satUempty:
-    if input.form != nil:
-      for input in input.form.inputs:
-        if input.name == name and input.inputType == itRadio:
-          yield input
-    else:
-      for input in input.document.elementDescendants(ttInput):
-        let input = HTMLInputElement(input)
-        if input.form == nil and input.name == name and
-            input.inputType == itRadio:
-          yield input
-
-iterator textNodes*(node: ParentNode): Text {.inline.} =
-  for node in node.childList:
-    if node of Text:
-      yield Text(node)
-
-iterator options*(select: HTMLSelectElement): HTMLOptionElement {.inline.} =
-  for child in select.elementList:
-    if child of HTMLOptionElement:
-      yield HTMLOptionElement(child)
-    elif child.tagType == ttOptgroup:
-      for opt in child.elementList:
-        if opt of HTMLOptionElement:
-          yield HTMLOptionElement(opt)
 
 iterator sheets(this: SheetElement): CSSStylesheet {.inline.} =
   var sheet = this.sheetHead
@@ -1312,132 +987,97 @@ iterator sheets(this: SheetElement): CSSStylesheet {.inline.} =
       break
     sheet = sheet.next
 
+proc tabIsEmpty(collection: ptr CollectionLikeObj): bool =
+  collection == nil
+
+proc tabKeyEq(collection: ptr CollectionLikeObj; node: Node): bool =
+  collection.root == node
+
+proc tabKeyEq(a, b: ptr CollectionLikeObj): bool =
+  a == b
+
+proc tabHashFast(collection: ptr CollectionLikeObj): Hash =
+  collection.hcache
+
+proc hash(node: Node): Hash =
+  hash(cast[pointer](node))
+
+iterator liveCollections(document: Document; node: Node): CollectionLike =
+  for it in document.liveCollections.tabGetAll(node):
+    yield CollectionLike(it)
+
 # Window/Global
 # For now, these are the same; on an API level however, getGlobal is
 # guaranteed to be non-null, while getWindow may return null in the
 # future.  (This is in preparation for Worker support.)
 proc getGlobal*(ctx: JSContext): Window =
-  let global = JS_GetGlobalObject(ctx)
-  var window: Window
-  doAssert ctx.fromJSFree(global, window).isOk
-  return window
+  cast[Window](ctx.getOpaque().globalObj)
 
 proc getWindow*(ctx: JSContext): Window =
-  let global = JS_GetGlobalObject(ctx)
-  var window: Window
-  doAssert ctx.fromJSFree(global, window).isOk
-  return window
+  cast[Window](ctx.getOpaque().globalObj)
 
-proc setWeak(ctx: JSContext; wwm: WindowWeakMap; key, val: JSValue): Opt[void] =
-  let global = ctx.getGlobal()
-  let res = ctx.invokeSink(global.weakMap[wwm], ctx.getOpaque().strRefs[jstSet],
-    key, val)
-  if JS_IsException(res):
-    return err()
-  JS_FreeValue(ctx, res)
-  ok()
+proc getAPIBaseURL(ctx: JSContext): URL {.exportc: "cha_$1".} =
+  let window = ctx.getWindow()
+  if window == nil or window.document == nil:
+    return URL(nil)
+  return window.document.baseURL
 
-proc getWeak(ctx: JSContext; wwm: WindowWeakMap; key: JSValueConst): JSValue =
-  let global = ctx.getGlobal()
-  return ctx.invoke(global.weakMap[wwm], ctx.getOpaque().strRefs[jstGet], key)
+proc getOrigin(ctx: JSContext): Origin {.exportc: "cha_$1".} =
+  ctx.getGlobal().settings.origin
 
-proc isCell(this: Collection; node: Node): bool =
-  node of Element and Element(node).tagType in {ttTd, ttTh}
+proc consoleError(ctx: JSContext; ss: varargs[string]) {.exportc: "cha_$1".} =
+  ctx.getGlobal().console.error(ss)
 
-proc isTBody(this: Collection; node: Node): bool =
-  node of Element and Element(node).tagType == ttTbody
+proc setEvent(ctx: JSContext; event: Event): Event {.exportc: "cha_$1".} =
+  let window = ctx.getWindow()
+  if window != nil:
+    let res = move(window.event)
+    window.event = event
+    return res
+  Event(nil)
 
-proc isRow(this: Collection; node: Node): bool =
-  node of HTMLTableRowElement
+const WindowEvents* = [satError, satLoad, satFocus, satBlur]
 
-proc isOptionOf(node, select: Node): bool =
-  if node of HTMLOptionElement:
-    let parent = node.parentElement
-    return Node(parent) == select or
-      parent.tagType == ttOptgroup and Node(parent.parentNode) == select
-  return false
+proc isHTMLElementOf(this: Collection; node: Node): bool =
+  let element = node as HTMLElement
+  element != nil and element.localName in this.atoms
+
+proc isRowOf(this: Collection; node: Node): bool =
+  if node.parentNode.asNode == this.root or
+      node.parentNode.parentNode.asNode == this.root:
+    return node of HTMLTableRowElement
+  false
 
 proc isElement(this: Collection; node: Node): bool =
   node of Element
 
-proc isForm(this: Collection; node: Node): bool =
-  node of HTMLFormElement
+proc isElementOf(this: Collection; node: Node): bool =
+  let node = node as Element
+  if node != nil:
+    let atom = this.atoms[0]
+    if node.namespaceURI == satNamespaceHTML:
+      return node.localName == atom or node.tagName.equalsIgnoreCase(atom)
+    return node.tagName == atom
+  return false
+
+proc isElementWithClass(this: Collection; node: Node): bool =
+  let element = node as Element
+  if element == nil:
+    return false
+  for i in 1 ..< this.atoms.len:
+    if not element.hasClass(this.atoms[i]):
+      return false
+  true
 
 proc isLink(this: Collection; node: Node): bool =
-  if not (node of Element):
-    return false
-  let element = Element(node)
-  element.tagType in {ttA, ttArea} and element.attrb(satHref)
-
-proc isImage(this: Collection; node: Node): bool =
-  node of HTMLImageElement
+  let element = node as HTMLElement
+  element != nil and element.tagType in {ttA, ttArea} and
+    element.asElement.attrb(satHref)
 
 proc logException(window: Window; url: URL) =
   #TODO excludepassword seems pointless?
   window.console.error("Exception in document",
     url.serialize(excludepassword = true), window.jsctx.getExceptionMsg())
-
-proc newWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
-    JSValue =
-  case wwm
-  of wwmChildren:
-    return ctx.toJS(newHTMLCollection(
-      this,
-      match = isElement,
-      childonly = true
-    ))
-  of wwmChildNodes:
-    return ctx.toJS(newNodeList(
-      this,
-      match = nil,
-      islive = true,
-      childonly = true
-    ))
-  of wwmSelectedOptions:
-    let this = HTMLSelectElement(this)
-    return ctx.toJS(newHTMLCollection(
-      this,
-      match = proc(this: Collection; node: Node): bool =
-        node.isOptionOf(this.root) and HTMLOptionElement(node).selected,
-      childonly = false
-    ))
-  of wwmTBodies:
-    return ctx.toJS(newHTMLCollection(
-      this,
-      match = isTBody,
-      childonly = true
-    ))
-  of wwmCells:
-    return ctx.toJS(newHTMLCollection(
-      this,
-      match = isCell,
-      childonly = true
-    ))
-  of wwmDataset:
-    return ctx.toJS(DOMStringMap(target: HTMLElement(this)))
-  of wwmAttributes:
-    let element = Element(this)
-    let map = NamedNodeMap(element: element)
-    for i, attr in element.attrs.mypairs:
-      map.attrlist.add(element.newAttr(i))
-    return ctx.toJS(map)
-
-proc getWeakCollection(ctx: JSContext; this: Node; wwm: WindowWeakMap):
-    JSValue =
-  let jsThis = ctx.toJS(this)
-  if JS_IsException(jsThis):
-    return JS_EXCEPTION
-  let res = ctx.getWeak(wwm, jsThis)
-  if JS_IsUndefined(res):
-    let collection = ctx.newWeakCollection(this, wwm)
-    if JS_IsException(collection):
-      JS_FreeValue(ctx, jsThis)
-      return JS_EXCEPTION
-    if ctx.setWeak(wwm, jsThis, JS_DupValue(ctx, collection)).isErr:
-      return JS_EXCEPTION
-    return collection
-  JS_FreeValue(ctx, jsThis)
-  return res
 
 proc isSameOrigin*(window: Window; origin: Origin): bool =
   if window.dangerAlwaysSameOrigin: # for client
@@ -1455,19 +1095,19 @@ proc fetch*(window: Window; input: Request; finish: FetchFinish;
 proc corsFetch(window: Window; input: Request; finish: FetchFinish;
     opaque: RootRef) =
   if not window.settings.images and input.url.scheme.startsWith("img-codec+"):
-    finish(opaque, nil)
+    finish(opaque, Response(nil))
     return
   window.loader.fetch(input, finish, opaque)
 
 proc sheetLoaded(window: Window) =
   inc window.loadedSheetNum
   if window.bc != nil:
-    sheetLoadedImpl(window.bc)
+    sheetLoaded(window.bc)
 
 proc imageLoaded(window: Window) =
   inc window.loadedImageNum
   if window.bc != nil:
-    imageLoadedImpl(window.bc)
+    imageLoaded(window.bc)
 
 proc importSheetFinish(window: Window; this: SheetElement;
     res: LoadSheetResult; env: ParseSheetEnv; i: int) =
@@ -1489,7 +1129,7 @@ proc importSheetFinish(window: Window; this: SheetElement;
   window.sheetLoaded()
 
 proc parseStylesheet(window: Window; this: SheetElement; s: string;
-    baseURL: URL; charset: Charset; layer: CAtomTraced;
+    baseURL: URL; charset: Charset; layer: CAtom;
     finish: LoadSheetFinish; parseEnv: ParseSheetEnv; i: int) =
   let sheet = s.parseStylesheet(baseURL, addr window.settings, coAuthor, layer)
   if sheet.s.importList.len == 0:
@@ -1530,6 +1170,22 @@ proc cssDecode(iq: openArray[char]; fallback: Charset): string =
         charset = csUtf8
   iq.toOpenArray(offset, iq.high).decodeAll(charset)
 
+type
+  LoadSheetEnv* {.final.} = ref object of BlobOpaque
+    window: Window
+    this: SheetElement
+    url: URL
+    finish: LoadSheetFinish
+    charset: Charset
+    layer: CAtom
+    i: int
+    parseEnv: ParseSheetEnv
+
+proc mark*(rt: JSRuntime; env: LoadSheetEnv; markFunc: JS_MarkFunc) =
+  rt.markObj(env.window, markFunc)
+  rt.markObj(env.this, markFunc)
+  rt.markObj(env.url, markFunc)
+
 proc onFinishCSSText(response: Response; success: bool) =
   let blob = response.onFinishBlob(success)
   let env = LoadSheetEnv(response.opaque)
@@ -1556,14 +1212,14 @@ proc loadSheet0(opaque: RootRef; response: Response) =
   env.finish(window, env.this, LoadSheetResult(), env.parseEnv, env.i)
 
 proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
-    layer: CAtomTraced; finish: LoadSheetFinish; i: int;
+    layer: CAtom; finish: LoadSheetFinish; i: int;
     parseEnv: ParseSheetEnv) =
   let env = LoadSheetEnv(
     window: window,
     this: this,
     url: url,
     charset: charset,
-    layer: layer.dupTrace(),
+    layer: layer,
     parseEnv: parseEnv,
     i: i,
     finish: finish
@@ -1572,13 +1228,13 @@ proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
 
 proc loadSheet(window: Window; this: SheetElement; url: URL;
     finish: LoadSheetFinish) =
-  let charset = this.getCharset()
-  window.loadSheet(this, url, charset, CAtomNullTraced, finish, 0, nil)
+  let charset = this.asElement.getCharset()
+  window.loadSheet(this, url, charset, CAtomNull, finish, 0, nil)
 
 proc loadLinkFinish(window: Window; this: SheetElement;
     res: LoadSheetResult; env: ParseSheetEnv; i: int) =
-  let link = HTMLLinkElement(this)
-  let media = link.attr(satMedia)
+  let link = this as HTMLLinkElement
+  let media = link.asElement.attr(satMedia)
   var applies = true
   if media != "":
     var ctx = initCSSParser(media)
@@ -1588,9 +1244,9 @@ proc loadLinkFinish(window: Window; this: SheetElement;
   # whether media applies, to prevent media query based tracking.
   #TODO should we really keep the current sheet if the result is nil?
   if res.head != nil:
-    link.updateSheet(res.head, res.tail)
+    link.asSheetElement.updateSheet(res.head, res.tail)
     let disabled = link.isDisabled()
-    for sheet in link.sheets:
+    for sheet in link.asSheetElement.sheets:
       sheet.disabled = disabled
       sheet.applies = applies
       sheet.media = media
@@ -1602,19 +1258,22 @@ proc loadLink(window: Window; link: HTMLLinkElement) =
       link.fetchStarted or link.isDisabled():
     return
   link.fetchStarted = true
-  let href = link.attr(satHref)
+  let href = link.asElement.attr(satHref)
   if href == "":
     return
   if url := parseURL(href, window.document.url):
     inc window.remoteSheetNum
-    window.loadSheet(link, url, loadLinkFinish)
+    window.loadSheet(link.asSheetElement, url, loadLinkFinish)
 
 proc getImageId(window: Window): int =
   result = window.imageId
   inc window.imageId
 
+proc fireEvent*(ctx: JSContext; event: Event; target: EventTarget) =
+  discard ctx.dispatch(target, event)
+
 proc fireEvent*(window: Window; event: Event; target: EventTarget) =
-  discard window.jsctx.dispatch(target, event)
+  window.jsctx.fireEvent(event, target)
 
 proc fireEvent*(window: Window; name: StaticAtom; target: EventTarget;
     bubbles, cancelable, trusted: bool) =
@@ -1623,7 +1282,8 @@ proc fireEvent*(window: Window; name: StaticAtom; target: EventTarget;
 
 proc loadImageFinish(opaque: RootRef; response: Response) =
   let cachedURL = CachedURLImage(opaque)
-  let window = cachedURL.window
+  let window = move(cachedURL.window)
+  let shared = move(cachedURL.shared)
   if response == nil:
     window.imageLoaded()
     return
@@ -1642,16 +1302,16 @@ proc loadImageFinish(opaque: RootRef; response: Response) =
     height: height,
     cacheId: cachedURL.cacheId,
     imageId: window.getImageId(),
-    contentType: "image/" & cachedURL.t,
-    vector: cachedURL.t == "image/svg+xml"
+    contentType: "image/" & cachedURL.subtype,
+    vector: cachedURL.subtype == "svg+xml"
   )
   cachedURL.bmp = bmp
-  for share in cachedURL.shared:
+  for share in shared:
     share.bitmap = bmp
-    share.invalidate()
+    share.asElement.invalidate()
     #TODO fire error on error
     if window.settings.scripting != smFalse:
-      window.fireEvent(satLoad, share, bubbles = false,
+      window.fireEvent(satLoad, share.asEventTarget, bubbles = false,
         cancelable = false, trusted = true)
   window.imageLoaded()
 
@@ -1695,8 +1355,9 @@ proc loadImage0(opaque: RootRef; response: Response) =
     httpMethod = hmPost,
     headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
     body = RequestBody(t: rbtOutput, outputId: response.outputId),
+    internal = true
   )
-  cachedURL.t = subtype
+  cachedURL.subtype = subtype
   window.corsFetch(request, loadImageFinish, opaque)
   window.loader.close(response)
   var expiry = -1i64
@@ -1726,14 +1387,14 @@ proc loadImageFromCache(window: Window; image: HTMLImageElement; surl: string):
 proc loadImage*(window: Window; image: HTMLImageElement) =
   if not window.settings.images:
     if image.bitmap != nil:
-      image.invalidate()
+      image.asElement.invalidate()
       image.bitmap = nil
     image.fetchStarted = false
     return
   if image.fetchStarted:
     return
   image.fetchStarted = true
-  let src = image.attr(satSrc)
+  let src = image.asElement.attr(satSrc)
   if src == "":
     return
   let url0 = parseURL(src, window.document.url)
@@ -1748,7 +1409,7 @@ proc loadImage*(window: Window; image: HTMLImageElement) =
   if window.loadImageFromCache(image, surl):
     return
   let cachedURL = CachedURLImage(
-    name: move(surl),
+    s: move(surl),
     cacheId: -1,
     window: window,
     expiry: -1,
@@ -1761,16 +1422,9 @@ proc loadImage*(window: Window; image: HTMLImageElement) =
   let request = newRequest(url, headers = headers)
   window.corsFetch(request, loadImage0, cachedURL)
 
-type LoadSVGEnv {.final.} = ref object of RootObj
-  window: Window
-  svg: SVGSVGElement
-  cacheId: int
-  imageId: int
-
 proc loadSVGFinish(opaque: RootRef; response: Response) =
-  let env = LoadSVGEnv(opaque)
-  let window = env.window
-  let svg = env.svg
+  let env = CachedSVG(opaque)
+  let window = move(env.window)
   if response == nil: # no SVG module; give up
     window.imageLoaded()
     return
@@ -1784,7 +1438,7 @@ proc loadSVGFinish(opaque: RootRef; response: Response) =
     window.console.error("wrong Cha-Image-Dimensions in", $response.url)
     window.imageLoaded()
     return
-  svg.bitmap = NetworkBitmap(
+  let bitmap = NetworkBitmap(
     width: width,
     height: height,
     cacheId: env.cacheId,
@@ -1792,32 +1446,31 @@ proc loadSVGFinish(opaque: RootRef; response: Response) =
     contentType: "image/svg+xml",
     vector: true
   )
-  for share in svg.shared:
-    share.bitmap = svg.bitmap
-    share.invalidate()
-  svg.invalidate()
+  for svg in env.shared:
+    svg.bitmap = bitmap
+    svg.asElement.invalidate()
   window.imageLoaded()
 
 proc loadSVG*(window: Window; svg: SVGSVGElement) =
   if not window.settings.images:
     if svg.bitmap != nil:
-      svg.invalidate()
+      svg.asElement.invalidate()
       svg.bitmap = nil
     svg.fetchStarted = false
     return
   if svg.fetchStarted:
     return
   svg.fetchStarted = true
-  let s = svg.outerHTML
+  var s = svg.asElement.outerHTML
   if s.len <= 4096: # try to dedupe if the SVG is small enough.
-    window.svgCache.withValue(s, elp):
-      svg.bitmap = elp.bitmap
+    let item = CachedSVG(window.svgCache.getOrDefault(s))
+    if item != nil:
+      svg.bitmap = item.bmp
       if svg.bitmap != nil: # already decoded
-        svg.invalidate()
+        svg.asElement.invalidate()
       else: # tell me when you're done
-        elp.shared.add(svg)
+        item.shared.add(svg)
       return
-    window.svgCache[s] = svg
   let imageId = window.getImageId()
   let loader = window.loader
   let (ps, svgres) = loader.doPipeRequest("svg-" & $imageId)
@@ -1832,29 +1485,33 @@ proc loadSVG*(window: Window; svg: SVGSVGElement) =
     "img-codec+svg+xml:decode",
     httpMethod = hmPost,
     headers = newHeaders(hgRequest, {"Cha-Image-Info-Only": "1"}),
-    body = RequestBody(t: rbtOutput, outputId: svgres.outputId)
+    body = RequestBody(t: rbtOutput, outputId: svgres.outputId),
+    internal = true
   )
-  let env = LoadSVGEnv(
+  let env = CachedSVG(
     window: window,
-    svg: svg,
+    shared: @[svg],
     cacheId: cacheId,
     imageId: imageId
   )
+  if s.len <= 4096:
+    env.s = move(s)
+    window.svgCache.put(env)
   inc window.remoteImageNum
   loader.fetch(request, loadSVGFinish, env)
   loader.close(svgres)
 
 proc navigate*(window: Window; url: URL) =
   if window.bc != nil:
-    navigateImpl(window.bc, url)
+    navigate(window.bc, url)
 
 proc ensureLayout(window: Window; element: Element) =
   if window.bc != nil:
-    ensureLayoutImpl(window.bc, element)
+    ensureLayout(window.bc, element)
 
 proc click(window: Window; element: HTMLElement) =
   if window.bc != nil:
-    clickImpl(window.bc, element)
+    clickCallback(window.bc, element)
 
 proc runJSJobs*(window: Window) =
   let rt = JS_GetRuntime(window.jsctx)
@@ -1894,8 +1551,8 @@ proc windowChange*(window: Window) =
 
 proc getComputedStyle0*(ctx: JSContext; window: Window; element: Element;
     pseudoElt: JSValueConst): Opt[CSSStyleDeclaration] =
-  if not element.isConnected():
-    return ok(newCSSStyleDeclaration(nil, ""))
+  if not element.asNode.isConnected():
+    return ok(newCSSStyleDeclaration(Element(nil), ""))
   var pseudo = peNone
   if not JS_IsUndefined(pseudoElt):
     # This isn't what the spec says, but it seems to be what others do.
@@ -1907,7 +1564,7 @@ proc getComputedStyle0*(ctx: JSContext; window: Window; element: Element;
     if i != 0: # if no : at the beginning, ignore pseudoElt
       pseudo = parseEnumNoCase[PseudoElement](ds.toOpenArray(i)).get(peNone)
       if pseudo == peNone or pseudo notin {peBefore, peAfter} and i == 1:
-        return ok(newCSSStyleDeclaration(nil, ""))
+        return ok(newCSSStyleDeclaration(Element(nil), ""))
   if window.settings.scripting == smApp:
     element.ensureStyle()
     return ok(newCSSStyleDeclaration(element, $element.getComputedStyle(pseudo),
@@ -1917,9 +1574,6 @@ proc getComputedStyle0*(ctx: JSContext; window: Window; element: Element;
   ok(newCSSStyleDeclaration(element, element.attr(satStyle), computed = true,
     readonly = true))
 
-proc addCustomElementRegistry*(window: Window; rt: JSRuntime) =
-  window.customElements = CustomElementRegistry(rt: rt)
-
 # CustomElementRegistry
 iterator defs(this: CustomElementRegistry): CustomElementDef =
   var def = this.defsHead
@@ -1927,30 +1581,10 @@ iterator defs(this: CustomElementRegistry): CustomElementDef =
     yield def
     def = def.next
 
-proc newCustomElementRegistry(ctx: JSContext): CustomElementRegistry
-    {.jsctor.} =
-  return CustomElementRegistry(rt: JS_GetRuntime(ctx), scoped: true)
-
-proc mark(rt: JSRuntime; this: CustomElementRegistry; markFunc: JS_MarkFunc)
-    {.jsmark.} =
-  for def in this.defs:
-    JS_MarkValue(rt, def.ctor, markFunc)
-    for val in def.callbacks:
-      JS_MarkValue(rt, val, markFunc)
-
-proc finalize(this: CustomElementRegistry) {.jsfin.} =
-  let rt = this.rt
-  for def in this.defs:
-    freeAtom(def.name)
-    freeAtom(def.localName)
-    JS_FreeValueRT(rt, def.ctor)
-    freeAtoms(def.observedAttrs)
-    rt.freeValues(def.callbacks)
-
 type CustomElementDefinitionOptions = object of JSDict
   extends {.jsdefault.}: Option[string]
 
-proc find(this: CustomElementRegistry; name: CAtomTraced): CustomElementDef =
+proc find(this: CustomElementRegistry; name: CAtom): CustomElementDef =
   for it in this.defs:
     if it.name == name:
       return it
@@ -1959,7 +1593,7 @@ proc find(this: CustomElementRegistry; name: CAtomTraced): CustomElementDef =
 proc find(this: CustomElementRegistry; ctx: JSContext; ctor: JSValueConst):
     CustomElementDef =
   for it in this.defs:
-    if ctx.strictEquals(it.ctor, ctor):
+    if ctx.strictEquals(it.ctor.value, ctor):
       return it
   return nil
 
@@ -1978,20 +1612,17 @@ proc tryGetCallback(ctx: JSContext; proto: JSValueConst; t: CECallbackType;
   if JS_IsException(val):
     return err()
   if not JS_IsUndefined(val):
-    callbacks[t] = val # val is freed by caller
-    if not JS_IsFunction(ctx, val):
-      JS_ThrowTypeError(ctx, "not a function")
-      return err()
+    ?ctx.fromJSFree(val, callbacks[t])
   ok()
 
-proc define0(ctx: JSContext; this: CustomElementRegistry; name: CAtomTraced;
+proc define0(ctx: JSContext; this: CustomElementRegistry; name: CAtom;
     ctor, proto: JSValueConst; def: CustomElementDef): Opt[void] =
   if not JS_IsObject(proto):
     JS_ThrowTypeError(ctx, "prototype is not an object")
     return err()
   for t in cctConnected..cctAttributeChanged:
     ?ctx.tryGetCallback(proto, t, def.callbacks)
-  if not JS_IsNull(def.callbacks[cctAttributeChanged]):
+  if def.callbacks[cctAttributeChanged] != nil:
     ?ctx.tryGetStrSeq(ctor, "observedAttributes", def.observedAttrs)
   var disabled: seq[CAtom]
   ?ctx.tryGetStrSeq(ctor, "disabledFeatures", disabled)
@@ -1999,7 +1630,6 @@ proc define0(ctx: JSContext; this: CustomElementRegistry; name: CAtomTraced;
     def.flags.excl(cefInternals)
   if satShadow in disabled:
     def.flags.excl(cefShadow)
-  freeAtoms(disabled)
   var formAssociated: bool
   discard ?ctx.fromJSGetProp(ctor, "formAssociated", formAssociated)
   if formAssociated:
@@ -2008,73 +1638,83 @@ proc define0(ctx: JSContext; this: CustomElementRegistry; name: CAtomTraced;
       ?ctx.tryGetCallback(proto, t, def.callbacks)
   ok()
 
-proc newCustomElementDef(name, localName: CAtomTraced): CustomElementDef =
-  let def = CustomElementDef(
-    name: name.dup(),
-    localName: localName.dup(),
+proc newCustomElementDef(name, localName: CAtom): CustomElementDef =
+  CustomElementDef(
+    name: name,
+    localName: localName,
     flags: {cefInternals, cefShadow}
   )
-  for it in def.callbacks.mitems:
-    it = JS_NULL
-  return def
-
-proc define(ctx: JSContext; this: CustomElementRegistry; name: CAtomTraced;
-    ctor: JSValueConst; options = CustomElementDefinitionOptions()): JSValue
-    {.jsfunc.} =
-  if not JS_IsConstructor(ctx, ctor):
-    return JS_ThrowTypeError(ctx, "constructor expected")
-  if this.find(name) != nil or this.find(ctx, ctor) != nil:
-    return JS_ThrowDOMException(ctx, "NotSupportedError",
-      "a custom element with this name/constructor is already defined")
-  if options.extends.isSome:
-    #TODO extends
-    return JS_ThrowDOMException(ctx, "NotSupportedError",
-      "extends not supported yet")
-  if this.inDefine:
-    return JS_ThrowDOMException(ctx, "NotSupportedError",
-      "recursive custom element definition is not allowed")
-  this.inDefine = true
-  let proto = JS_GetPropertyStr(ctx, ctor, "prototype")
-  if JS_IsException(proto):
-    this.inDefine = false
-    return JS_EXCEPTION
-  let def = newCustomElementDef(name, name) #TODO extends/localName
-  let res = ctx.define0(this, name, ctor, proto, def)
-  JS_FreeValue(ctx, proto)
-  this.inDefine = false
-  if res.isErr:
-    ctx.freeValues(def.callbacks)
-    return JS_EXCEPTION
-  def.ctor = JS_DupValue(ctx, ctor)
-  if this.defsTail == nil:
-    this.defsHead = def
-  else:
-    this.defsTail.next = def
-  this.defsTail = def
-  #TODO is scoped
-  #TODO upgrade
-  #TODO when-defined
-  return JS_UNDEFINED
-
-proc get(ctx: JSContext; this: CustomElementRegistry; name: CAtomTraced):
-    JSValue {.jsfunc.} =
-  let def = this.find(name)
-  if def != nil:
-    return JS_DupValue(ctx, def.ctor)
-  return JS_UNDEFINED
-
-proc getName(ctx: JSContext; this: CustomElementRegistry; ctor: JSValueConst):
-    CAtom {.jsfunc.} =
-  let def = this.find(ctx, ctor)
-  if def != nil:
-    return def.name
-  return CAtomNull
-
-#TODO whenDefined, initialize
 
 proc addScopedDocument(this: CustomElementRegistry; document: Document) =
   if document notin this.scopedDocuments:
     this.scopedDocuments.add(document)
+
+jsClassDef(CustomElementRegistry):
+  proc newCustomElementRegistry*(): CustomElementRegistry {.jsctor.} =
+    jsNew CustomElementRegistryObj(scoped: true)
+
+  proc mark(rt: JSRuntime; this: CustomElementRegistry; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for def in this.defs:
+      JS_MarkValue(rt, def.ctor.value, markFunc)
+      for cb in def.callbacks.myitems:
+        if cb != nil:
+          JS_MarkValue(rt, cb.value, markFunc)
+    for document in this.scopedDocuments:
+      rt.markObj(document, markFunc)
+
+  proc define(ctx: JSContext; this: CustomElementRegistry; name: CAtom;
+      ctor: JSValueConst; options = CustomElementDefinitionOptions()): JSValue
+      {.jsfunc.} =
+    if not JS_IsConstructor(ctx, ctor):
+      return JS_ThrowTypeError(ctx, "constructor expected")
+    if this.find(name) != nil or this.find(ctx, ctor) != nil:
+      return JS_ThrowDOMException(ctx, "NotSupportedError",
+        "a custom element with this name/constructor is already defined")
+    if options.extends.isSome:
+      #TODO extends
+      return JS_ThrowDOMException(ctx, "NotSupportedError",
+        "extends not supported yet")
+    if this.inDefine:
+      return JS_ThrowDOMException(ctx, "NotSupportedError",
+        "recursive custom element definition is not allowed")
+    this.inDefine = true
+    let proto = JS_GetPropertyStr(ctx, ctor, "prototype")
+    if JS_IsException(proto):
+      this.inDefine = false
+      return JS_EXCEPTION
+    let def = newCustomElementDef(name, name) #TODO extends/localName
+    let res = ctx.define0(this, name, ctor, proto, def)
+    JS_FreeValue(ctx, proto)
+    this.inDefine = false
+    if res.isErr:
+      return JS_EXCEPTION
+    def.ctor = ctx.dupTraceObj(ctor)
+    if this.defsTail == nil:
+      this.defsHead = def
+    else:
+      this.defsTail.next = def
+    this.defsTail = def
+    #TODO is scoped
+    #TODO upgrade
+    #TODO when-defined
+    return JS_UNDEFINED
+
+  proc get(ctx: JSContext; this: CustomElementRegistry; name: CAtom):
+      JSValue {.jsfunc.} =
+    let def = this.find(name)
+    if def != nil:
+      return JS_DupValue(ctx, def.ctor.value)
+    return JS_UNDEFINED
+
+  proc getName(ctx: JSContext; this: CustomElementRegistry; ctor: JSValueConst):
+      CAtom {.jsfunc.} =
+    let def = this.find(ctx, ctor)
+    if def != nil:
+      return def.name
+    return CAtomNull
+
+  #TODO whenDefined, initialize
 
 # Node
 when defined(debug):
@@ -2086,66 +1726,43 @@ when defined(debug):
     result = ""
     result.serializeFragmentInner(node, ttUnknown, writeShadow = true)
 
-proc baseURI(node: Node): string {.jsfget.} =
-  return $node.document.baseURL
-
-proc rootNode(node: Node): Node {.jsfunc.} =
-  # If connected, return root; otherwise, return the owner document.
-  let parent = node.parentNode
-  if parent == nil:
-    return node
-  parent.lastChild.internalNext
-
 proc document*(node: Node): Document =
   # Return the owner document, or node itself if it is a document.
-  var node = node
+  var node = (ptr NodeObj)(node) # skip some refcounts
   while true:
-    node = node.rootNode
-    if node of Document:
+    if node.parentNode != nil:
+      node = (ptr NodeObj)(node.parentNode.lastChild.internalNext)
+    if Node(node) of Document:
       break
-    if node of ShadowRoot:
-      node = ShadowRoot(node).host
-    else:
-      node = node.internalNext
-      break
-  Document(node)
+    if not (Node(node) of ShadowRoot):
+      return node.internalNext as Document
+    node = (ptr NodeObj)(ShadowRoot(node).host)
+  cast[Document](node)
 
-proc parentNodeShadow(node: Node): Node =
-  let parent = node.parentNode
-  if parent == nil and node of ShadowRoot:
-    return ShadowRoot(node).host
-  return parent
+proc parentNodeShadow(node: Node): lent Node =
+  if node.parentNode == nil:
+    let shadow = node as ShadowRoot
+    if shadow != nil:
+      return shadow.host.asNode
+  return node.parentNode.asNode
 
 proc parentNodeHost(node: Node): Node =
   let parent = node.parentNode
-  if parent == nil and node of DocumentFragment:
-    return DocumentFragment(node).host
-  return parent
+  if parent == nil:
+    let shadow = node as DocumentFragment
+    if shadow != nil:
+      return shadow.host.asNode
+  return parent.asNode
 
-proc parentElement*(node: Node): Element {.jsfget.} =
-  let p = node.parentNode
-  if p != nil and p of Element:
-    return Element(p)
-  return nil
-
-proc nextSiblingShadow(node: Node): Node =
+proc nextSiblingShadow(node: Node): lent Node =
   let next = node.internalNext
-  if next == nil or next.parentNode == nil:
-    # if next is nil, then node is a Document.
-    # if next.parentNode is nil, then next is the root.
-    return nil
-  return next
-
-proc nextSibling(node: Node): Node {.jsfget.} =
-  if node.parentNode == nil:
-    # if parent is nil, then may be a shadow root
-    return nil
-  return node.nextSiblingShadow
-
-proc previousSibling*(node: Node): Node {.jsfget.} =
-  if node.parentNode == nil or node == node.parentNode.firstChild:
-    return nil
-  return node.internalPrev
+  if next == nil:
+    # node is a Document.
+    return node.internalNext
+  if next.parentNode == nil:
+    # next is the root, return nil.
+    return next.parentNode.asNode
+  return node.internalNext
 
 # performance-sensitive, so we inline this with a template
 template nextDescendantExclImpl(node, start: Node): Node =
@@ -2155,30 +1772,31 @@ template nextDescendantExclImpl(node, start: Node): Node =
     let next = it.nextSibling
     if next != nil:
       return next
-    it = it.parentNode
+    it = it.parentNode.asNode
   # done
-  nil
+  Node(nil)
 
 # Return the next descendant if it isn't `start', and nil otherwise.
 # Note: `start' must be either an ancestor of `node', `node` itself, or nil.
+#TODO start should be ParentNode
 proc nextDescendant(node, start: Node): Node =
-  if node of ParentNode: # parent
-    let first = cast[ParentNode](node).firstChild
+  let parent = node as ParentNode
+  if parent != nil:
+    let first = parent.firstChild
     if first != nil:
       return first
   node.nextDescendantExclImpl(start)
 
 # Like nextDescendant, but skip children when `skip` is true.
 proc nextDescendant(node, start: Node; skip: bool): Node =
-  if not skip and node of ParentNode: # parent
-    let first = cast[ParentNode](node).firstChild
+  if not skip and (let node = node as ParentNode; node != nil):
+    let first = node.firstChild
     if first != nil:
       return first
   node.nextDescendantExclImpl(start)
 
 proc nextDescendantShadow(node, start: Node): Node =
-  if node of ParentNode: # parent
-    let node = cast[ParentNode](node)
+  if (let node = node as ParentNode; node != nil):
     if node.firstChildShadow != nil:
       return node.firstChildShadow
   # climb up until we find a non-last leaf (this might be node itself)
@@ -2189,14 +1807,24 @@ proc nextDescendantShadow(node, start: Node): Node =
       return next
     node = node.parentNodeShadow
   # done
-  return nil
+  Node(nil)
+
+proc nextElementDescendantShadow(element: Element; start: Node): Element =
+  var node = element.asNode
+  while true:
+    node = node.nextDescendantShadow(start)
+    if node == nil:
+      break
+    let element = node as Element
+    if element != nil:
+      return element
+  Element(nil)
 
 proc previousDescendant(node: Node): Node =
   var prev = node.previousSibling
   if prev == nil:
-    return node.parentNode
-  while prev of ParentNode:
-    let pnode = cast[ParentNode](prev)
+    return node.parentNode.asNode
+  while (let pnode = prev as ParentNode; pnode != nil):
     if pnode.firstChild == nil:
       break
     prev = pnode.lastChild
@@ -2204,32 +1832,16 @@ proc previousDescendant(node: Node): Node =
 
 proc previousDescendant(node, start: Node): Node =
   if node == start:
-    return nil
-  var prev = node.previousSibling
-  if prev == nil:
-    return node.parentNode
-  while prev of ParentNode:
-    let pnode = cast[ParentNode](prev)
-    if pnode.firstChild == nil:
-      break
-    prev = pnode.lastChild
-  return prev
-
-proc ownerDocument(node: Node): Document {.jsfget.} =
-  if node of Document:
-    return nil
-  return node.document
+    return Node(nil)
+  node.previousDescendant()
 
 proc nodeTypeEnum(node: Node): NodeType =
-  if node of CharacterData:
-    if node of CDATASection:
-      return ntCdataSection
-    elif node of Comment:
-      return ntComment
-    elif node of ProcessingInstruction:
-      return ntProcessingInstruction
-    else: # Text
-      return ntText
+  if node of CDATASection:
+    return ntCdataSection
+  elif node of Comment:
+    return ntComment
+  elif node of Text:
+    return ntText
   elif node of Element:
     return ntElement
   elif node of Document:
@@ -2238,44 +1850,31 @@ proc nodeTypeEnum(node: Node): NodeType =
     return ntDocumentType
   elif node of Attr:
     return ntAttribute
-  else: # DocumentFragment
+  elif node of DocumentFragment:
     return ntDocumentFragment
-
-proc nodeType(node: Node): uint16 {.jsfget.} =
-  return uint16(node.nodeTypeEnum)
-
-proc nodeName(ctx: JSContext; node: Node): JSValue {.jsfget.} =
-  if node of Element:
-    return ctx.jsTagName(Element(node))
-  if node of Attr:
-    return ctx.toJS(Attr(node).data.name)
-  if node of DocumentType:
-    return ctx.toJS(DocumentType(node).name)
-  if node of CDATASection:
-    return JS_NewString(ctx, "#cdata-section")
-  if node of Comment:
-    return JS_NewString(ctx, "#comment")
-  if node of Document:
-    return JS_NewString(ctx, "#document")
-  if node of DocumentFragment:
-    return JS_NewString(ctx, "#document-fragment")
-  if node of ProcessingInstruction:
-    return ctx.toJS(ProcessingInstruction(node).target)
-  return JS_NewString(ctx, "#text")
+  else: # ProcessingInstruction
+    return ntProcessingInstruction
 
 proc isValidChild(node: Node): bool =
-  return node of DocumentFragment or node of DocumentType or node of Element or
-    node of CharacterData
+  return node of Element or node of CharacterData or
+    node of DocumentFragment or node of DocumentType
 
 proc checkParentValidity(parent: Node): Result[ParentNode, cstring] =
-  if parent of ParentNode:
-    return ok(cast[ParentNode](parent))
+  if (let parent = parent as ParentNode; parent != nil):
+    return ok(parent)
   return err("parent must be a document, a document fragment, or an element")
+
+proc rootNode(node: Node): Node =
+  # If connected, return root; otherwise, return the owner document.
+  let parent = node.parentNode
+  if parent == nil:
+    return node
+  parent.lastChild.internalNext
 
 proc rootNodeShadow(node: Node): Node =
   var node = node.rootNode
-  while node of ShadowRoot:
-    node = ShadowRoot(node).host.rootNode
+  while (let shadow = node as ShadowRoot; shadow != nil):
+    node = shadow.host.asNode.rootNode
   node
 
 proc isInclusiveAncestorHost(a, b: Node): bool =
@@ -2284,111 +1883,182 @@ proc isInclusiveAncestorHost(a, b: Node): bool =
       return true
   return false
 
-proc hasNextSibling(node: Node; t: NodeType): bool =
-  var node = node.nextSibling
-  while node != nil:
-    if node.nodeTypeEnum == t:
-      return true
-    node = node.nextSibling
-  return false
-
-proc hasPreviousSibling(node: Node; t: NodeType): bool =
-  var node = node.previousSibling
-  while node != nil:
-    if node.nodeTypeEnum == t:
-      return true
-    node = node.previousSibling
-  return false
-
-proc nodeValue(ctx: JSContext; node: Node): JSValue {.jsfget.} =
-  if node of CharacterData:
-    return ctx.toJS(CharacterData(node).data)
-  elif node of Attr:
-    return ctx.toJS(Attr(node).data.value)
-  return JS_NULL
-
 proc textContent*(node: Node): string =
-  result = ""
-  if node of CharacterData:
-    result = CharacterData(node).data.s
-  elif node of ParentNode:
-    let node = ParentNode(node)
+  var res = ""
+  if (let characterData = node as CharacterData; characterData != nil):
+    res = characterData.data.s
+  elif (let node = node as ParentNode; node != nil):
     for child in node.childList:
       if not (child of Comment):
-        result &= child.textContent
-
-proc textContent(ctx: JSContext; node: Node): JSValue {.jsfget.} =
-  if node of Document or node of DocumentType:
-    return JS_NULL
-  return ctx.toJS(node.textContent)
-
-proc isConnected(node: Node): bool {.jsfget.} =
-  return node.rootNodeShadow of Document
+        res &= child.textContent
+  move(res)
 
 proc inSameTree*(a, b: Node): bool =
+  assert a != nil
+  assert b != nil
   a.rootNode == b.rootNode
 
 # a == b or a in b's ancestors
-proc contains(a, b: Node): bool =
+proc contains*(a, b: Node): bool =
   for node in b.branch:
     if node == a:
       return true
   return false
 
-proc contains(a: Node; b: Option[Node]): bool {.jsfunc.} =
-  let b = b.get(nil)
-  if b == nil:
-    return false
-  a.contains(b)
+type ObserverItem = object
+  observer: MutationObserver
+  oldValue: bool
 
-proc jsParentNode(node: Node): Node {.jsfget: "parentNode".} =
-  return node.parentNode
+proc find(observers: openArray[ObserverItem]; observer: MutationObserver):
+    int =
+  for i in 0 ..< observers.len:
+    if observers[i].observer == observer:
+      return i
+  -1
 
-proc firstChild(node: Node): Node {.jsfget.} =
-  if node of ParentNode:
-    return cast[ParentNode](node).firstChild
-  nil
+#TODO put this in runtime opaque
+var pendingObservers {.global.}: seq[MutationObserver]
+var mutationJobQueued {.global.}: bool
 
-proc lastChild*(node: Node): Node {.jsfget.} =
-  let first = node.firstChild
-  if first != nil:
-    return first.internalPrev
-  nil
+proc mutationJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
+    JSValue {.cdecl.} =
+  mutationJobQueued = false
+  let observers = move(pendingObservers)
+  #TODO signal slots
+  for observer in observers:
+    let records = move(observer.records)
+    #TODO remove transient registered observers for observer.nodes
+    if records.len > 0:
+      let records = ctx.toJS(records)
+      if JS_IsException(records):
+        return records
+      let this = ctx.toJS(observer) # cannot fail
+      #TODO invoke (with all the ceremony that entails)
+      let callback = JS_DupValue(ctx, observer.callback.value)
+      let res = ctx.callSinkThisFree(callback, this, records)
+      if JS_IsException(res):
+        return res
+      JS_FreeValue(ctx, res)
+  return JS_UNDEFINED
 
-proc hasChildNodes(node: Node): bool {.jsfunc.} =
-  return node.firstChild != nil
+proc queueMutationJob(ctx: JSContext) =
+  if not mutationJobQueued:
+    if ctx.enqueueJob(mutationJob) >= 0:
+      mutationJobQueued = true
 
-# WARNING the ordering of the arguments in the standard is whack so this
-# doesn't match that
-proc preInsertionValidity(parent, node, before: Node):
-    Result[ParentNode, cstring] =
+proc queueMutationRecord(target: Node; ctx: JSContext; t: MutationRecordType;
+    name, namespace: CAtom; oldValue: RefString; hasOldValue2: bool;
+    oldValue2: string; added, removed: openArray[Node];
+    previousSibling, nextSibling: Node) =
+  if ctx.getOpaque() == nil:
+    return # no scripting
+  # the oldValue mess is a workaround to the fact that we can pass the old
+  # data from CharacterData but not from AttrData.  but maybe AttrData
+  # should be refcounted too...
+  var observers: seq[ObserverItem] = @[]
+  #TODO can we do this without actually traversing ancestors somehow?
+  # (maybe link the last observer with parent's first observer?)
+  for it in target.branch:
+    for el in target.asEventTarget.mutationObservers:
+      var oldValue = false
+      if oifSubtree notin el.flags and it != target:
+        continue
+      case t
+      of mrtAttributes:
+        if oifAttributes notin el.flags or
+            oifAttributeFilter in el.flags and (namespace != CAtomNull or
+            name notin el.attributeFilter):
+          continue
+        oldValue = oifAttributeOldValue in el.flags
+      of mrtCharacterData:
+        if oifCharacterData notin el.flags:
+          continue
+        oldValue = oifCharacterDataOldValue in el.flags
+      of mrtChildList:
+        if oifChildList notin el.flags:
+          continue
+      let i = observers.find(el.observer)
+      if i < 0:
+        observers.add(ObserverItem(observer: el.observer, oldValue: oldValue))
+      elif oldValue:
+        observers[i].oldValue = true
+  for it in observers:
+    let oldValue = if it.oldValue:
+      if hasOldValue2:
+        newRefString(oldValue2)
+      else:
+        oldValue
+    else:
+      nil
+    let addedNodes = newNodeList(added)
+    let removedNodes = newNodeList(removed)
+    it.observer.queueRecord(target.asEventTarget, t, name, namespace, oldValue,
+      addedNodes.asRootRef, removedNodes.asRootRef,
+      previousSibling.asEventTarget, nextSibling.asEventTarget)
+    pendingObservers.add(it.observer)
+  ctx.queueMutationJob()
+
+proc queueTreeMutationRecord(parent: ParentNode; ctx: JSContext;
+    added, removed: openArray[Node]; previousSibling, nextSibling: Node) =
+  parent.asNode.queueMutationRecord(ctx, mrtChildList, CAtomNull,
+    CAtomNull, nil, true, "", added, removed, previousSibling,
+    nextSibling)
+
+type PreInsertExclude = enum
+  pieNone, pieBefore, pieChildren
+
+proc canInsertIntoDocument(parent: ParentNode; node, before: Node;
+    t: NodeType; excl: PreInsertExclude): bool =
+  var beforeSeen = false
+  for child in parent.childList:
+    if (before == nil or t == ntElement) and child of Element or
+        t == ntDocumentType and child of DocumentType:
+      if excl == pieNone or excl == pieBefore and child != before:
+        return false # document would have two element/doctype children
+    if beforeSeen and t == ntElement and child of DocumentType:
+      return false # a doctype is following before
+    if child == before:
+      beforeSeen = true
+  if before != nil:
+    if t == ntDocumentType:
+      return before.previousElementSiblingImpl == nil
+    # if excl is before or children, then before must have been excluded,
+    # so its type does not matter
+    if excl == pieNone and before of DocumentType:
+      return false
+  return true
+
+# Note: the ordering of the arguments in the standard is whack so this
+# doesn't match that.  Also, in the spec, "before" is called "child".
+proc checkPreInsertValidity(parent, node, before: Node;
+    excl: PreInsertExclude): Result[ParentNode, cstring] =
   let parent = ?parent.checkParentValidity()
-  if node.isInclusiveAncestorHost(parent):
+  if node.isInclusiveAncestorHost(parent.asNode):
     return err("parent must be an ancestor")
   if before != nil and before.parentNode != parent:
     return err(nil)
   if not node.isValidChild():
     return err("node is not a valid child")
   if parent of Document:
-    if node of DocumentFragment:
-      let node = DocumentFragment(node)
-      let elems = node.countChildren(ntElement)
-      if elems > 1 or node.hasChild(ntText):
-        return err("document fragment has invalid children")
-      elif elems == 1 and (parent.hasChild(ntElement) or
-          before != nil and (before of DocumentType or
-          before.hasNextSibling(ntDocumentType))):
-        return err("document fragment has invalid children")
-    elif node of Element:
-      if parent.hasChild(ntElement):
-        return err("document already has an element child")
-      elif before != nil and (before of DocumentType or
-            before.hasNextSibling(ntDocumentType)):
-        return err("cannot insert element before document type")
-    elif node of DocumentType:
-      if parent.hasChild(ntDocumentType) or
-          before != nil and before.hasPreviousSibling(ntElement) or
-          before == nil and parent.hasChild(ntElement):
+    if (let node = node as DocumentFragment; node != nil):
+      var elemSeen = false
+      for child in node.asParentNode.childList:
+        if child of Element:
+          if elemSeen:
+            return err("cannot insert two elements into document")
+          if not parent.canInsertIntoDocument(node.asNode, before, ntElement,
+              excl):
+            return err("cannot insert fragment into document here")
+          elemSeen = true
+        if child of Text:
+          return err("cannot insert text into document")
+    elif (let node = node as Element; node != nil):
+      if not parent.canInsertIntoDocument(node.asNode, before, ntElement,
+          excl):
+        return err("cannot insert element into document here")
+    elif (let node = node as DocumentType; node != nil):
+      if not parent.canInsertIntoDocument(node.asNode, before, ntDocumentType,
+          excl):
         return err("cannot insert document type before an element node")
     elif node of Text:
       return err("cannot insert text into document")
@@ -2398,7 +2068,7 @@ proc preInsertionValidity(parent, node, before: Node):
   ok(parent)
 
 # Pass an index to avoid searching for the node in parent's child list.
-proc removeImpl*(node: Node; suppressObservers = false) =
+proc removeImpl*(node: Node; ctx: JSContext; suppressObservers = false) =
   let parent = node.parentNode
   if parent == nil:
     return
@@ -2409,331 +2079,221 @@ proc removeImpl*(node: Node; suppressObservers = false) =
   assert document != nil
   #TODO live ranges
   document.invalidateCollectionsRemove(node)
-  let element = if node of Element: Element(node) else: nil
+  let element = node as Element
   let parentElement = node.parentElement
   if parentElement != nil:
     parentElement.invalidate()
   else:
     # we're removing all elements; the document must still be invalidated
     document.invalid = true
-  let prev = node.internalPrev
+  var prev = node.internalPrev # we turn this into previousSibling
   let next = node.internalNext
+  let oldNextSibling = node.nextSibling
   if next != nil and next.parentNode != nil:
     next.internalPrev = prev
   else:
     parent.firstChild.internalPrev = prev
   if parent.firstChild == node:
+    prev = Node(nil)
     if next != nil and next.parentNode != nil:
       parent.setFirstChild(next)
     else:
-      parent.setFirstChild(nil)
+      parent.setFirstChild(Node(nil))
   else:
     prev.internalNext = next
-  node.internalPrev = nil
-  node.internalNext = document
-  node.parentNode = nil
+  node.internalPrev = Node(nil)
+  node.internalNext = document.asNode
+  node.parentNode = ParentNode(nil)
   document.invalidateCollections()
   if element != nil:
     if parentElement != nil and next.parentNode == parent:
       parentElement.flags.incl(efChildElIndicesInvalid)
-    element.internalElIndex = 0
+    element.setMagic(0)
   #TODO assigned
   if oldRootNode of ShadowRoot:
     let shadow = ShadowRoot(oldRootNode)
     discard shadow
     #TODO signal slot change if parent is slot without assigned nodes
   let parentConnected = oldRootNode.isConnected
+  let oldRootDocumentLike = oldRootNode as RootNode
   for desc in node.descendantsShadowIncl:
     #TODO assign slottables with parent's root & node
     let last = desc.lastChild
-    if last != nil: # update root
+    if last != nil and last.internalNext == oldRootNode: # update root
       last.internalNext = node
-    if desc of Element:
-      let element = Element(desc)
-      if element.id != satUempty and oldRootNode == document:
-        document.removeElementId(element)
+    if (let element = desc as Element; element != nil):
+      if element.id != satUempty:
+        # try to remove from the old root; this might not do anything if
+        # this is a descendant of a shadow root
+        if oldRootDocumentLike != nil:
+          oldRootDocumentLike.removeElementId(element)
       document.applyStyleDependencies(element, DependencyInfo.default)
       element.removingSteps()
       if element.custom == cesCustom and parentConnected:
         discard #TODO queue disconnectedCallback
-  #TODO registered observers
+  #TODO transient registered observers
   if not suppressObservers:
-    discard #TODO queue tree mutation record
+    parent.queueTreeMutationRecord(ctx, [], [node], prev, oldNextSibling)
   #TODO children changed steps
 
 # e may be nil
-proc insertThrow(ctx: JSContext; e: cstring): JSValue =
+proc insertThrow*(ctx: JSContext; e: cstring): JSValue =
   if e == nil:
     return JS_ThrowDOMException(ctx, "NotFoundError",
       "reference node is not a child of parent")
   return JS_ThrowDOMException(ctx, "HierarchyRequestError", e)
 
-proc removeChild(ctx: JSContext; parent, node: Node): JSValue {.jsfunc.} =
-  if Node(node.parentNode) != parent:
-    return ctx.insertThrow(nil)
-  node.removeImpl()
-  return ctx.toJS(node)
-
 # before may be nil
-proc insertBefore(parent, node, before: Node; ctx: JSContext): Err[cstring] =
-  let parent = ?parent.preInsertionValidity(node, before)
+proc insertBefore(parent: Node; ctx: JSContext; node, before: Node):
+    Err[cstring] =
+  let parent = ?parent.checkPreInsertValidity(node, before, pieNone)
   let referenceChild = if before == node:
     node.nextSibling
   else:
     before
-  parent.insert(node, referenceChild, ctx)
+  parent.insert(ctx, node, referenceChild)
   ok()
 
-proc insertBefore(ctx: JSContext; parent, node: Node; before: Option[Node]):
-    JSValue {.jsfunc.} =
-  let res = parent.insertBefore(node, before.get(nil), ctx)
-  if res.isErr:
-    return ctx.insertThrow(res.error)
-  return ctx.toJS(node)
-
-proc insertBeforeUndefined(ctx: JSContext; parent, node: Node;
-    before: Option[Node]): JSValue =
-  let res = parent.insertBefore(node, before.get(nil), ctx)
+proc insertBeforeUndefined*(ctx: JSContext; parent, node: Node;
+    before: NodeNil): JSValue =
+  let res = parent.insertBefore(ctx, node, before.get)
   if res.isErr:
     return ctx.insertThrow(res.error)
   return JS_UNDEFINED
 
-proc appendChild(ctx: JSContext; parent, node: Node): JSValue {.jsfunc.} =
-  return ctx.insertBefore(parent, node, none(Node))
-
-#TODO this looks wrong. either pre-insert and throw or just insert...
-proc append(parent, node: Node; ctx: JSContext) =
-  discard parent.insertBefore(node, nil, ctx)
+proc append*(parent: ParentNode; ctx: JSContext; node: Node) =
+  parent.insert(ctx, node, Node(nil))
 
 # Replace child with node.
 # Note: the argument ordering here is the opposite of replaceChild.
-proc replaceChildWith*(parent, child, node: Node; ctx: JSContext):
+proc replaceChildWith*(parent: Node; ctx: JSContext; child, node: Node):
     Err[cstring] =
-  let parent = ?parent.checkParentValidity()
-  if node.isInclusiveAncestorHost(parent):
-    return err("parent must be an ancestor")
-  if child.parentNode != parent:
-    return err(nil)
-  if not node.isValidChild():
-    return err("node is not a valid child")
+  let parent = ?parent.checkPreInsertValidity(node, child, pieBefore)
   let childNextSibling = child.nextSibling
   let childPreviousSibling = child.previousSibling
-  if parent of Document:
-    if node of DocumentFragment:
-      let node = DocumentFragment(node)
-      let elems = node.countChildren(ntElement)
-      if elems > 1 or node.hasChild(ntText):
-        return err("document fragment has invalid children")
-      elif elems == 1 and (parent.hasChildExcept(ntElement, child) or
-          childNextSibling != nil and childNextSibling of DocumentType):
-        return err("document fragment has invalid children")
-    elif node of Element:
-      if parent.hasChildExcept(ntElement, child):
-        return err("document already has an element child")
-      elif childNextSibling != nil and childNextSibling of DocumentType:
-        return err("cannot insert element before document type")
-    elif node of DocumentType:
-      if parent.hasChildExcept(ntDocumentType, child) or
-          childPreviousSibling != nil and childPreviousSibling of DocumentType:
-        return err("cannot insert document type before an element node")
-    elif node of Text:
-      return err("replacement cannot be placed in parent")
-  elif node of DocumentType:
-    return err("replacement cannot be placed in parent")
   let referenceChild = if childNextSibling == node:
     node.nextSibling
   else:
     childNextSibling
-  child.removeImpl(suppressObservers = true)
-  parent.insert(node, referenceChild, ctx, suppressObservers = true)
-  #TODO tree mutation record
+  parent.asNode.document.adopt(node, ctx)
+  var removedIdx = -1
+  if child.parentNode != nil:
+    removedIdx = 0
+  var nodes: seq[Node] = @[]
+  let fragment = node as DocumentFragment
+  if fragment != nil:
+    nodes = fragment.asParentNode.getChildList()
+  child.removeImpl(ctx, suppressObservers = true)
+  parent.insert(ctx, node, referenceChild, suppressObservers = true)
+  if fragment != nil:
+    parent.queueTreeMutationRecord(ctx, nodes, [child], childPreviousSibling,
+      referenceChild)
+  else:
+    parent.queueTreeMutationRecord(ctx, [node],
+      [child].toOpenArray(0, removedIdx), childPreviousSibling,
+      referenceChild)
   ok()
 
-# Warning: the ordering is counter-intuitive here.
-proc jsReplaceChild(ctx: JSContext; parent, node, child: Node): JSValue {.
-    jsfunc: "replaceChild".} =
-  let res = parent.replaceChildWith(child, node, ctx)
-  if res.isErr:
-    return ctx.insertThrow(res.error)
-  return ctx.toJS(child)
-
-proc replaceChildWithThrow(ctx: JSContext; parent, child, node: Node):
+proc replaceChildWithThrow*(ctx: JSContext; parent, child, node: Node):
     JSValue =
-  let res = parent.replaceChildWith(child, node, ctx)
+  let res = parent.replaceChildWith(ctx, child, node)
   if res.isErr:
     return ctx.insertThrow(res.error)
   return JS_UNDEFINED
 
-proc clone(node: Node; ctx: JSContext; document = none(Document);
-    deep = false): Node =
-  let document = document.get(node.document)
-  let copy = if node of Element:
+proc clone(node: Node; document: Document; deep: bool;
+    fallbackRegistry: CustomElementRegistry): Node =
+  let copy = if (let element = node as Element; element != nil):
     #TODO is value
-    let element = Element(node)
-    let x = document.newElement(element.localName.view(),
-      element.namespaceURI.view(), element.tagName.view())
-    x.id = element.id.dup()
-    x.name = element.name.dup()
-    for it in element.classList.toks:
-      x.classList.toks.add(it.dup())
-    x.attrs = element.dupAttrs()
+    let x = document.newElement(element.localName, element.namespaceURI,
+      element.tagName)
+    x.id = element.id
+    x.name = element.name
+    x.classList = element.classList
+    x.attrs = element.attrs
     # Cloning steps
-    if x of HTMLScriptElement:
-      let x = HTMLScriptElement(x)
-      let element = HTMLScriptElement(element)
+    if (let x = x as HTMLScriptElement; x != nil):
+      let element = element as HTMLScriptElement
       x.alreadyStarted = element.alreadyStarted
-    elif x of HTMLInputElement:
-      let x = HTMLInputElement(x)
-      let element = HTMLInputElement(element)
-      x.inputType = element.inputType
-      x.setValue(element.value)
-      #TODO dirty value flag
-      x.setChecked(element.checked)
-      #TODO dirty checkedness flag
-    Node(x)
-  elif node of Attr:
-    let attr = Attr(node)
-    let data = attr.data
-    let dummy = AttrDummyElement(
-      internalNext: attr.ownerElement.document,
-      attrs: @[data]
-    )
-    Node(dummy.newAttr(0))
-  elif node of Text:
-    let node = Text(node)
-    if node of CDATASection:
-      Node(document.newCDATASection(newRefString(node.data.s)))
     else:
-      Node(document.newText(node.data.s))
-  elif node of Comment:
-    let comment = Comment(node)
-    let x = document.newComment(newRefString(comment.data.s))
-    Node(x)
-  elif node of ProcessingInstruction:
-    let pi = ProcessingInstruction(node)
-    let clone = document.newProcessingInstruction(pi.target,
-      newRefString(pi.data.s))
-    Node(clone)
-  elif node of Document:
-    let document = Document(node)
+      cloningStepsForm(element, x)
+    x.asNode
+  elif (let attr = node as Attr; attr != nil):
+    newAttr(attr.asNode.document, attr.data).asNode
+  elif (let node = node as Text; node != nil):
+    if node of CDATASection:
+      document.newCDATASection(newRefString(node.data.s)).asNode
+    else:
+      document.newText(node.data.s).asNode
+  elif (let node = node as Comment; node != nil):
+    document.newComment(newRefString(node.data.s)).asNode
+  elif (let node = node as ProcessingInstruction; node != nil):
+    let clone = document.newProcessingInstruction(node.target,
+      newRefString(node.data.s))
+    clone.asNode
+  elif (let document = node as Document; document != nil):
     let x = newDocument(document.url)
     x.charset = document.charset
     x.contentType = document.contentType
     x.origin = document.origin
-    x.mode = document.mode
-    Node(x)
-  elif node of DocumentType:
-    let doctype = DocumentType(node)
-    let x = document.newDocumentType(doctype.name, doctype.publicId,
-      doctype.systemId)
-    Node(x)
+    x.quirksMode = document.quirksMode
+    x.asNode
+  elif (let node = node as DocumentType; node != nil):
+    document.newDocumentType(node.name, node.publicId, node.systemId).asNode
   elif node of DocumentFragment:
-    let x = document.newDocumentFragment()
-    Node(x)
+    document.newDocumentFragment().asNode
   else:
     assert false
     Node(nil)
-  if deep and node of ParentNode:
-    let node = ParentNode(node)
-    for child in node.childList:
-      copy.append(child.clone(ctx, deep = true), ctx)
   copy
 
-proc cloneNode(ctx: JSContext; node: Node; deep = false): JSValue {.jsfunc.} =
-  if node of ShadowRoot:
-    return JS_ThrowDOMException(ctx, "NotSupportedError",
-      "cannot clone shadow roots")
-  let copy = node.clone(ctx, deep = deep)
-  if node of Element:
-    let element = Element(node)
+proc cloneNodeImpl(ctx: JSContext; node: Node; document: Document; deep: bool;
+    parent: ParentNode; fallbackRegistry: CustomElementRegistry): Opt[Node] =
+  let copy = node.clone(document, deep, fallbackRegistry)
+  if copy == nil:
+    JS_ThrowOutOfMemory(ctx)
+    return err()
+  if parent != nil:
+    parent.append(ctx, copy)
+  if deep:
+    let node = node as ParentNode
+    if node != nil:
+      for child in node.childList:
+        discard ?ctx.cloneNodeImpl(child, document, deep, copy as ParentNode,
+          fallbackRegistry)
+  if (let element = node as Element; element != nil):
     let shadow = element.shadowRoot
     if shadow != nil:
       let customElements = shadow.globalCustomElements
-      let x = ctx.attachShadow(Element(copy), ShadowRootInit(
+      let copyShadow = ?ctx.attachShadow(copy as Element, ShadowRootInit(
         mode: shadow.mode,
         serializable: shadow.serializable,
         delegatesFocus: shadow.delegatesFocus,
         slotAssignment: shadow.slotAssignment,
         customElementRegistry: customElements
       ))
-      if x.isErr:
-        return JS_EXCEPTION
-      let copyShadow = x.get
       copyShadow.declarative = shadow.declarative
       copyShadow.unsetCustomElements = shadow.unsetCustomElements
-      for child in shadow.childList:
-        copyShadow.append(child.clone(ctx, deep = deep), ctx)
-  return ctx.toJS(copy)
-
-proc isSameNode(node, other: Node): bool {.jsfunc.} =
-  return node == other
+      for child in shadow.asParentNode.childList:
+        discard ?ctx.cloneNodeImpl(child, document, deep = true,
+          copyShadow.asParentNode, CustomElementRegistry(nil))
+  ok(copy)
 
 proc previousElementSiblingImpl(this: Node): Element =
   for it in this.precedingSiblings:
-    if it of Element:
-      return Element(it)
-  nil
+    if (let element = it as Element; element != nil):
+      return element
+  Element(nil)
 
 proc nextElementSiblingImpl(this: Node): Element =
   for it in this.subsequentSiblings:
-    if it of Element:
-      return Element(it)
-  nil
-
-proc childNodes(ctx: JSContext; node: Node): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(node, wwmChildNodes)
-
-proc isEqualNode(node, other: Node): bool {.jsfunc.} =
-  if node of DocumentType:
-    if not (other of DocumentType):
-      return false
-    let node = DocumentType(node)
-    let other = DocumentType(other)
-    if node.name != other.name or node.publicId != other.publicId or
-        node.systemId != other.systemId:
-      return false
-  elif node of ParentNode:
-    let node = ParentNode(node)
-    if node of Element:
-      let node = Element(node)
-      if not (other of ParentNode):
-        return false
-      let other = Element(other)
-      if node.namespaceURI != other.namespaceURI or
-          node.tagName != other.tagName or node.attrs.len != other.attrs.len:
-        return false
-      for i, attr in node.attrs.mypairs:
-        if attr != other.attrs[i]:
-          return false
-    var it = other.firstChild
-    for child in node.childList:
-      if it == nil or not child.isEqualNode(it):
-        return false
-      it = it.nextSibling
-  elif node of Attr:
-    if not (other of Attr):
-      return false
-    if Attr(node).data != Attr(other).data:
-      return false
-  elif node of ProcessingInstruction:
-    if not (other of ProcessingInstruction):
-      return false
-    let node = ProcessingInstruction(node)
-    let other = ProcessingInstruction(other)
-    if node.target != other.target or node.data.s != other.data.s:
-      return false
-  elif node of CharacterData:
-    if node of Text and not (other of Text) or
-        node of Comment and not (other of Comment) or
-        node of CDATASection and not (other of CDATASection):
-      return false
-    return CharacterData(node).data.s == CharacterData(other).data.s
-  true
+    if (let element = it as Element; element != nil):
+      return element
+  Element(nil)
 
 proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
     writeShadow: bool) =
-  if child of Element:
-    let element = Element(child)
+  if (let element = child as Element; element != nil):
     const LocalNamespace = [
       satNamespaceHTML, satNamespaceMathML, satNamespaceSVG
     ]
@@ -2753,7 +2313,7 @@ proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
         res &= "xml:"
         local = true
       of satNamespaceXMLNS:
-        if not attr.name.matchesLocalName(satXmlns.toAtomTrace()):
+        if not attr.name.matchesLocalName(satXmlns.view()):
           res &= "xmlns:"
         local = true
       of satNamespaceXLink:
@@ -2766,10 +2326,9 @@ proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
         res &= ($attr.name).substr(i)
       res &= "=\"" & attr.value.htmlEscape(mode = emAttribute) & "\""
     res &= '>'
-    res.serializeFragment(element, writeShadow)
+    res.serializeFragment(element.asNode, writeShadow)
     res &= "</" & $tag & '>'
-  elif child of Text:
-    let text = Text(child)
+  elif (let text = child as Text; text != nil):
     const LiteralTags = {
       ttStyle, ttScript, ttXmp, ttIframe, ttNoembed, ttNoframes,
       ttPlaintext, ttNoscript
@@ -2778,24 +2337,22 @@ proc serializeFragmentInner(res: var string; child: Node; parentType: TagType;
       res &= text.data.s
     else:
       res &= text.data.s.htmlEscape(mode = emText)
-  elif child of Comment:
-    res &= "<!--" & Comment(child).data.s & "-->"
-  elif child of ProcessingInstruction:
-    let inst = ProcessingInstruction(child)
+  elif (let comment = child as Comment; comment != nil):
+    res &= "<!--" & comment.data.s & "-->"
+  elif (let inst = child as ProcessingInstruction; inst != nil):
     res &= "<?" & inst.target & " " & inst.data.s & '>'
-  elif child of DocumentType:
-    res &= "<!DOCTYPE " & DocumentType(child).name & '>'
+  elif (let child = child as DocumentType; child != nil):
+    res &= "<!DOCTYPE " & child.name & '>'
 
 proc serializeFragment(res: var string; node: Node; writeShadow: bool) =
   var node = node
   var parentType = ttUnknown
-  if node of Element:
-    let element = Element(node)
+  if (let element = node as Element; element != nil):
     const Extra = {ttBasefont, ttBgsound, ttFrame, ttKeygen, ttParam}
     if element.tagType in VoidElements + Extra:
       return
-    if element of HTMLTemplateElement:
-      node = HTMLTemplateElement(element).content
+    if (let templ = element as HTMLTemplateElement; templ != nil):
+      node = templ.content.asNode
     else:
       parentType = element.tagType
       if parentType == ttNoscript and not element.scriptingEnabled:
@@ -2817,10 +2374,9 @@ proc serializeFragment(res: var string; node: Node; writeShadow: bool) =
             shadowCustomElements != nil and not shadowCustomElements.scoped:
           res &= " shadowrootcustomelementregistry=\"\""
         res &= '>'
-        res.serializeFragment(shadow, writeShadow)
+        res.serializeFragment(shadow.asNode, writeShadow)
         res &= "</template>"
-  if node of ParentNode:
-    let node = ParentNode(node)
+  if (let node = node as ParentNode; node != nil):
     for child in node.childList:
       res.serializeFragmentInner(child, parentType, writeShadow)
 
@@ -2832,25 +2388,253 @@ proc findAncestor*(node: Node; tagType: TagType): Element =
   for element in node.ancestors:
     if element.tagType == tagType:
       return element
-  return nil
+  return Element(nil)
 
-proc setNodeValue(ctx: JSContext; node: Node; data: DOMStringNull): Opt[void]
-    {.jsfset: "nodeValue".} =
-  if node of CharacterData:
-    let node = CharacterData(node)
-    node.data = newRefString(data)
-  elif node of Attr:
-    Attr(node).setValue(data)
-  return ok()
+proc assignSlot(node: Node) =
+  discard
 
-proc setTextContent(ctx: JSContext; node: Node; data: DOMStringNull): Opt[void]
-    {.jsfset: "textContent".} =
-  if node of Element or node of DocumentFragment:
-    let node = ParentNode(node)
-    node.replaceAll(data, ctx)
+proc getLiveCollection*(node: Node; name: CollectionName): CollectionLike =
+  # Returns the live collection with magic `name' rooted at `node'.
+  let document = node.document
+  for collection in document.liveCollections(node):
+    if collection.getMagic() == uint32(name):
+      return collection
+  CollectionLike(nil)
+
+proc getHTMLCollection*(node: ParentNode; match: CollectionMatchFun;
+    mode: CollectionMode; name: CollectionName): HTMLCollection =
+  let collection = node.asNode.getLiveCollection(name)
+  if collection != nil:
+    return collection as HTMLCollection
+  newHTMLCollection(node.asNode, match, mode, name)
+
+proc childrenImpl(node: ParentNode): HTMLCollection =
+  node.getHTMLCollection(isElement, cmChildren, cnChildren)
+
+proc isDefaultPassive(target: EventTarget): bool {.exportc: "cha_$1".} =
+  let node = target as Node
+  if node == nil:
+    return false
+  #TODO what with Window?
+  let document = node.document
+  return document.asEventTarget == target or
+    document.documentElement.asEventTarget == target or
+    document.findFirst(ttBody).asEventTarget == target
+
+proc getParentImpl(eventTarget: EventTarget; isLoad: bool): EventTarget {.
+    exportc: "cha_$1".} =
+  let node = eventTarget as Node
+  if node != nil:
+    let document = node as Document
+    if document != nil:
+      if isLoad:
+        return EventTarget(nil)
+      # if no browsing context, then window will be nil anyway
+      return document.window.asEventTarget
+    if eventTarget of ShadowRoot:
+      let shadow = ShadowRoot(eventTarget)
+      #TODO composed
+      return shadow.host.asEventTarget
+    return node.parentNode.asEventTarget
+  return EventTarget(nil)
+
+type GetRootNodeOptions {.pure.} = object of JSDict
+  composed {.jsdefault.}: bool
+
+jsClassDef(Node):
+  jsextends EventTargetDef
+
+  event.nodeClassID = classDef.id
+
+  jsget Node, parentNode
+
+  proc baseURI(node: Node): string {.jsfget.} =
+    return $node.document.baseURL
+
+  proc getRootNode(node: Node; options = GetRootNodeOptions()): Node
+      {.jsfunc.} =
+    if options.composed:
+      return node.rootNodeShadow
+    node.rootNode
+
+  proc parentElement*(node: Node): Element {.jsfget.} =
+    node.parentNode as Element
+
+  proc nextSibling(node: Node): Node {.jsfget.} =
+    if node.parentNode == nil:
+      # if parent is nil, then may be a shadow root
+      return Node(nil)
+    return node.nextSiblingShadow
+
+  proc previousSibling*(node: Node): Node {.jsfget.} =
+    if node.parentNode == nil or node == node.parentNode.firstChild:
+      return Node(nil)
+    return node.internalPrev
+
+  proc ownerDocument(node: Node): Document {.jsfget.} =
+    if node of Document:
+      return Document(nil)
+    return node.document
+
+  proc nodeType(node: Node): uint16 {.jsfget.} =
+    return uint16(node.nodeTypeEnum)
+
+  proc nodeName(ctx: JSContext; node: Node): JSValue {.jsfget.} =
+    if (let node = node as Element; node != nil):
+      return ctx.toJS(node.tagName)
+    if (let node = node as Attr; node != nil):
+      return ctx.toJS(node.data.name)
+    if (let node = node as DocumentType; node != nil):
+      return ctx.toJS(node.name)
+    if node of CDATASection:
+      return JS_NewString(ctx, "#cdata-section")
+    if node of Comment:
+      return JS_NewString(ctx, "#comment")
+    if node of Document:
+      return JS_NewString(ctx, "#document")
+    if node of DocumentFragment:
+      return JS_NewString(ctx, "#document-fragment")
+    if (let node = node as ProcessingInstruction; node != nil):
+      return ctx.toJS(node.target)
+    return JS_NewString(ctx, "#text")
+
+  proc nodeValue(ctx: JSContext; node: Node): JSValue {.jsfget.} =
+    if (let node = node as CharacterData; node != nil):
+      return ctx.toJS(node.data)
+    elif (let node = node as Attr; node != nil):
+      return ctx.toJS(node.data.value)
+    return JS_NULL
+
+  proc textContent(ctx: JSContext; node: Node): JSValue {.jsfget.} =
+    if node of Document or node of DocumentType:
+      return JS_NULL
+    return ctx.toJS(node.textContent)
+
+  proc isConnected*(node: Node): bool {.jsfget.} =
+    return node.rootNodeShadow of Document
+
+  proc contains(a: Node; b: NodeNil): bool {.jsfunc.} =
+    let b = b.get
+    if b == nil:
+      return false
+    a.contains(b)
+
+  proc firstChild(node: Node): Node {.jsfget.} =
+    if (let node = node as ParentNode; node != nil):
+      return node.firstChild
+    Node(nil)
+
+  proc lastChild(node: Node): Node {.jsfget.} =
+    if (let node = node as ParentNode; node != nil):
+      return node.lastChild
+    Node(nil)
+
+  proc hasChildNodes(node: Node): bool {.jsfunc.} =
+    return node.firstChild != nil
+
+  proc removeChild(ctx: JSContext; parent, node: Node): JSValue {.jsfunc.} =
+    if node.parentNode.asNode != parent:
+      return ctx.insertThrow(nil)
+    node.removeImpl(ctx)
+    return ctx.toJS(node)
+
+  proc insertBefore(ctx: JSContext; parent, node: Node; before: NodeNil):
+      JSValue {.jsfunc.} =
+    let res = parent.insertBefore(ctx, node, before.get)
+    if res.isErr:
+      return ctx.insertThrow(res.error)
+    return ctx.toJS(node)
+
+  proc appendChild(ctx: JSContext; parent, node: Node): JSValue {.jsfunc.} =
+    return ctx.insertBefore(parent, node, jsNull(Node))
+
+  # Warning: the ordering is counter-intuitive here.
+  proc jsReplaceChild(ctx: JSContext; parent, node, child: Node): JSValue {.
+      jsfunc: "replaceChild".} =
+    let res = parent.replaceChildWith(ctx, child, node)
+    if res.isErr:
+      return ctx.insertThrow(res.error)
+    return ctx.toJS(child)
+
+  proc cloneNode(ctx: JSContext; node: Node; deep = false): Opt[Node]
+      {.jsfunc.} =
+    if node of ShadowRoot:
+      JS_ThrowDOMException(ctx, "NotSupportedError",
+        "cannot clone shadow roots")
+      return err()
+    ctx.cloneNodeImpl(node, node.document, deep, ParentNode(nil),
+      CustomElementRegistry(nil))
+
+  proc isSameNode(node, other: Node): bool {.jsfunc.} =
+    return node == other
+
+  proc childNodes(node: Node): NodeList {.jsfget.} =
+    var list = node.getLiveCollection(cnChildNodes) as NodeList
+    if list == nil:
+      list = newNodeList(node, match = nil, cmChildren, cnChildNodes)
+    move(list)
+
+  proc isEqualNode(node, other: Node): bool {.jsfunc.} =
+    if (let node = node as DocumentType; node != nil):
+      let other = other as DocumentType
+      if other == nil:
+        return false
+      if node.name != other.name or node.publicId != other.publicId or
+          node.systemId != other.systemId:
+        return false
+    elif (let node = node as ParentNode; node != nil):
+      if (let node = node as Element; node != nil):
+        let other = other as Element
+        if other == nil:
+          return false
+        if node.namespaceURI != other.namespaceURI or
+            node.tagName != other.tagName or node.attrs.len != other.attrs.len:
+          return false
+        for i, attr in node.attrs.mypairs:
+          if attr != other.attrs[i]:
+            return false
+      elif node of Document and not (other of Document):
+        return false
+      elif node of DocumentFragment and not (other of DocumentFragment):
+        return false
+      var it = other.firstChild
+      for child in node.childList:
+        if it == nil or not child.isEqualNode(it):
+          return false
+        it = it.nextSibling
+    elif (let node = node as Attr; node != nil):
+      let other = other as Attr
+      if other == nil or node.data != other.data:
+        return false
+    elif (let node = node as ProcessingInstruction; node != nil):
+      let other = other as ProcessingInstruction
+      if other == nil or node.target != other.target or
+          node.data.s != other.data.s:
+        return false
+    elif (let node = node as CharacterData; node != nil):
+      let other = other as CharacterData
+      if other == nil or not node.sameClass(other):
+        return false
+      return node.data.s == other.data.s
+    true
+
+  proc setNodeValue(ctx: JSContext; node: Node; data: DOMStringNull): Opt[void]
+      {.jsfset: "nodeValue".} =
+    if (let node = node as CharacterData; node != nil):
+      ctx.setData(node, data)
+    elif (let node = node as Attr; node != nil):
+      ctx.setValue(node, data)
     return ok()
-  return ctx.setNodeValue(node, data)
 
+  proc setTextContent(ctx: JSContext; node: Node; data: DOMStringNull):
+      Opt[void] {.jsfset: "textContent".} =
+    if node of Element or node of DocumentFragment:
+      let node = node as ParentNode
+      node.replaceAll(ctx, data)
+      return ok()
+    return ctx.setNodeValue(node, data)
+
+#TODO mixin?
 proc toNodes(ctx: JSContext; nodes: openArray[JSValueConst];
     res: var seq[Node]): Opt[void] =
   for it in nodes:
@@ -2860,48 +2644,50 @@ proc toNodes(ctx: JSContext; nodes: openArray[JSValueConst];
     else:
       var ds: DOMString
       ?ctx.fromJS(it, ds)
-      res.add(ctx.newText(ds))
+      let text = ctx.newText(ds)
+      if text == nil:
+        JS_ThrowOutOfMemory(ctx)
+        return err()
+      res.add(text.asNode)
   ok()
 
 proc toNode(ctx: JSContext; nodes: openArray[Node]; document: Document): Node =
   if nodes.len == 1:
     return nodes[0]
   let fragment = document.newDocumentFragment()
-  for node in nodes:
-    fragment.append(node, ctx)
-  fragment
+  if fragment != nil:
+    for node in nodes:
+      fragment.asParentNode.append(ctx, node)
+  fragment.asNode
 
 proc toNode(ctx: JSContext; argv: openArray[JSValueConst];
     document: Document): Opt[Node] =
   var nodes: seq[Node] = @[]
   ?ctx.toNodes(argv, nodes)
-  ok(ctx.toNode(nodes, document))
+  let fragment = ctx.toNode(nodes, document)
+  if fragment == nil:
+    JS_ThrowOutOfMemory(ctx)
+    return err()
+  ok(fragment)
 
 proc prependImpl(ctx: JSContext; parent: Node; nodes: openArray[JSValueConst]):
     JSValue =
-  let node = ctx.toNode(nodes, parent.document)
-  if node.isErr:
-    return JS_EXCEPTION
-  return ctx.insertBeforeUndefined(parent, node.get, option(parent.firstChild))
+  let node = ?ctx.toNode(nodes, parent.document)
+  return ctx.insertBeforeUndefined(parent, node, jsNull(parent.firstChild))
 
 proc appendImpl(ctx: JSContext; parent: Node; nodes: openArray[JSValueConst]):
     JSValue =
-  let node = ctx.toNode(nodes, parent.document)
-  if node.isErr:
-    return JS_EXCEPTION
-  return ctx.insertBeforeUndefined(parent, node.get, none(Node))
+  let node = ?ctx.toNode(nodes, parent.document)
+  return ctx.insertBeforeUndefined(parent, node, jsNull(Node))
 
 proc replaceChildrenImpl(ctx: JSContext; parent: Node;
     nodes: openArray[JSValueConst]): JSValue =
-  let node0 = ctx.toNode(nodes, parent.document)
-  if node0.isErr:
-    return JS_EXCEPTION
-  let node = node0.get
-  let x = parent.preInsertionValidity(node, nil)
+  let node = ?ctx.toNode(nodes, parent.document)
+  let x = parent.checkPreInsertValidity(node, Node(nil), pieChildren)
   if x.isErr:
     return ctx.insertThrow(x.error)
   let parent = x.get
-  parent.replaceAll(node, ctx)
+  parent.replaceAll(ctx, node)
   return JS_UNDEFINED
 
 proc previousSiblingExcept(this: Node; nodes: openArray[Node]): Node =
@@ -2929,7 +2715,7 @@ proc beforeImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
     let prev = this.previousSiblingExcept(nodes)
     let node = ctx.toNode(nodes, this.document)
     let before = if prev != nil: prev.nextSibling else: parent.firstChild
-    parent.insert(node, before, ctx)
+    parent.insert(ctx, node, before)
   ok()
 
 proc afterImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
@@ -2940,36 +2726,32 @@ proc afterImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
   if parent != nil:
     let before = this.nextSiblingExcept(nodes)
     let node = ctx.toNode(nodes, this.document)
-    parent.insert(node, before, ctx)
+    parent.insert(ctx, node, before)
   ok()
 
 proc replaceWithImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
     JSValue =
   var nodes: seq[Node]
-  if ctx.toNodes(argv, nodes).isErr:
-    return JS_EXCEPTION
+  ?ctx.toNodes(argv, nodes)
   let parent = this.parentNode
   if parent != nil:
     let before = this.nextSiblingExcept(nodes)
     let node = ctx.toNode(nodes, this.document)
     if this.parentNode == parent:
-      return ctx.replaceChildWithThrow(parent, this, node)
-    parent.insert(node, before, ctx)
+      return ctx.replaceChildWithThrow(parent.asNode, this, node)
+    parent.insert(ctx, node, before)
   return JS_UNDEFINED
 
-proc assignSlot(node: Node) =
-  discard
-
 # ParentNode
-proc firstChild(parent: ParentNode): Node =
+proc firstChild(parent: ParentNode): lent Node =
   let child = parent.internalFirst
   if child != nil and child.parentNode == nil:
     when defined(debug):
       assert child of ShadowRoot
     return child.internalNext
-  return child
+  return parent.internalFirst
 
-proc firstChildShadow(parent: ParentNode): Node =
+proc firstChildShadow(parent: ParentNode): lent Node =
   return parent.internalFirst
 
 proc setFirstChild(node: ParentNode; child: Node) =
@@ -2979,58 +2761,84 @@ proc setFirstChild(node: ParentNode; child: Node) =
   else:
     node.internalFirst = child
 
+proc lastChild*(parent: ParentNode): lent Node =
+  let first = parent.internalFirst
+  if first == nil:
+    return parent.internalFirst
+  if first.parentNode == nil:
+    # skip shadow root
+    let next = first.internalNext
+    if next == nil:
+      return first.internalNext
+    return next.internalPrev
+  return first.internalPrev
+
+proc lastChildBefore*(parent: ParentNode; before: Node): Node =
+  if before != nil:
+    before.previousSibling
+  else:
+    parent.lastChild
+
 proc firstElementChild*(node: ParentNode): Element =
   for child in node.elementList:
     return child
-  return nil
+  return Element(nil)
 
 proc lastElementChild*(node: ParentNode): Element =
   for child in node.relementList:
     return child
-  return nil
+  return Element(nil)
 
 proc findFirstChildOf(node: ParentNode; tagType: TagType): Element =
   for element in node.elementList:
     if element.tagType == tagType:
       return element
-  return nil
+  return Element(nil)
+
+proc findFirstChildOf(node: ParentNode; localName, namespace: StaticAtom):
+    Element =
+  for element in node.elementList:
+    if element.localName == localName and element.namespaceURI == namespace:
+      return element
+  return Element(nil)
 
 proc findLastChildOf(node: ParentNode; tagType: TagType): Element =
   for element in node.relementList:
     if element.tagType == tagType:
       return element
-  return nil
+  return Element(nil)
 
 proc findFirstChildNotOf(node: ParentNode; tagType: set[TagType]): Element =
   for element in node.elementList:
     if element.tagType notin tagType:
       return element
-  return nil
+  return Element(nil)
 
 proc getChildList*(node: ParentNode): seq[Node] =
   result = @[]
   for child in node.childList:
     result.add(child)
 
-proc replaceAll(parent: ParentNode; node: Node; ctx: JSContext) =
+proc replaceAll(parent: ParentNode; ctx: JSContext; node: Node) =
   let removedNodes = parent.getChildList()
   for child in removedNodes:
-    child.removeImpl(true)
+    child.removeImpl(ctx, true)
   if node != nil:
-    if node of DocumentFragment:
-      let nodes = DocumentFragment(node).getChildList()
+    if (let fragment = node as DocumentFragment; fragment != nil):
+      let nodes = fragment.asParentNode.getChildList()
       for it in nodes:
-        parent.insert(it, nil, ctx, suppressObservers = true)
+        parent.insert(ctx, it, Node(nil), suppressObservers = true)
     else:
-      parent.insert(node, nil, ctx, suppressObservers = true)
-  #TODO tree mutation record
+      parent.insert(ctx, node, Node(nil), suppressObservers = true)
+  if node != nil:
+    parent.queueTreeMutationRecord(ctx, [node], removedNodes, Node(nil),
+      Node(nil))
+  elif removedNodes.len > 0:
+    parent.queueTreeMutationRecord(ctx, [], removedNodes, Node(nil), Node(nil))
 
-proc replaceAll(parent: ParentNode; ds: DOMString; ctx: JSContext) =
-  let node = if ds.len > 0: parent.document.newText(ds) else: nil
-  parent.replaceAll(node, ctx)
-
-proc childrenImpl(ctx: JSContext; node: ParentNode): JSValue =
-  return ctx.getWeakCollection(node, wwmChildren)
+proc replaceAll*(parent: ParentNode; ctx: JSContext; ds: DOMString) =
+  let text = if ds.len > 0: parent.asNode.document.newText(ds) else: Text(nil)
+  parent.replaceAll(ctx, text.asNode)
 
 proc childElementCountImpl(node: ParentNode): uint32 =
   let last = node.lastElementChild
@@ -3038,80 +2846,53 @@ proc childElementCountImpl(node: ParentNode): uint32 =
     return 0
   return last.elIndex + 1
 
-proc countChildren(node: ParentNode; t: NodeType): int =
-  result = 0
-  for child in node.childList:
-    if child.nodeTypeEnum == t:
-      inc result
-
-proc hasChild(node: ParentNode; t: NodeType): bool =
-  for child in node.childList:
-    if child.nodeTypeEnum == t:
-      return true
-  return false
-
-proc hasChildExcept(node: ParentNode; t: NodeType; ex: Node): bool =
-  for child in node.childList:
-    if child == ex:
-      continue
-    if child.nodeTypeEnum == t:
-      return true
-  return false
-
 proc childTextContent*(node: ParentNode): string =
   result = ""
   for child in node.childList:
-    if child of Text:
-      result &= Text(child).data.s
+    if (let child = child as Text; child != nil):
+      result &= child.data.s
 
-proc getElementsByTagNameImpl(root: ParentNode; tagName: CAtomTraced):
+proc getParamCollection(root: ParentNode; name: CollectionName; param: CAtom):
+    Collection =
+  let document = root.asNode.document
+  for collection in document.liveCollections(root.asNode):
+    if collection.getMagic() == uint32(name):
+      let collection = collection as Collection
+      if collection.atoms[0] == param:
+        return collection
+  Collection(nil)
+
+proc getElementsByTagNameImpl(root: ParentNode; tagName: CAtom):
     HTMLCollection =
-  if tagName == satUstar:
-    return newHTMLCollection(root, isElement, childonly = false)
-  let this = newHTMLCollection(
-    root,
-    proc(this: Collection; node: Node): bool =
-      if node of Element:
-        let element = Element(node)
-        let atom = this.atoms[0]
-        if element.namespaceURI == satNamespaceHTML:
-          return element.tagName.equalsIgnoreCase(atom)
-        return element.tagName == atom
-      return false,
-    childonly = false
-  )
-  this.atoms = @[tagName.dup()]
+  let collection = root.getParamCollection(cnGetElementsByTagName, tagName)
+  if collection != nil:
+    return collection as HTMLCollection
+  let match = if $tagName == "*": isElement else: isElementOf
+  let this = newHTMLCollection(root.asNode, match, cmSubtree,
+    cnGetElementsByTagName)
+  if this != nil:
+    this.atoms = @[tagName]
   this
 
-proc getElementsByClassNameImpl(node: ParentNode; classNames: DOMString):
+proc getElementsByClassNameImpl(root: ParentNode; classNames: DOMString):
     HTMLCollection =
-  let this = newHTMLCollection(
-    node,
-    proc(this: Collection; node: Node): bool =
-      if not (node of Element):
-        return false
-      let element = Element(node)
-      if element.document.mode == qmQuirks:
-        for class in this.atoms:
-          if not element.classList.toks.containsIgnoreCase(class):
-            return false
-      else:
-        for class in this.atoms:
-          if class notin element.classList.toks:
-            return false
-      true,
-    childonly = false
-  )
-  for class in classNames.toOpenArray().split(AsciiWhitespace):
-    this.atoms.add(class.toAtom())
+  let param = classNames.toAtom()
+  let collection = root.getParamCollection(cnGetElementsByClassName, param)
+  if collection != nil:
+    return collection as HTMLCollection
+  let this = newHTMLCollection(root.asNode, isElementWithClass, cmSubtree,
+    cnGetElementsByClassName)
+  if this != nil:
+    this.atoms.add(param)
+    for class in classNames.toOpenArray().split(AsciiWhitespace):
+      this.atoms.add(class.toAtom())
   this
 
-proc insert0(parent: ParentNode; node, before: Node;
-    postConnectionNodes: var seq[Element]; ctx: JSContext) =
-  let parentDocument = parent.document
+proc insert1(parent: ParentNode; ctx: JSContext; node, before: Node;
+    postConnectionNodes: var seq[Element]) =
+  let parentDocument = parent.asNode.document
   parentDocument.adopt(node, ctx)
-  let rootNode = parent.rootNode
-  let element = if node of Element: Element(node) else: nil
+  let rootNode = parent.asNode.rootNode
   let first = parent.firstChild
   if before == nil:
     if first != nil:
@@ -3133,13 +2914,15 @@ proc insert0(parent: ParentNode; node, before: Node;
       parent.setFirstChild(node)
   node.parentNode = parent
   let parentElement = node.parentElement
+  let element = node as Element
   if element != nil:
-    if element.nextSibling != nil and parentElement != nil:
+    #TODO same as before != nil?
+    if node.nextSibling != nil and parentElement != nil:
       parentElement.flags.incl(efChildElIndicesInvalid)
     elif (let prev = element.previousElementSibling; prev != nil):
-      element.internalElIndex = prev.internalElIndex + 1
+      element.setMagic(prev.getMagic() + 1)
     else:
-      element.internalElIndex = 0
+      element.setMagic(0)
   parentDocument.invalidateCollections()
   if parentElement != nil:
     let shadow = parentElement.shadowRoot
@@ -3151,55 +2934,69 @@ proc insert0(parent: ParentNode; node, before: Node;
     #TODO assign slottables for a tree with root
   if node.nextSibling == nil:
     node.internalNext = rootNode
+  let rootDocumentLike = rootNode as RootNode
+  var specialElement: Element
   for desc in node.descendantsShadowIncl:
     let last = desc.lastChild
-    if last != nil: # update root
+    if last != nil and last.internalNext == node:
+      # update root (but only if it isn't a shadow root inside node)
       last.internalNext = rootNode
-    if desc of Element:
-      let el = Element(desc)
-      if el.id != satUempty and desc.rootNode == parentDocument:
-        parentDocument.addElementId(el)
-      if el.insertionSteps():
-        postConnectionNodes.add(el)
-      if el.custom == cesCustom:
+    if (let element = desc as Element; element != nil):
+      if element.id != satUempty:
+        if element.asNode.rootNode == rootDocumentLike.asNode:
+          # rootNode cannot be nil, so neither can rootDocumentLike here
+          rootDocumentLike.addElementId(element)
+      if specialElement == nil and element.hasInsertionSteps():
+        specialElement = element
+      if element.custom == cesCustom:
         #TODO append parentDocument to element custom registry
         #TODO enqueue connectedCallback (custom elements)
         discard
       else:
         discard #TODO try to upgrade (custom elements)
-    elif desc of ShadowRoot:
-      let shadow = ShadowRoot(desc)
+    elif (let shadow = desc as ShadowRoot; shadow != nil):
       let customElements = shadow.customElements
       if customElements != nil and customElements.scoped:
         customElements.addScopedDocument(parentDocument)
+  # Insertion steps have a tendency to traverse the dom, which has
+  # disastrous consequences in the above loop as the root node is still
+  # inconsistent.  So we just cache the first node with insertion steps
+  # and traverse the tree again if needed.
+  while specialElement != nil:
+    if specialElement.insertionSteps():
+      postConnectionNodes.add(specialElement)
+    specialElement = specialElement.nextElementDescendantShadow(node)
 
 # WARNING ditto
-proc insert*(parent: ParentNode; node, before: Node; ctx: JSContext;
-    suppressObservers = false) =
-  let nodes = if node of DocumentFragment:
-    DocumentFragment(node).getChildList()
-  else:
-    @[node]
-  let count = nodes.len
-  if count == 0:
-    return
-  if node of DocumentFragment:
-    for child in nodes:
-      child.removeImpl(suppressObservers = true)
-    #TODO tree mutation record
+proc insert0(parent: ParentNode; ctx: JSContext; nodes: openArray[Node];
+    before: Node; suppressObservers: bool) =
   if before != nil:
     #TODO live ranges
     discard
-  if parent of Element:
-    Element(parent).invalidate()
+  if (let parent = parent as Element; parent != nil):
+    parent.invalidate()
+  let beforeBefore = parent.lastChildBefore(before)
   var postConnectionNodes: seq[Element] = @[]
   for node in nodes:
-    parent.insert0(node, before, postConnectionNodes, ctx)
+    parent.insert1(ctx, node, before, postConnectionNodes)
   #TODO children changed steps for parent
   if not suppressObservers:
-    discard #TODO queue tree mutation record
+    parent.queueTreeMutationRecord(ctx, nodes, [], beforeBefore, before)
   for el in postConnectionNodes:
-    el.postConnectionSteps()
+    el.postConnectionSteps(ctx)
+
+proc insert*(parent: ParentNode; ctx: JSContext; node, before: Node;
+    suppressObservers = false) =
+  if (let fragment = node as DocumentFragment; fragment != nil):
+    let nodes = fragment.asParentNode.getChildList()
+    if nodes.len > 0:
+      for child in nodes:
+        child.removeImpl(ctx, suppressObservers = true)
+      fragment.asParentNode.queueTreeMutationRecord(ctx, nodes, [], Node(nil),
+        Node(nil))
+      parent.insert0(ctx, nodes, before, suppressObservers)
+  else:
+    parent.insert0(ctx, [node], before, suppressObservers)
 
 proc parseSelectors(ctx: JSContext; ds: DOMString): SelectorList =
   result = parseSelectors(ds)
@@ -3212,7 +3009,7 @@ proc querySelectorImpl(ctx: JSContext; node: ParentNode; q: DOMString):
   if selectors.len == 0:
     return JS_EXCEPTION
   for element in node.elementDescendants:
-    if element.matchesImpl(selectors):
+    if element.matchesList(selectors):
       return ctx.toJS(element)
   return JS_NULL
 
@@ -3222,23 +3019,120 @@ proc querySelectorAllImpl(ctx: JSContext; node: ParentNode; q: DOMString):
   if selectors.len == 0:
     return JS_EXCEPTION
   let this = newEmptyNodeList()
+  if this == nil:
+    return JS_ThrowOutOfMemory(ctx)
   for element in node.elementDescendants:
-    if element.matchesImpl(selectors):
-      this.snapshot.add(element)
+    if element.matchesList(selectors):
+      this.snapshot.add(element.asNode)
   return ctx.toJS(this)
 
+proc getChildrenOf(node: ParentNode; name: CollectionName;
+    mode: CollectionMode; tags: varargs[TagType]): HTMLCollection =
+  var collection = node.asNode.getLiveCollection(name) as HTMLCollection
+  if collection == nil:
+    collection = newHTMLCollection(node.asNode, isHTMLElementOf, mode, name)
+    if collection != nil:
+      for tag in tags:
+        collection.atoms.add(tag.view())
+  collection
+
+jsClassPublicDef(ParentNode): # fake class
+  jsextends NodeDef
+
+# RootNode
+proc addElementId0(this: RootNode; element: ptr ElementObj) =
+  let mask = this.elementIdMap.len - 1
+  var element = element
+  let hcache = element.id.hash()
+  var home = hcache and mask
+  for i, it in this.elementIdMap.mtabPairs(hcache):
+    if it == nil:
+      it = element
+      break
+    # if either
+    # * "it"'s id is closer to its home than element's id
+    # * or if "it" has the same id as element, but element comes earlier
+    # then swap out "it" for element.
+    let ihash = it.id.hash()
+    if tabSwap(home, ihash, i, mask) or
+        it.id == element.id and Element(element).precedes(Element(it)):
+      swap(it, element)
+      home = ihash and mask
+
+proc addElementId(this: RootNode; element: Element) =
+  let oldLoad = this.elementIdMapLoad
+  for it in this.elementIdMap.prepareTableAdd(oldLoad, init = 32):
+    if it != nil:
+      this.addElementId0(it)
+  inc this.elementIdMapLoad
+  this.addElementId0(addr element[])
+
+proc tabHashFast(element: ptr ElementObj): Hash =
+  element.id.hash()
+
+proc tabIsEmpty(element: ptr ElementObj): bool =
+  element == nil
+
+proc tabKeyEq(element: ptr ElementObj; id: CAtom): bool =
+  element.id == id
+
+proc tabKeyEq(a, b: ptr ElementObj): bool =
+  a == b
+
+proc getElementById*(this: RootNode; id: CAtom): Element =
+  if id != satUempty:
+    for it in this.elementIdMap.tabGetAll(id):
+      return Element(it)
+  Element(nil)
+
+proc getElementById(this: RootNode; ctx: JSContext; val: JSValueConst):
+    JSValue =
+  let atom = JS_ValueToAtom(ctx, val)
+  if atom == JS_ATOM_NULL:
+    return JS_EXCEPTION
+  var id: CAtomRaw
+  let status = ctx.fromJSView(atom, id)
+  JS_FreeAtom(ctx, atom)
+  if status == fjErr:
+    return JS_EXCEPTION
+  ctx.toJS(this.getElementById(id.view()))
+
+proc removeElementId(this: RootNode; element: Element) =
+  tabDelImpl(this.elementIdMap, this.elementIdMapLoad, addr element[],
+    element.id.hash())
+
+jsClassDef(RootNode): # fake class
+  jsextends ParentNodeDef
+
+# ElementAccessor
+jsClassDef(ElementAccessor): # fake class
+  discard
+
 # Collection
+template asCollection*[T: CollectionObj](x: JSRef[T]): Collection =
+  Collection(x)
+
+template asCollectionLike*[T: CollectionLikeObj](x: JSRef[T]): CollectionLike =
+  CollectionLike(x)
+
 proc populateCollection(this: Collection) =
-  if this.root of ParentNode:
-    let root = ParentNode(this.root)
-    if this.childonly:
+  let root = this.root as ParentNode
+  if root != nil:
+    case this.mode
+    of cmChildren:
       for child in root.childList:
-        if this.match == nil or this.match(this, child):
+        if this.match == nil or this[].match(this, child):
           this.snapshot.add(child)
-    else:
+    of cmSubtree:
       for desc in root.descendants:
-        if this.match == nil or this.match(this, desc):
+        if this.match == nil or this[].match(this, desc):
           this.snapshot.add(desc)
+    of cmTree:
+      let root = root.asNode.rootNode as ParentNode
+      if root != nil:
+        for desc in root.descendants:
+          if this.match == nil or this[].match(this, desc):
+            this.snapshot.add(desc)
 
 proc refreshCollection(this: Collection) =
   if this.invalid:
@@ -3247,45 +3141,7 @@ proc refreshCollection(this: Collection) =
     this.populateCollection()
     this.invalid = false
 
-proc finalize0(collection: CollectionLike) =
-  if collection.document != nil:
-    let collection = cast[ptr CollectionLikeObj](collection)
-    if collection.prev != nil:
-      collection.prev.next = collection.next
-    else:
-      collection.document.liveCollectionsHead = collection.next
-    if collection.next != nil:
-      collection.next.prev = collection.prev
-
-proc finalize(collection: HTMLCollection) {.jsfin.} =
-  collection.finalize0()
-  freeAtoms(collection.atoms)
-
-proc finalize(collection: NodeList) {.jsfin.} =
-  collection.finalize0()
-  freeAtoms(collection.atoms)
-
-proc finalize(rt: JSRuntime; this: NodeIterator) {.jsfin.} =
-  this.finalize0()
-  JS_FreeValueRT(rt, this.filter)
-
-proc finalize(rt: JSRuntime; this: TreeWalker) {.jsfin.} =
-  JS_FreeValueRT(rt, this.filter)
-
-proc mark(rt: JSRuntime; this: NodeIterator; markFun: JS_MarkFunc) {.jsmark.} =
-  JS_MarkValue(rt, this.filter, markFun)
-
-proc finalize(collection: HTMLAllCollection) {.jsfin.} =
-  collection.finalize0()
-  freeAtoms(collection.atoms)
-
-proc finalize(document: Document) {.jsfin.} =
-  var it = document.liveCollectionsHead
-  while it != nil:
-    it.document = nil
-    it = it.next
-
-proc getLength(this: Collection): uint32 =
+proc getLength*(this: Collection): uint32 =
   this.refreshCollection()
   uint32(min(uint64(this.snapshot.len), uint32.high))
 
@@ -3293,161 +3149,226 @@ proc findNode(this: Collection; node: Node): int =
   this.refreshCollection()
   this.snapshot.find(node)
 
-proc attachLiveCollection(root: Node; collection: CollectionLike) =
-  let document = root.document
-  if document.liveCollectionsHead != nil:
-    document.liveCollectionsHead.prev = addr collection[]
-    collection.next = document.liveCollectionsHead
-  document.liveCollectionsHead = addr collection[]
-  collection.document = addr document[]
-
-proc newCollection[T: Collection](root: Node; match: CollectionMatchFun;
-    islive, childonly: bool): T =
-  let this = T(
-    childonly: childonly,
-    match: match,
-    root: root,
-    invalid: islive
-  )
-  if islive:
-    root.attachLiveCollection(this)
-  else:
-    this.populateCollection()
-  this
+proc attach*(collection: CollectionLike) =
+  let document = collection.root.document
+  document.addLiveCollection(collection)
 
 proc newEmptyNodeList(): NodeList =
-  return NodeList(
-    childonly: false,
-    match: nil,
-    document: nil
-  )
+  jsNew NodeListObj(match: nil, document: nil)
+
+proc newNodeList(nodes: openArray[Node]): NodeList =
+  let list = newEmptyNodeList()
+  if list != nil:
+    list.snapshot = @nodes
+  list
 
 proc newHTMLCollection(root: Node; match: CollectionMatchFun;
-    childonly: bool): HTMLCollection =
-  newCollection[HTMLCollection](root, match, islive = true, childonly)
+    mode: CollectionMode; name: CollectionName): HTMLCollection =
+  let this = jsNew HTMLCollectionObj(
+    mode: mode,
+    match: match,
+    root: root,
+    invalid: true
+  )
+  if this != nil:
+    this.asCollectionLike.attach()
+    this.setMagic(uint32(name))
+  this
 
-proc newNodeList(root: Node; match: CollectionMatchFun;
-    islive, childonly: bool): NodeList =
-  newCollection[NodeList](root, match, islive, childonly)
+proc newNodeList(root: Node; match: CollectionMatchFun; mode: CollectionMode;
+    name: CollectionName): NodeList =
+  # returns a live node list
+  let this = jsNew NodeListObj(
+    mode: mode,
+    match: match,
+    root: root,
+    invalid: true
+  )
+  if this != nil:
+    this.asCollectionLike.attach()
+    this.setMagic(uint32(name))
+  this
+
+jsClassDef(CollectionLike): # fake class
+  proc finalize(rt: JSRuntime; collection: CollectionLike) {.jsfin.} =
+    if collection.document != nil:
+      # Note that document may point to a zombie object; in that case
+      # the liveCollections seq is automatically cleared, and this won't
+      # do anything.
+      cast[Document](collection.document).removeLiveCollection(collection)
+
+jsClassDef(Collection): # fake class
+  jsextends CollectionLikeDef
+
+  proc mark(rt: JSRuntime; this: Collection; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for node in this.snapshot:
+      rt.markObj(node, markFunc)
+
+# CharacterData
+jsClassDef(CharacterData):
+  jsextends NodeDef
+
+  jsget CharacterData, data
+
+  proc setData(ctx: JSContext; this: CharacterData; data: DOMStringNull) {.
+      jsfset: "data".} =
+    this.asNode.queueMutationRecord(ctx, mrtCharacterData, CAtomNull,
+      CAtomNull, this.data, true, "", [], [], Node(nil), Node(nil))
+    this.data = newRefString(data)
+
+  proc length(this: CharacterData): int {.jsfget.} =
+    return ($this.data).utf16Len
+
+  proc previousElementSibling(this: CharacterData): Element {.jsfget.} =
+    return this.asNode.previousElementSiblingImpl
+
+  proc nextElementSibling(this: CharacterData): Element {.jsfget.} =
+    return this.asNode.nextElementSiblingImpl
+
+  proc before(ctx: JSContext; this: CharacterData;
+      nodes: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+    ctx.beforeImpl(this.asNode, nodes)
+
+  proc after(ctx: JSContext; this: CharacterData; nodes: varargs[JSValueConst]):
+      Opt[void] {.jsfunc.} =
+    ctx.afterImpl(this.asNode, nodes)
+
+  proc replaceWith(ctx: JSContext; this: CharacterData;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    ctx.replaceWithImpl(this.asNode, nodes)
+
+  proc remove(ctx: JSContext; this: CharacterData) {.jsfunc.} =
+    this.asNode.removeImpl(ctx)
 
 # Text
-proc newText*(document: Document; data: string): Text =
-  return Text(internalNext: document, data: newRefString(data))
+proc newText*(document: Document; data: sink string): Text =
+  jsNew TextObj(internalNext: document.asNode, data: newRefString(move(data)))
 
-proc newText(document: Document; data: DOMString): Text =
-  return Text(internalNext: document, data: newRefString(data))
+proc newText*(document: Document; data: DOMString): Text =
+  jsNew TextObj(internalNext: document.asNode, data: newRefString(data))
 
-proc newText(ctx: JSContext; data = initDOMStringLit("")): Text {.jsctor.} =
-  let window = ctx.getGlobal()
-  return window.document.newText(data)
+jsClassPublicDef(Text):
+  jsextends CharacterDataDef
+
+  proc newText(ctx: JSContext; data = initDOMStringLit("")): Text {.jsctor.} =
+    let window = ctx.getGlobal()
+    return window.document.newText(data)
 
 # CDATASection
 proc newCDATASection(document: Document; data: RefString): CDATASection =
-  return CDATASection(internalNext: document, data: data)
+  jsNew CDATASectionObj(internalNext: document.asNode, data: data)
+
+jsClassDef(CDATASection):
+  jsextends TextDef
 
 # ProcessingInstruction
 proc newProcessingInstruction(document: Document; target: string;
     data: RefString): ProcessingInstruction =
-  ProcessingInstruction(internalNext: document, target: target, data: data)
+  jsNew ProcessingInstructionObj(
+    internalNext: document.asNode,
+    target: target,
+    data: data
+  )
+
+jsClassDef(ProcessingInstruction):
+  jsextends CharacterDataDef
+
+  jsget ProcessingInstruction, target
 
 # Comment
-proc newComment(document: Document; data: RefString): Comment =
-  return Comment(internalNext: document, data: data)
+proc newComment*(document: Document; data: RefString): Comment =
+  jsNew CommentObj(internalNext: document.asNode, data: data)
 
-proc newComment(ctx: JSContext; data = initDOMStringLit("")): Comment {.
-    jsctor.} =
-  let window = ctx.getWindow()
-  return window.document.newComment(newRefString(data))
+jsClassDef(Comment):
+  jsextends CharacterDataDef
+
+  proc newComment(ctx: JSContext; data = initDOMStringLit("")): Comment {.
+      jsctor.} =
+    let window = ctx.getWindow()
+    return window.document.newComment(newRefString(data))
 
 # DocumentFragment
-proc getDocument(ctx: JSContext): Document =
+template asDocumentFragment[T: DocumentFragmentObj](x: JSRef[T]):
+    DocumentFragment =
+  DocumentFragment(x)
+
+proc getDocument*(ctx: JSContext): Document =
   return ctx.getWindow().document
 
 proc newDocumentFragment(document: Document): DocumentFragment =
-  return DocumentFragment(internalNext: document)
+  jsNew DocumentFragmentObj(internalNext: document.asNode)
 
-proc newDocumentFragment(ctx: JSContext): DocumentFragment {.jsctor.} =
-  let window = ctx.getGlobal()
-  return window.document.newDocumentFragment()
+jsClassDef(DocumentFragment):
+  jsextends RootNodeDef
 
-proc firstElementChild(this: DocumentFragment): Element {.jsfget.} =
-  return ParentNode(this).firstElementChild
+  proc newDocumentFragment(ctx: JSContext): DocumentFragment {.jsctor.} =
+    let window = ctx.getGlobal()
+    return window.document.newDocumentFragment()
 
-proc lastElementChild(this: DocumentFragment): Element {.jsfget.} =
-  return ParentNode(this).lastElementChild
+  proc firstElementChild(this: DocumentFragment): Element {.jsfget.} =
+    return this.asParentNode.firstElementChild
 
-proc childElementCount(this: DocumentFragment): uint32 {.jsfget.} =
-  return this.childElementCountImpl
+  proc lastElementChild(this: DocumentFragment): Element {.jsfget.} =
+    return this.asParentNode.lastElementChild
 
-proc querySelector(ctx: JSContext; this: DocumentFragment; q: DOMString):
-    JSValue {.jsfunc.} =
-  return ctx.querySelectorImpl(this, q)
+  proc childElementCount(this: DocumentFragment): uint32 {.jsfget.} =
+    return this.asParentNode.childElementCountImpl
 
-proc querySelectorAll(ctx: JSContext; this: DocumentFragment; q: DOMString):
-    JSValue {.jsfunc.} =
-  return ctx.querySelectorAllImpl(this, q)
+  proc querySelector(ctx: JSContext; this: DocumentFragment; q: DOMString):
+      JSValue {.jsfunc.} =
+    return ctx.querySelectorImpl(this.asParentNode, q)
 
-proc prepend(ctx: JSContext; this: DocumentFragment;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  return ctx.prependImpl(this, nodes)
+  proc querySelectorAll(ctx: JSContext; this: DocumentFragment; q: DOMString):
+      JSValue {.jsfunc.} =
+    return ctx.querySelectorAllImpl(this.asParentNode, q)
 
-proc append(ctx: JSContext; this: DocumentFragment;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  return ctx.appendImpl(this, nodes)
+  proc prepend(ctx: JSContext; this: DocumentFragment;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    return ctx.prependImpl(this.asNode, nodes)
 
-proc replaceChildren(ctx: JSContext; this: DocumentFragment;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  return ctx.replaceChildrenImpl(this, nodes)
+  proc append(ctx: JSContext; this: DocumentFragment;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    return ctx.appendImpl(this.asNode, nodes)
 
-proc children(ctx: JSContext; parentNode: DocumentFragment): JSValue
-    {.jsfget.} =
-  return childrenImpl(ctx, parentNode)
+  proc replaceChildren(ctx: JSContext; this: DocumentFragment;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    return ctx.replaceChildrenImpl(this.asNode, nodes)
+
+  proc children(this: DocumentFragment): HTMLCollection {.jsnfget.} =
+    this.asParentNode.childrenImpl
+
+  proc getElementById(ctx: JSContext; this: DocumentFragment;
+      val: JSValueConst): JSValue {.jsfunc.} =
+    this.asRootNode.getElementById(ctx, val)
 
 # Document
+template asDocument[T: DocumentObj](x: JSRef[T]): Document =
+  Document(x)
+
 proc newXMLDocument(): XMLDocument =
-  let document = XMLDocument(
+  jsNew XMLDocumentObj(
     url: parseURL0("about:blank"),
     contentType: satApplicationXml,
     charset: csUtf8
   )
-  document.implementation = DOMImplementation(document: document)
-  return document
 
 proc newDocument*(url: URL): Document =
-  let document = Document(
+  jsNew DocumentObj(
     url: url,
     contentType: satApplicationXml,
     origin: url.origin,
     charset: csUtf8
   )
-  document.implementation = DOMImplementation(document: document)
-  return document
-
-proc newDocument(ctx: JSContext): Document {.jsctor.} =
-  let global = ctx.getWindow()
-  let document = Document(
-    url: parseURL0("about:blank"),
-    contentType: satApplicationXml,
-    origin: global.document.origin,
-    charset: csUtf8
-  )
-  document.implementation = DOMImplementation(document: document)
-  return document
 
 proc newDocumentType*(document: Document; name, publicId, systemId: string):
     DocumentType =
-  return DocumentType(
-    internalNext: document,
+  jsNew DocumentTypeObj(
+    internalNext: document.asNode,
     name: name,
     publicId: publicId,
     systemId: systemId
   )
-
-proc firstElementChild(this: Document): Element {.jsfget.} =
-  return ParentNode(this).firstElementChild
-
-proc lastElementChild(this: Document): Element {.jsfget.} =
-  return ParentNode(this).lastElementChild
 
 proc isxml(document: Document): bool =
   return document.contentType != satTextHtml
@@ -3455,194 +3376,87 @@ proc isxml(document: Document): bool =
 proc globalCustomElements(document: Document): CustomElementRegistry =
   if document.customElements != nil and not document.customElements.scoped:
     return document.customElements
-  nil
+  CustomElementRegistry(nil)
+
+proc addLiveCollection0(document: Document;
+    collection: ptr CollectionLikeObj) =
+  let mask = document.liveCollections.len - 1
+  var home = collection.hcache and mask
+  var collection = collection
+  let hcache = collection.hcache
+  for i, it in document.liveCollections.mtabPairs(hcache):
+    if it == nil:
+      it = collection
+      break
+    if tabSwap(home, it.hcache, i, mask):
+      swap(it, collection)
+
+proc addLiveCollection(document: Document; collection: CollectionLike) =
+  let oldLoad = document.liveCollectionsLoad
+  for it in document.liveCollections.prepareTableAdd(oldLoad, init = 32):
+    if it != nil:
+      document.addLiveCollection0(it)
+  inc document.liveCollectionsLoad
+  collection.hcache = hash(cast[pointer](collection.root))
+  collection.document = addr document[]
+  document.addLiveCollection0(addr collection[])
+
+proc removeLiveCollection(document: Document; collection: CollectionLike) =
+  tabDelImpl(document.liveCollections, document.liveCollectionsLoad,
+    addr collection[], collection.hcache)
+
+proc getLiveCollections(document: Document; node: Node): seq[CollectionLike] =
+  # Returns all live collections rooted at `node'.
+  var res: seq[CollectionLike] = @[]
+  for collection in document.liveCollections(node):
+    if collection.root == node:
+      res.add(collection)
+  move(res)
 
 proc adopt(document: Document; node: Node; ctx: JSContext) =
   let oldDocument = node.document
-  node.removeImpl()
+  node.removeImpl(ctx)
   if oldDocument != document:
     # node is detached from the tree, so its internalNext is guaranteed to
     # be oldDocument; we want to override that.
-    node.internalNext = document
-    if node of ParentNode:
-      let node = ParentNode(node)
+    node.internalNext = document.asNode
+    if (let node = node as ParentNode; node != nil):
       # The node document is already set, so we must update collections
       # before doing anything that might be observable.
-      var collection = oldDocument.liveCollectionsHead
-      while collection != nil:
-        let next = collection.next
-        if collection.root == node:
-          collection.document = addr document[]
-          collection.prev = nil
-          collection.next = document.liveCollectionsHead
-          if document.liveCollectionsHead != nil:
-            document.liveCollectionsHead.prev = collection
-          document.liveCollectionsHead = collection
-        collection = next
-      for desc in node.descendantsShadowIncl:
-        if desc of ShadowRoot:
-          let root = ShadowRoot(desc)
+      # (In principle we could do this without the seq but it seems like
+      # a pain.)
+      let collections = oldDocument.getLiveCollections(node.asNode)
+      for collection in collections:
+        oldDocument.removeLiveCollection(collection)
+        document.addLiveCollection(collection)
+      let quirks = document.quirksMode
+      for desc in node.asNode.descendantsShadowIncl:
+        if (let root = desc as ShadowRoot; root != nil):
           if root.customElements == nil and not root.unsetCustomElements or
               root.customElements != nil and not root.customElements.scoped:
             root.customElements = document.globalCustomElements
-        if node of Element:
-          let element = Element(node)
-          if ctx != nil and element.attrs.len > 0:
-            let scriptAttrs = ctx.getWeakCollection(element, wwmAttributes)
-            var attributes: NamedNodeMap
-            discard ctx.fromJS(scriptAttrs, attributes)
-            JS_FreeValue(ctx, scriptAttrs)
-            if attributes != nil:
-              for it in attributes.attrlist:
-                it.internalNext = document
+        elif (let element = desc as Element; element != nil):
+          if quirks == qmQuirks:
+            element.flags.incl(efQuirks)
+          else:
+            element.flags.excl(efQuirks)
+          let map = element.getCachedAttributes()
+          if map != nil:
+            for it in map.attrlist:
+              it.internalNext = document.asNode
           #TODO custom element registry, img relevant mutations, adoptedCallback
-          if element.tagType == ttTemplate:
-            document.adopt(HTMLTemplateElement(element).content, ctx)
-
-proc addElementId0(document: Document; element: Element) =
-  let mask = document.elementIdMap.len - 1
-  var home = element.id.hash() and mask
-  var i = home
-  var element = element
-  while true:
-    let it = document.elementIdMap[i]
-    if it == nil:
-      document.elementIdMap[i] = element
-      break
-    # if either
-    # * "it"'s id is closer to its home than element's id
-    # * or if "it" has the same id as element, but element comes earlier
-    # then swap out "it" for element.
-    let ihash = it.id.hash()
-    if tabSwap(home, ihash, i, mask) or
-        it.id == element.id and element.precedes(it):
-      swap(document.elementIdMap[i], element)
-      home = ihash and mask
-    i = (i + 1) and mask
-
-proc addElementId(document: Document; element: Element) =
-  let oldLoad = document.elementIdMapLoad
-  for it in document.elementIdMap.prepareTableAdd(oldLoad, init = 32):
-    if it != nil:
-      document.addElementId0(it)
-  inc document.elementIdMapLoad
-  document.addElementId0(element)
-
-proc removeElementId(document: Document; element: Element) =
-  if document.elementIdMap.len == 0:
-    return
-  let mask = document.elementIdMap.len - 1
-  var i = element.id.hash() and mask
-  while true:
-    let it = document.elementIdMap[i]
-    if it == nil:
-      return # not found
-    if it == element:
-      dec document.elementIdMapLoad
-      document.elementIdMap[i] = nil
-      break
-    i = (i + 1) and mask
-  var j = i
-  while true:
-    j = (j + 1) and mask
-    let it = document.elementIdMap[j]
-    if it == nil:
-      break
-    let k = it.id.hash() and mask
-    if j == k: # already at home
-      break
-    # backwards shift
-    document.elementIdMap[i] = move(document.elementIdMap[j])
-    i = j
-
-proc adoptNode(ctx: JSContext; document: Document; node: Node): JSValue
-    {.jsfunc.} =
-  if node of Document:
-    return JS_ThrowDOMException(ctx, "NotSupportedError",
-      "document nodes cannot be adopted")
-  if node of ShadowRoot:
-    return JS_ThrowDOMException(ctx, "HierarchyRequestError",
-      "shadow root nodes cannot be adopted")
-  document.adopt(node, ctx)
-  return ctx.toJS(node)
-
-proc compatMode(document: Document): string {.jsfget.} =
-  if document.mode == qmQuirks:
-    return "BackCompat"
-  return "CSS1Compat"
-
-proc forms(ctx: JSContext; document: Document): HTMLCollection {.jsfget.} =
-  if document.cachedForms == nil:
-    document.cachedForms = newHTMLCollection(
-      document,
-      match = isForm,
-      childonly = false
-    )
-  document.cachedForms
-
-proc links(ctx: JSContext; document: Document): HTMLCollection {.jsfget.} =
-  if document.cachedLinks == nil:
-    document.cachedLinks = newHTMLCollection(
-      document,
-      match = isLink,
-      childonly = false
-    )
-  document.cachedLinks
-
-proc images(ctx: JSContext; document: Document): HTMLCollection {.jsfget.} =
-  if document.cachedImages == nil:
-    document.cachedImages = newHTMLCollection(
-      document,
-      match = isImage,
-      childonly = false
-    )
-  document.cachedImages
-
-proc getURL(ctx: JSContext; document: Document): JSValue {.
-    jsfget: "URL", jsfget: "documentURI".} =
-  return ctx.toJS($document.url)
+          if (let templ = element as HTMLTemplateElement; templ != nil):
+            document.adopt(templ.content.asNode, ctx)
 
 proc getCookieWindow(ctx: JSContext; document: Document): Opt[Window] =
   let window = document.window
   if window == nil or document.url.schemeType notin {stHttp, stHttps}:
-    return ok(nil)
+    return ok(Window(nil))
   if document.origin.t == otOpaque:
     JS_ThrowDOMException(ctx, "SecurityError",
       "sandboxed iframe cannot access cookies")
     return err()
   ok(window)
-
-proc cookie(ctx: JSContext; document: Document): JSValue {.jsfget.} =
-  let window0 = ctx.getCookieWindow(document)
-  if window0.isErr:
-    return JS_EXCEPTION
-  let window = window0.get
-  if window == nil:
-    return ctx.toJS("")
-  let response = window.loader.doRequest(newRequest("x-cha-cookie:get-all"))
-  if response.stream == nil:
-    return JS_ThrowInternalError(ctx, "internal error in cookie getter")
-  window.loader.resume(response)
-  let cookie = response.stream.readAll()
-  return ctx.toJS(cookie)
-
-proc setCookie(ctx: JSContext; document: Document; cookie: string):
-    Opt[void] {.jsfset: "cookie".} =
-  let window = ?ctx.getCookieWindow(document)
-  if window == nil:
-    return ok()
-  let headers = newHeaders(hgRequest, {"Set-Cookie": cookie})
-  let req = newRequest("x-cha-cookie:set", hmPost, headers,
-    credentials = cmOmit)
-  let response = window.loader.doRequest(req)
-  window.loader.close(response)
-  ok()
-
-proc focus*(document: Document): Element {.jsfget: "activeElement".} =
-  return document.internalFocus
-
-proc hasFocus(document: Document): bool {.jsfunc.} =
-  document.internalFocus != nil
 
 proc setFocus*(document: Document; element: Element) =
   if document.focus != nil:
@@ -3652,10 +3466,10 @@ proc setFocus*(document: Document; element: Element) =
     element.invalidate(dtFocus)
 
 proc findAutoFocus*(document: Document): Element =
-  for child in document.elementDescendants:
+  for child in document.asParentNode.elementDescendants:
     if child.attrb(satAutofocus):
       return child
-  return nil
+  Element(nil)
 
 proc target*(document: Document): Element =
   return document.internalTarget
@@ -3667,92 +3481,17 @@ proc setTarget*(document: Document; element: Element) =
   if element != nil:
     element.invalidate(dtTarget)
 
-proc queryCommandSupported(document: Document): bool {.jsfunc.} =
-  return false
-
-proc createCDATASection(ctx: JSContext; document: Document; data: DOMString):
-    JSValue {.jsfunc.} =
-  if not document.isxml:
-    return JS_ThrowDOMException(ctx, "NotSupportedError",
-      "CDATA sections are not supported in HTML")
-  if "]]>" in data.toOpenArray():
-    return JS_ThrowDOMException(ctx, "InvalidCharacterError",
-      "CDATA sections may not contain the string ]]>")
-  return ctx.toJS(newCDATASection(document, newRefString(data)))
-
-proc createComment*(document: Document; data: string): Comment {.jsfunc.} =
-  return newComment(document, newRefString(data))
-
-proc createProcessingInstruction(ctx: JSContext; document: Document;
-    target, data: DOMString): JSValue {.jsfunc.} =
-  if not target.toOpenArray().matchNameProduction() or
-      "?>" in data.toOpenArray():
-    return JS_ThrowDOMException(ctx, "InvalidCharacterError",
-      "invalid data for processing instruction")
-  let pi = newProcessingInstruction(document, $target, newRefString(data))
-  ctx.toJS(pi)
-
-proc createEvent(ctx: JSContext; document: Document; atom: CAtomTraced):
-    JSValue {.jsfunc.} =
-  case atom.toStaticAtomLower()
-  of satCustomevent:
-    return ctx.toJS(ctx.newCustomEvent(satUempty.view()))
-  of satEvent, satEvents, satHtmlevents, satSvgevents:
-    return ctx.toJS(newEvent(satUempty, nil, bubbles = false,
-      cancelable = false))
-  of satUievent, satUievents:
-    return ctx.toJS(newUIEvent(satUempty.view()))
-  of satMouseevent, satMouseevents:
-    return ctx.toJS(newMouseEvent(satUempty.view()))
-  else:
-    return JS_ThrowDOMException(ctx, "NotSupportedError", "event not supported")
-
-proc location(document: Document): Location {.jsfget.} =
-  if document.window == nil:
-    return nil
-  return document.window.location
-
-proc setLocation*(ctx: JSContext; document: Document; s: string): JSValue
-    {.jsfset: "location".} =
-  if document.location == nil:
-    return JS_ThrowTypeError(ctx, "document.location is not an object")
-  let url = document.parseURL0(s)
-  if url == nil:
-    return JS_ThrowDOMException(ctx, "SyntaxError", "invalid URL")
-  document.window.navigate(url)
-  return JS_UNDEFINED
-
 proc scriptingEnabled*(document: Document): bool =
   if document.window == nil:
     return false
   return document.window.settings.scripting != smFalse
 
-proc findFirst*(document: Document; tagType: TagType): HTMLElement {.
-    jsmfget("head", ttHead), jsmfget("body", ttBody).} =
-  for element in document.elementDescendants(tagType):
-    return HTMLElement(element)
-  nil
-
-proc getElementById*(document: Document; id: CAtomTraced): Element =
-  if id != satUempty and document.elementIdMap.len > 0:
-    let mask = document.elementIdMap.len - 1
-    var i = id.view().hash() and mask
-    while true:
-      let it = document.elementIdMap[i]
-      if it == nil:
-        break
-      if it.id == id:
-        return it
-      i = (i + 1) and mask
-  nil
-
-proc getElementsById*(document: Document; id: CAtomTraced): JSRootRef =
+proc getElementsById*(document: Document; id: CAtom): JSRootRef =
   # for WindowProperties
   if id != satUempty and document.elementIdMap.len > 0:
     let mask = document.elementIdMap.len - 1
-    var i = id.view().hash() and mask
-    while true:
-      let it = document.elementIdMap[i]
+    let hcache = id.hash()
+    for i, it in document.elementIdMap.tabPairs(hcache):
       if it == nil:
         break
       if it.id == id:
@@ -3760,78 +3499,27 @@ proc getElementsById*(document: Document; id: CAtomTraced): JSRootRef =
         if next != nil and next.id == id:
           # sad, but what can you do
           let collection = newHTMLCollection(
-            document,
-            match = proc(this: Collection; node: Node): bool =
-              if node of Element:
-                return Element(node).id == this.atoms[0]
+            document.asNode,
+            match = proc(this: Collection; node: Node): bool {.nimcall.} =
+              let element = node as Element
+              if element != nil:
+                return element.id == this.atoms[0]
               false,
-            childonly = false
+            cmSubtree,
+            cnGetElementsById
           )
-          collection.atoms = @[id.dup()]
-          return JSRootRef(collection)
-        return JSRootRef(it)
-      i = (i + 1) and mask
-  nil
-
-
-proc getElementById(ctx: JSContext; document: Document; val: JSValueConst):
-    JSValue {.jsfunc.} =
-  let atom = JS_ValueToAtom(ctx, val)
-  var id: CAtom
-  let status = ctx.fromJSView(atom, id)
-  JS_FreeAtom(ctx, atom)
-  if status == fjErr:
-    return JS_EXCEPTION
-  if id == CAtomNull:
-    return JS_NULL
-  ctx.toJS(document.getElementById(id.view()))
-
-proc getElementsByName(document: Document; name: CAtomTraced): NodeList
-    {.jsfunc.} =
-  if name == satUempty:
-    return newEmptyNodeList()
-  let this = newNodeList(
-    document,
-    proc(this: Collection; node: Node): bool =
-      node of Element and Element(node).name == this.atoms[0],
-    islive = true,
-    childonly = false
-  )
-  this.atoms = @[name.dup()]
-  this
-
-proc getElementsByTagName(document: Document; tagName: CAtomTraced):
-    HTMLCollection {.jsfunc.} =
-  return getElementsByTagNameImpl(document, tagName)
-
-proc getElementsByClassName(document: Document; classNames: DOMString):
-    HTMLCollection {.jsfunc.} =
-  return getElementsByClassNameImpl(document, classNames)
-
-proc children(ctx: JSContext; parentNode: Document): JSValue {.jsfget.} =
-  return childrenImpl(ctx, parentNode)
-
-proc querySelector(ctx: JSContext; this: Document; q: DOMString): JSValue
-    {.jsfunc.} =
-  return ctx.querySelectorImpl(this, q)
-
-proc querySelectorAll(ctx: JSContext; this: Document; q: DOMString): JSValue
-    {.jsfunc.} =
-  return ctx.querySelectorAllImpl(this, q)
-
-proc validateAttrName(ctx: JSContext; name: openArray[char]): Opt[void] =
-  const AttrDisallowed = AsciiWhitespace + {'\0', '/', '=', '>'}
-  if name.len > 0 and AttrDisallowed notin name:
-    return ok()
-  JS_ThrowDOMException(ctx, "InvalidCharacterError", "invalid attribute name")
-  return err()
+          if collection != nil:
+            collection.atoms = @[id]
+          return collection.asRootRef
+        return cast[Element](it).asRootRef
+  JSRootRef(nil)
 
 proc baseURL*(document: Document): URL =
   #TODO frozen base url...
   var href = ""
-  for base in document.elementDescendants(ttBase):
-    if base.attrb(satHref):
-      href = base.attr(satHref)
+  for base in document.asParentNode.elementDescendants(ttBase):
+    if base.asElement.attrb(satHref):
+      href = base.asElement.attr(satHref)
   if href == "":
     return document.url
   let url = parseURL0(href, document.url)
@@ -3850,40 +3538,21 @@ proc parseURL*(document: Document; s: string): Opt[URL] =
     return err()
   ok(url)
 
-proc title*(document: Document): string {.jsfget.} =
-  if (let title = document.findFirst(ttTitle); title != nil):
-    return title.childTextContent.stripAndCollapse()
-  return ""
-
-proc setTitle(ctx: JSContext; document: Document; ds: DOMString) {.
-    jsfset: "title".} =
-  var title = document.findFirst(ttTitle)
-  if title == nil:
-    let head = document.findFirst(ttHead)
-    if head == nil:
-      return
-    title = document.newHTMLElement(ttTitle)
-    head.append(title, ctx)
-  title.replaceAll(ds, ctx)
-
-proc invalidateCollections(document: Document) =
-  var collection = document.liveCollectionsHead
-  while collection != nil:
-    if collection of Collection:
+proc invalidateCollections*(document: Document) =
+  for collection in document.liveCollections:
+    if collection != nil and cast[CollectionLike](collection) of Collection:
       cast[Collection](collection).invalid = true
-    collection = collection.next
+      cast[Collection](collection).snapshot = @[]
 
 proc invalidateCollectionsRemove(document: Document; node: Node) =
   # node will be removed
-  var collection = document.liveCollectionsHead
-  while collection != nil:
+  for collection in document.liveCollections:
     if cast[CollectionLike](collection) of NodeIterator:
       cast[NodeIterator](collection).adjustForRemoval(node)
     elif cast[CollectionLike](collection) of Collection:
       cast[Collection](collection).invalid = true
-    collection = collection.next
 
-proc isValidCustomElementName(atom: CAtomTraced): bool =
+proc isValidCustomElementName(atom: CAtom): bool =
   const Disallowed = [
     satAnnotationXml, satColorDashProfile, satFontDashFace,
     satFontDashFaceDashSrc, satFontDashFaceDashUri, satFontDashFaceDashFormat,
@@ -3913,35 +3582,26 @@ proc validateElementName(ctx: JSContext; s: openArray[char]): Opt[void] =
   JS_ThrowDOMException(ctx, "InvalidCharacterError", "invalid tag local name")
   err()
 
-#TODO options/custom elements
-proc createElement(ctx: JSContext; document: Document; localName: DOMString):
-    JSValue {.jsfunc.} =
-  if ctx.validateElementName(localName.toOpenArray()).isErr:
-    return JS_EXCEPTION
-  let localName = if not document.isxml:
-    localName.toAtomLowerTrace()
-  else:
-    localName.toAtomTrace()
-  let namespace = if not document.isxml:
-    #TODO or content type is application/xhtml+xml
-    satNamespaceHTML
-  else:
-    satUempty
-  ctx.toJS(document.newElement(localName, namespace))
+proc validateAttrName(ctx: JSContext; name: openArray[char]): Opt[void] =
+  const AttrDisallowed = AsciiWhitespace + {'\0', '/', '=', '>'}
+  if name.len > 0 and AttrDisallowed notin name:
+    return ok()
+  JS_ThrowDOMException(ctx, "InvalidCharacterError", "invalid attribute name")
+  return err()
 
 type NameValidator = enum
   nvAttribute, nvElement
 
 # localName must be set to the qualified name before the call
-proc validateAndExtract(ctx: JSContext; namespace, localName: var CAtomTraced;
+proc validateAndExtract(ctx: JSContext; namespace, localName: var CAtom;
     t: NameValidator): Opt[void] =
   if namespace == satUempty:
-    namespace = CAtomNullTraced
-  var prefix = CAtomNullTraced
+    namespace = CAtomNull
+  var prefix = CAtomNull
   let i = localName.find(':')
   if i >= 0:
-    prefix = localName.substrTrace(0, i - 1)
-    localName = localName.substrTrace(i + 1)
+    prefix = localName.substr(0, i - 1)
+    localName = localName.substr(i + 1)
     if prefix == satUempty or AsciiWhitespace + {'\0', '/', '>'} in prefix:
       JS_ThrowDOMException(ctx, "InvalidCharacterError", "invalid prefix")
       return err()
@@ -3951,252 +3611,39 @@ proc validateAndExtract(ctx: JSContext; namespace, localName: var CAtomTraced;
   let sns = namespace.toStaticAtom()
   let isXmlns = prefix == satXmlns or
     prefix == CAtomNull and localName == satXmlns
-  if namespace == CAtomNull and prefix != satUempty or
+  if namespace == CAtomNull and prefix != CAtomNull or
       prefix == satXml and sns != satNamespaceXML or
       isXmlns != (sns == satNamespaceXMLNS):
     JS_ThrowDOMException(ctx, "NamespaceError", "unexpected namespace")
     return err()
   ok()
 
-proc createElementNS(ctx: JSContext; document: Document;
-    namespace: CAtomTraced; qualifiedName: CAtomTraced): Opt[Element] {.
-    jsfunc.} =
-  var namespace = namespace.dupTrace()
-  var localName = qualifiedName.dupTrace()
-  ?ctx.validateAndExtract(namespace, localName, nvElement)
-  #TODO custom elements (is)
-  ok(document.newElement(localName, namespace, qualifiedName))
-
-proc createDocumentFragment(document: Document): DocumentFragment {.jsfunc.} =
-  return newDocumentFragment(document)
-
-proc createDocumentType(ctx: JSContext; implementation: DOMImplementation;
-    qualifiedName, publicId, systemId: DOMString): JSValue {.jsfunc.} =
-  if AsciiWhitespace + {'\0', '>'} in qualifiedName.toOpenArray():
-    return JS_ThrowDOMException(ctx, "InvalidCharacterError",
-      "invalid character in qualified name")
-  let document = implementation.document
-  ctx.toJS(document.newDocumentType($qualifiedName, $publicId, $systemId))
-
-proc createDocument(ctx: JSContext; implementation: DOMImplementation;
-    namespace: CAtomTraced; qualifiedName: DOMStringNull;
-    doctype = none(DocumentType)): Opt[XMLDocument] {.jsfunc.} =
-  let document = newXMLDocument()
-  let qualifiedName = qualifiedName.toAtomTrace()
-  let element = if qualifiedName != satUempty:
-    ?ctx.createElementNS(document, namespace, qualifiedName)
-  else:
-    nil
-  if doctype.isSome:
-    document.append(doctype.get, ctx)
-  if element != nil:
-    document.append(element, ctx)
-  document.origin = implementation.document.origin
-  case namespace.toStaticAtom()
-  of satNamespaceHTML: document.contentType = satApplicationXmlHtml
-  of satNamespaceSVG: document.contentType = satImageSvgXml
-  else: discard
-  return ok(document)
-
-proc createHTMLDocument(ctx: JSContext; implementation: DOMImplementation;
-    title: JSValueConst = JS_UNDEFINED): Opt[Document] {.jsfunc.} =
-  let doc = newDocument(ctx)
-  doc.contentType = satTextHtml
-  doc.append(doc.newDocumentType("html", "", ""), ctx)
-  let html = doc.newHTMLElement(ttHtml)
-  doc.append(html, ctx)
-  let head = doc.newHTMLElement(ttHead)
-  html.append(head, ctx)
-  if not JS_IsUndefined(title):
-    var ds: DOMString
-    ?ctx.fromJS(title, ds)
-    let titleElement = doc.newHTMLElement(ttTitle)
-    titleElement.append(doc.newText(ds), ctx)
-    head.append(titleElement, ctx)
-  html.append(doc.newHTMLElement(ttBody), ctx)
-  doc.origin = implementation.document.origin
-  ok(doc)
-
-proc hasFeature(implementation: DOMImplementation): bool {.jsfunc.} =
-  return true
-
-proc createTextNode(document: Document; data: DOMString): Text {.jsfunc.} =
-  return newText(document, data)
-
-proc prepend(ctx: JSContext; this: Document; nodes: varargs[JSValueConst]):
-    JSValue {.jsfunc.} =
-  return ctx.prependImpl(this, nodes)
-
-proc append(ctx: JSContext; this: Document; nodes: varargs[JSValueConst]):
-    JSValue {.jsfunc.} =
-  return ctx.appendImpl(this, nodes)
-
-proc replaceChildren(ctx: JSContext; this: Document;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  return ctx.replaceChildrenImpl(this, nodes)
-
-const (ReflectMap, TagReflectMap, ReflectAllStartIndex) = (proc(): (
-    seq[ReflectEntry],
-    array[TagType, seq[int16]],
-    int16) =
-  var i: int16 = 0
-  while i < ReflectMap0.len:
-    let x = ReflectMap0[i]
-    result[0].add(x.e)
-    if x.tags.len == 0:
-      break
-    for tag in x.tags:
-      result[1][tag].add(i)
-    inc i
-  result[2] = i
-  while i < ReflectMap0.len:
-    let x = ReflectMap0[i]
-    assert x.tags.len == 0
-    result[0].add(x.e)
-    inc i
-)()
-
-proc parseFormMethod(s: string): FormMethod =
-  return parseEnumNoCase[FormMethod](s).get(fmGet)
-
 proc getReflectElement(ctx: JSContext; this: JSValueConst; magic: cint):
-    ptr HTMLElement.pointerBase =
-  let rtOpaque = JS_GetRuntime(ctx).getOpaque()
+    ptr HTMLElementObj =
   let magic = uint16(magic)
-  let myClass = JS_GetClassID(this)
-  let parent = rtOpaque.getParent(myClass)
-  let class = JSClassID(uint32(magic shr 9) + uint32(parent))
-  if class != parent and class != myClass:
-    JS_ThrowTypeError(ctx, "invalid tag type")
+  let class = JSClassID(uint32(magic shr 9) + uint32(getClassID(HTMLElement)))
+  var p: pointer
+  if ctx.fromJS(this, class, p).isErr:
     return nil
-  var element: ptr HTMLElement.pointerBase
-  if ctx.fromJS(this, element).isErr:
-    return nil
-  return element
+  return cast[ptr HTMLElementObj](p)
 
-proc jsReflectGet0(ctx: JSContext; element: HTMLElement; magic: cint):
-    JSValue =
-  let entry = ReflectMap[uint16(magic) and 0x1FF]
-  case entry.t
-  of rtStr: return ctx.toJS(element.attr(entry.attrname))
-  of rtStrNull: return ctx.toJS(element.attr(entry.attrname))
-  of rtUrl:
-    let s = element.attr(entry.attrname)
-    if url := element.document.parseURL(s):
-      return ctx.toJS($url)
-    return ctx.toJS(s)
-  of rtReferrerPolicy:
-    if s := element.referrerPolicy:
-      return ctx.toJS($s)
-    return ctx.toJS("")
-  of rtCrossOrigin:
-    case (let co = element.crossOrigin; co)
-    of caNoCors: return JS_NULL
-    else: return ctx.toJS($co)
-  of rtMethod:
-    let s = element.attr(entry.attrname)
-    if entry.attrname == satFormmethod and s == "":
-      return ctx.toJS("")
-    return ctx.toJS($parseFormMethod(s))
-  of rtForm: return ctx.toJS(FormAssociatedElement(element).form)
-  of rtBool: return ctx.toJS(element.attrb(entry.attrname))
-  of rtLong:
-    let i = cast[int32](entry.u)
-    return ctx.toJS(element.attrl(entry.attrname).get(i))
-  of rtUlong: return ctx.toJS(element.attrul(entry.attrname).get(entry.u))
-  of rtUlongGz: return ctx.toJS(element.attrulgz(entry.attrname).get(entry.u))
-  of rtDoubleGz:
-    # we do not have fractional default values, so we actually store them
-    # as uint32 and convert here.
-    let f = float32(entry.u)
-    return ctx.toJS(element.attrdgz(entry.attrname).get(f))
-  of rtFunction: return JS_NULL
-
-proc jsReflectSet0(ctx: JSContext; element: HTMLElement; val: JSValueConst;
-    magic: cint): JSValue {.cdecl.} =
-  let entry = ReflectMap[uint16(magic) and 0x1FF]
-  case entry.t
-  of rtStr, rtUrl, rtReferrerPolicy, rtMethod, rtStrNull:
-    if entry.t == rtStrNull and JS_IsNull(val):
-      element.attr(entry.attrname, "")
-    else:
-      var x: DOMString
-      ?ctx.fromJS(val, x)
-      element.attr(entry.attrname, x)
-  of rtCrossOrigin:
-    if JS_IsNull(val):
-      let i = element.findAttr(entry.attrname.view())
-      if i != -1:
-        ctx.delAttr(element, i)
-    else:
-      var x: DOMString
-      ?ctx.fromJS(val, x)
-      element.attr(entry.attrname, x)
-  of rtBool:
-    var x: bool
-    ?ctx.fromJS(val, x)
-    if x:
-      element.attr(entry.attrname, "")
-    else:
-      let i = element.findAttr(entry.attrname.view())
-      if i != -1:
-        ctx.delAttr(element, i)
-  of rtLong:
-    var x: int32
-    ?ctx.fromJS(val, x)
-    element.attrl(entry.attrname, x)
-  of rtUlong:
-    var x: uint32
-    ?ctx.fromJS(val, x)
-    element.attrul(entry.attrname, x)
-  of rtUlongGz:
-    var x: uint32
-    ?ctx.fromJS(val, x)
-    element.attrulgz(entry.attrname, x)
-  of rtDoubleGz:
-    var x: float64
-    ?ctx.fromJS(val, x)
-    if classify(x) in {fcInf, fcNegInf, fcNan}:
-      return JS_ThrowTypeError(ctx, "double expected")
-    element.attrd(entry.attrname, x)
-  of rtFunction:
-    let ctype = cast[StaticAtom](entry.u)
-    return ctx.eventReflectSet0(element, val, magic, jsReflectSet, ctype)
-  of rtForm: discard
-  return JS_DupValue(ctx, val)
-
-proc jsReflectGet(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
-    {.cdecl.} =
-  let element = ctx.getReflectElement(this, magic)
-  if element == nil:
-    return JS_EXCEPTION
-  ctx.jsReflectGet0(cast[HTMLElement](element), magic)
-
-proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint):
-    JSValue {.cdecl.} =
-  let element = ctx.getReflectElement(this, magic)
-  if element == nil:
-    return JS_EXCEPTION
-  ctx.jsReflectSet0(cast[HTMLElement](element), val, magic)
-
-proc findMagic(ctype: StaticAtom): cint =
-  for i in ReflectAllStartIndex ..< int16(ReflectMap.len):
-    if ReflectMap[i].t == rtFunction and ReflectMap[i].u == uint32(ctype):
-      return cint(i)
-  -1
+proc getEventTarget(element: Element; name: StaticAtom): EventTarget =
+  if element.tagType in {ttBody, ttFrameset} and name in WindowEvents:
+    let window = element.asNode.document.window
+    if window == nil:
+      return EventTarget(nil)
+    return window.asEventTarget
+  element.asEventTarget
 
 proc reflectEvent(document: Document; target: EventTarget;
-    name, ctype: StaticAtom; value: string; target2 = none(EventTarget)) =
+    name, eventType: StaticAtom; value: string) =
   let ctx = document.window.jsctx
   let fun = ctx.newFunction(["event"], value)
   assert ctx != nil
   if JS_IsException(fun):
     document.window.logException(document.baseURL)
   else:
-    let magic = findMagic(ctype)
-    assert magic != -1
-    let res = ctx.eventReflectSet0(target, fun, magic, jsReflectSet, ctype,
-      target2)
+    let res = ctx.eventReflectSetImpl(target, fun, eventType)
     if JS_IsException(res):
       document.window.logException(document.baseURL)
     JS_FreeValue(ctx, res)
@@ -4204,8 +3651,8 @@ proc reflectEvent(document: Document; target: EventTarget;
 
 proc applyUASheet*(document: Document) =
   const ua = staticRead"res/ua.css"
-  let sheet = parseStylesheet(ua, nil, addr document.window.settings,
-    coUserAgent, CAtomNullTraced)
+  let sheet = parseStylesheet(ua, URL(nil), addr document.window.settings,
+    coUserAgent, CAtomNull)
   document.uaSheetsHead = sheet
   if document.documentElement != nil:
     document.documentElement.invalidate()
@@ -4214,22 +3661,22 @@ proc applyQuirksSheet*(document: Document) =
   if document.window == nil:
     return
   const quirks = staticRead"res/quirk.css"
-  let sheet = parseStylesheet(quirks, nil, addr document.window.settings,
-    coUserAgent, CAtomNullTraced)
+  let sheet = parseStylesheet(quirks, URL(nil), addr document.window.settings,
+    coUserAgent, CAtomNull)
   document.uaSheetsHead.next = sheet
   sheet.prev = document.uaSheetsHead
   if document.documentElement != nil:
     document.documentElement.invalidate()
 
 proc applyUserSheet*(document: Document; user: string) =
-  document.userSheet = parseStylesheet(user, nil,
-    addr document.window.settings, coUser, CAtomNullTraced)
+  document.userSheet = parseStylesheet(user, URL(nil),
+    addr document.window.settings, coUser, CAtomNull)
   if document.documentElement != nil:
     document.documentElement.invalidate()
 
 proc getRuleMap*(document: Document): CSSRuleMap =
   if document.ruleMap == nil:
-    let map = newCSSRuleMap(document.mode == qmQuirks)
+    let map = newCSSRuleMap(document.quirksMode == qmQuirks)
     var sheet = document.uaSheetsHead
     while sheet != nil:
       map.add(sheet)
@@ -4245,150 +3692,618 @@ proc getRuleMap*(document: Document): CSSRuleMap =
 
 proc findAnchor*(document: Document; id: string): Element =
   if id.len == 0:
-    return nil
-  let id = id.toAtomTrace()
-  for child in document.elementDescendants:
+    return Element(nil)
+  let id = id.toAtom()
+  for child in document.asParentNode.elementDescendants:
     if child.id == id:
       return child
     if child.tagType == ttA and child.name == id:
       return child
-  return nil
+  return Element(nil)
 
-proc findMetaRefresh*(document: Document): Element =
-  for child in document.elementDescendants(ttMeta):
-    if child.attr(satHttpEquiv).equalsIgnoreCase("refresh"):
+proc findMetaRefresh*(document: Document): HTMLElement =
+  for child in document.asParentNode.elementDescendants(ttMeta):
+    if child.asElement.attr(satHttpEquiv).equalsIgnoreCase("refresh"):
       return child
-  return nil
+  return HTMLElement(nil)
 
-# https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-write-steps
-proc write(ctx: JSContext; document: Document; args: varargs[JSValueConst]):
-    JSValue {.jsfunc.} =
-  var text = ""
-  for arg in args:
-    var s: DOMString
-    if ctx.fromJS(arg, s).isErr:
+proc checkRegistryScope(ctx: JSContext; document: Document;
+    registry: CustomElementRegistry): Opt[void] =
+  if not registry.scoped and registry != document.customElements:
+    JS_ThrowDOMException(ctx, "NotSupportedError",
+      "wrong custom element registry scope")
+    return err()
+  ok()
+
+proc findFirst*(document: Document; tagType: TagType): HTMLElement =
+  for element in document.asParentNode.elementDescendants(tagType):
+    return element as HTMLElement
+  HTMLElement(nil)
+
+jsClassPublicDef(Document):
+  jsextends RootNodeDef
+
+  jsget Document, charset, "charset", "characterSet", "inputEncoding"
+  jsget Document, readyState
+  jsget Document, contentType
+  jsget Document, window, "defaultView"
+  jsget Document, currentScript
+
+  proc finalize(rt: JSRuntime; document: Document) {.jsfin.} =
+    var sheet = move(document.uaSheetsHead)
+    while sheet != nil:
+      let next = move(sheet.next)
+      sheet.prev = nil
+      sheet = next
+    sheet = move(document.authorSheetsHead)
+    while sheet != nil:
+      let next = move(sheet.next)
+      sheet.prev = nil
+      sheet = next
+
+  proc mark(rt: JSRuntime; document: Document; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for element in document.renderBlockingElements:
+      rt.markObj(element, markFunc)
+
+  proc newDocument(ctx: JSContext): Document {.jsctor.} =
+    let global = ctx.getWindow()
+    jsNew DocumentObj(
+      url: parseURL0("about:blank"),
+      contentType: satApplicationXml,
+      origin: global.document.origin,
+      charset: csUtf8
+    )
+
+  proc getImplementation(ctx: JSContext; document: Document): JSValue
+      {.jsfget: "implementation".} =
+    if document.implementation == nil:
+      let impl = newDOMImplementation(ctx, document)
+      if JS_IsException(impl):
+        return impl
+      document.implementation = traceObj(impl)
+    return JS_DupValue(ctx, document.implementation.value)
+
+  proc firstElementChild(this: Document): Element {.jsfget.} =
+    return this.asParentNode.firstElementChild
+
+  proc lastElementChild(this: Document): Element {.jsfget.} =
+    return this.asParentNode.lastElementChild
+
+  proc adoptNode(ctx: JSContext; document: Document; node: Node): JSValue
+      {.jsfunc.} =
+    if node of Document:
+      return JS_ThrowDOMException(ctx, "NotSupportedError",
+        "document nodes cannot be adopted")
+    if node of ShadowRoot:
+      return JS_ThrowDOMException(ctx, "HierarchyRequestError",
+        "shadow root nodes cannot be adopted")
+    document.adopt(node, ctx)
+    return ctx.toJS(node)
+
+  proc importNode(ctx: JSContext; document: Document; node: Node;
+      options: JSValueConst = JS_UNDEFINED): Opt[Node] {.jsfunc.} =
+    if node of Document or node of ShadowRoot:
+      JS_ThrowDOMException(ctx, "NotSupportedError",
+        "node cannot be adopted")
+      return err()
+    var deep = false
+    var registry = document.customElements
+    if JS_IsBool(options):
+      ?ctx.fromJS(options, deep)
+    else:
+      var selfOnly: bool
+      discard ?ctx.fromJSGetProp(options, "selfOnly", selfOnly)
+      deep = not selfOnly
+      discard ?ctx.fromJSGetProp(options, "customElementRegistry", registry)
+      ?ctx.checkRegistryScope(document, registry)
+    ctx.cloneNodeImpl(node, document, deep, ParentNode(nil), registry)
+
+  proc compatMode(document: Document): string {.jsfget.} =
+    if document.quirksMode == qmQuirks:
+      return "BackCompat"
+    return "CSS1Compat"
+
+  proc forms(document: Document): HTMLCollection {.jsnfget.} =
+    document.asParentNode.getChildrenOf(cnForms, cmSubtree, ttForm)
+
+  proc links(document: Document): HTMLCollection {.jsnfget.} =
+    document.asParentNode.getHTMLCollection(isLink, cmSubtree, cnLinks)
+
+  proc images(document: Document): HTMLCollection {.jsnfget.} =
+    document.asParentNode.getChildrenOf(cnImages, cmSubtree, ttImg)
+
+  proc getURL(ctx: JSContext; document: Document): JSValue {.
+      jsfget: "URL", jsfget: "documentURI".} =
+    return ctx.toJS($document.url)
+
+  proc cookie(ctx: JSContext; document: Document): JSValue {.jsfget.} =
+    let window = ?ctx.getCookieWindow(document)
+    if window == nil:
+      return ctx.toJS("")
+    let request = newRequest("x-cha-cookie:get-all", internal = true)
+    let response = window.loader.doRequest(request)
+    if response.stream == nil:
+      return JS_ThrowInternalError(ctx, "internal error in cookie getter")
+    window.loader.resume(response)
+    let cookie = response.stream.readAll()
+    return ctx.toJS(cookie)
+
+  proc setCookie(ctx: JSContext; document: Document; cookie: string):
+      Opt[void] {.jsfset: "cookie".} =
+    let window = ?ctx.getCookieWindow(document)
+    if window == nil:
+      return ok()
+    let headers = newHeaders(hgRequest, {"Set-Cookie": cookie})
+    let request = newRequest("x-cha-cookie:set", hmPost, headers,
+      credentials = cmOmit, internal = true)
+    let response = window.loader.doRequest(request)
+    window.loader.close(response)
+    ok()
+
+  proc focus*(document: Document): Element {.jsfget: "activeElement".} =
+    return document.internalFocus
+
+  proc hasFocus(document: Document): bool {.jsfunc.} =
+    document.internalFocus != nil
+
+  proc queryCommandSupported(document: Document): bool {.jsfunc.} =
+    return false
+
+  proc createCDATASection(ctx: JSContext; document: Document; data: DOMString):
+      JSValue {.jsfunc.} =
+    if not document.isxml:
+      return JS_ThrowDOMException(ctx, "NotSupportedError",
+        "CDATA sections are not supported in HTML")
+    if "]]>" in data.toOpenArray():
+      return JS_ThrowDOMException(ctx, "InvalidCharacterError",
+        "CDATA sections may not contain the string ]]>")
+    return ctx.toJSNew(newCDATASection(document, newRefString(data)))
+
+  proc createComment(document: Document; data: DOMString): Comment
+      {.jsnfunc.} =
+    return newComment(document, newRefString(data))
+
+  proc createProcessingInstruction(ctx: JSContext; document: Document;
+      target, data: DOMString): JSValue {.jsfunc.} =
+    if not target.toOpenArray().matchNameProduction() or
+        "?>" in data.toOpenArray():
+      return JS_ThrowDOMException(ctx, "InvalidCharacterError",
+        "invalid data for processing instruction")
+    let pi = newProcessingInstruction(document, $target, newRefString(data))
+    ctx.toJSNew(pi)
+
+  proc createEvent(ctx: JSContext; document: Document; atom: CAtom):
+      JSValue {.jsfunc.} =
+    case atom.toStaticAtomLower()
+    of satCustomevent:
+      return ctx.toJSNew(ctx.newCustomEvent(satUempty.view()))
+    of satEvent, satEvents, satHtmlevents, satSvgevents:
+      return ctx.toJSNew(newEvent(satUempty, EventTarget(nil), bubbles = false,
+        cancelable = false))
+    of satUievent, satUievents:
+      return ctx.toJSNew(newUIEvent(satUempty.view()))
+    of satMouseevent, satMouseevents:
+      return ctx.toJSNew(newMouseEvent(satUempty.view()))
+    else:
+      return JS_ThrowDOMException(ctx, "NotSupportedError", "event not supported")
+
+  proc location(ctx: JSContext; document: Document): JSValue {.jsuffget.} =
+    if document.window == nil:
+      return JS_NULL
+    return JS_GetPropertyStr(ctx, ctx.getOpaque().global, "location")
+
+  proc setLocation*(ctx: JSContext; document: Document; s: string): JSValue
+      {.jsfset: "location".} =
+    let obj = ctx.location(document)
+    if JS_IsException(obj):
+      return obj
+    let res = JS_SetPropertyStr(ctx, obj, "href", ctx.toJS(s))
+    JS_FreeValue(ctx, obj)
+    if res < 0:
       return JS_EXCEPTION
-    text &= s.toOpenArray()
-  # Note: this diverges from behavior in other browsers, but I'm not
-  # convinced that modifying the parser to adjust for this edge case is
-  # worth the trouble.
-  text.replaceSurrogates()
-  if document.isxml:
-    return JS_ThrowDOMException(ctx, "InvalidStateError",
-      "document.write not supported in XML documents")
-  if document.throwOnDynamicMarkupInsertion > 0:
-    return JS_ThrowDOMException(ctx, "InvalidStateError",
-      "throw-on-dynamic-markup-insertion counter > 0")
-  if document.activeParserWasAborted:
     return JS_UNDEFINED
-  assert document.parser != nil
-  #TODO if insertion point is undefined... (open document)
-  let buffer = document.writeBuffersTop
-  if buffer == nil:
-    return JS_UNDEFINED #TODO (probably covered by open above)
-  buffer.data &= text
-  if document.parserBlockingScript == nil:
-    parseDocumentWriteChunkImpl(document.parser)
-  return JS_UNDEFINED
 
-proc childElementCount(this: Document): uint32 {.jsfget.} =
-  return this.childElementCountImpl
+  proc head(document: Document): HTMLHeadElement {.jsfget.} =
+    let html = document.documentElement
+    if html != nil:
+      for element in html.asParentNode.elementList:
+        let head = element as HTMLHeadElement
+        if head != nil:
+          return head
+    HTMLHeadElement(nil)
 
-proc doctype(document: Document): DocumentType {.jsfget.} =
-  let first = document.firstChild
-  if first of DocumentType:
-    return DocumentType(first)
-  nil
+  proc body(document: Document): HTMLElement {.jsfget.} =
+    let html = document.documentElement
+    if html != nil:
+      for element in html.asParentNode.elementList:
+        if element.tagType in {ttBody, ttFrameset}:
+          return element as HTMLElement
+    HTMLElement(nil)
 
-proc documentElement*(document: Document): Element {.jsfget.} =
-  return document.firstElementChild()
+  proc title*(document: Document): string {.jsfget.} =
+    let svg = document.documentElement as SVGSVGElement
+    let title = if svg != nil:
+      svg.asParentNode.findFirstChildOf(satTitle, satNamespaceSVG)
+    else:
+      document.findFirst(ttTitle).asElement
+    if title != nil:
+      return title.asParentNode.childTextContent.stripAndCollapse()
+    return ""
 
-proc names(ctx: JSContext; document: Document): JSPropertyEnumList
-    {.jspropnames.} =
-  var list = newJSPropertyEnumList(ctx, 0)
-  #TODO I'm not quite sure why location isn't added, so I'll add it
-  # manually for now.
-  list.add("location")
-  #TODO exposed embed, exposed object
-  for child in document.elementDescendants({ttForm, ttIframe, ttImg}):
-    if child.name != satUempty:
-      if child.tagType == ttImg and child.id != satUempty:
-        list.add($child.id)
-      list.add($child.name)
-  return list
+  proc setTitle(ctx: JSContext; document: Document; ds: DOMString) {.
+      jsfset: "title".} =
+    let root = document.documentElement
+    let svg = root as SVGSVGElement
+    var title = if svg != nil:
+      root.asParentNode.findFirstChildOf(satTitle, satNamespaceSVG)
+    elif root != nil and root.namespaceURI == satNamespaceHTML:
+      document.findFirst(ttTitle).asElement
+    else:
+      return
+    if title == nil:
+      let namespace = if svg != nil: satNamespaceSVG else: satNamespaceHTML
+      let head = if svg != nil: svg.asElement else: document.head.asElement
+      if head != nil:
+        title = document.newElement(satTitle.view(), namespace)
+        if title != nil:
+          var before = Node(nil)
+          if svg != nil:
+            before = svg.asParentNode.firstChild
+          head.asParentNode.insert(ctx, title.asNode, before)
+    if title != nil:
+      title.asParentNode.replaceAll(ctx, ds)
 
-proc getter(ctx: JSContext; document: Document; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var id: CAtom
-  ?ctx.fromJSView(atom, id)
-  if id != CAtomNull and id != satUempty:
+  proc getElementById(ctx: JSContext; document: Document; val: JSValueConst):
+      JSValue {.jsfunc.} =
+    document.asRootNode.getElementById(ctx, val)
+
+  proc getElementsByName(document: Document; name: CAtom): NodeList
+      {.jsnfunc.} =
+    let collection = document.asParentNode.getParamCollection(
+      cnGetElementsByName, name
+    )
+    if collection != nil:
+      return collection as NodeList
+    let this = newNodeList(
+      document.asNode,
+      proc(this: Collection; node: Node): bool {.nimcall.} =
+        let element = node as Element
+        element != nil and element.name == this.atoms[0],
+      cmSubtree,
+      cnGetElementsByName
+    )
+    if this != nil:
+      this.atoms = @[name]
+    this
+
+  proc getElementsByTagName(document: Document; tagName: CAtom):
+      HTMLCollection {.jsnfunc.} =
+    document.asParentNode.getElementsByTagNameImpl(tagName)
+
+  proc getElementsByClassName(document: Document; classNames: DOMString):
+      HTMLCollection {.jsnfunc.} =
+    document.asParentNode.getElementsByClassNameImpl(classNames)
+
+  proc children(this: Document): HTMLCollection {.jsnfget.} =
+    this.asParentNode.childrenImpl
+
+  proc querySelector(ctx: JSContext; this: Document; q: DOMString): JSValue
+      {.jsfunc.} =
+    return ctx.querySelectorImpl(this.asParentNode, q)
+
+  proc querySelectorAll(ctx: JSContext; this: Document; q: DOMString): JSValue
+      {.jsfunc.} =
+    return ctx.querySelectorAllImpl(this.asParentNode, q)
+
+  #TODO options/custom elements
+  proc createElement(ctx: JSContext; document: Document; localName: DOMString):
+      JSValue {.jsfunc.} =
+    ?ctx.validateElementName(localName.toOpenArray())
+    let localName = if not document.isxml:
+      localName.toAtomLower()
+    else:
+      localName.toAtom()
+    let namespace = if not document.isxml or
+        document.contentType == satApplicationXmlHtml:
+      satNamespaceHTML
+    else:
+      satUempty
+    ctx.toJSNew(document.newElement(localName, namespace))
+
+  proc createElementNS(ctx: JSContext; document: Document;
+      namespace, qualifiedName: CAtom): Opt[Element] {.jsnfunc.} =
+    var namespace = namespace
+    var localName = qualifiedName
+    ?ctx.validateAndExtract(namespace, localName, nvElement)
+    #TODO custom elements (is)
+    ok(document.newElement(localName, namespace, qualifiedName))
+
+  proc createDocumentFragment(document: Document): DocumentFragment
+      {.jsnfunc.} =
+    return newDocumentFragment(document)
+
+  proc createTextNode(document: Document; data: DOMString): Text {.jsnfunc.} =
+    return newText(document, data)
+
+  proc prepend(ctx: JSContext; this: Document; nodes: varargs[JSValueConst]):
+      JSValue {.jsfunc.} =
+    return ctx.prependImpl(this.asNode, nodes)
+
+  proc append(ctx: JSContext; this: Document; nodes: varargs[JSValueConst]):
+      JSValue {.jsfunc.} =
+    return ctx.appendImpl(this.asNode, nodes)
+
+  proc replaceChildren(ctx: JSContext; this: Document;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    return ctx.replaceChildrenImpl(this.asNode, nodes)
+
+  # https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-write-steps
+  proc write(ctx: JSContext; document: Document; args: varargs[JSValueConst]):
+      JSValue {.jsfunc.} =
+    var text = ""
+    for arg in args:
+      var s: DOMString
+      ?ctx.fromJS(arg, s)
+      text &= s.toOpenArray()
+    # Note: this diverges from behavior in other browsers, but I'm not
+    # convinced that modifying the parser to adjust for this edge case is
+    # worth the trouble.
+    text.replaceSurrogates()
+    if document.isxml:
+      return JS_ThrowDOMException(ctx, "InvalidStateError",
+        "document.write not supported in XML documents")
+    if document.throwOnDynamicMarkupInsertion > 0:
+      return JS_ThrowDOMException(ctx, "InvalidStateError",
+        "throw-on-dynamic-markup-insertion counter > 0")
+    if document.activeParserWasAborted:
+      return JS_UNDEFINED
+    if document.parser == nil:
+      #TODO document.open
+      return JS_UNDEFINED
+    let buffer = document.writeBuffersTop
+    if buffer == nil:
+      return JS_UNDEFINED #TODO (probably covered by open above)
+    buffer.data &= text
+    if document.parserBlockingScript == nil:
+      parseDocumentWriteChunk(document.parser)
+    return JS_UNDEFINED
+
+  proc childElementCount(this: Document): uint32 {.jsfget.} =
+    return this.asParentNode.childElementCountImpl
+
+  proc doctype(document: Document): DocumentType {.jsfget.} =
+    document.asParentNode.firstChild as DocumentType
+
+  proc documentElement*(document: Document): Element {.jsfget.} =
+    return document.firstElementChild()
+
+  proc scrollingElement(document: Document): Element {.jsfget.} =
+    let window = document.window
+    if document.quirksMode == qmQuirks and window != nil and
+        window.settings.scripting == smApp:
+      let body = document.body.asElement
+      if body != nil:
+        body.ensureStyle()
+        window.ensureLayout(body)
+        if body.box == nil:
+          return body
+        const NoScroll = {OverflowVisible, OverflowClip}
+        const NoScroll2 = NoScroll + {OverflowHidden}
+        let parent = body.asNode.parentElement
+        parent.ensureStyle()
+        if (parent.computed{"overflow-x"} in NoScroll2 or
+            body.computed{"overflow-x"} in NoScroll) and
+            (parent.computed{"overflow-y"} in NoScroll2 or
+            body.computed{"overflow-y"} in NoScroll):
+          return body
+    document.documentElement
+
+  proc names(ctx: JSContext; document: Document): JSPropertyEnumList
+      {.jspropnames.} =
+    var list = newJSPropertyEnumList(ctx, 0)
     #TODO exposed embed, exposed object
-    for child in document.elementDescendants({ttForm, ttIframe, ttImg}):
-      if child.tagType == ttImg and child.id == id and
-          child.name != satUempty:
-        return ctx.toJS(child)
-      if child.name == id:
-        return ctx.toJS(child)
-  return JS_UNINITIALIZED
+    const Tags = {ttForm, ttIframe, ttImg}
+    for child in document.asParentNode.elementDescendants(Tags):
+      if child.name != CAtomNull and child.name != satUempty:
+        if child.tagType == ttImg and child.id != satUempty:
+          list.incl($child.id)
+        list.incl($child.name)
+    return list
 
-proc fullscreen(document: Document): bool {.
-    jsfget, jsfget: "fullscreenEnabled".} =
-  false
+  proc getter(ctx: JSContext; document: Document; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var id: CAtomRaw
+    ?ctx.fromJSView(atom, id)
+    if id != CAtomNull and id != satUempty:
+      #TODO exposed embed, exposed object
+      const Tags = {ttForm, ttIframe, ttImg}
+      for child in document.asParentNode.elementDescendants(Tags):
+        if child.tagType == ttImg and child.id == id and
+            child.name != CAtomNull and child.name != satUempty:
+          return ctx.toJS(child)
+        if child.name == id:
+          return ctx.toJS(child)
+    return JS_UNINITIALIZED
 
-# "lenient setter"
-proc setFullscreen(document: Document; b: bool) {.
-    jsfset: "fullscreen", jsfset: "fullscreenEnabled".} =
-  discard
+  proc all(ctx: JSContext; document: Document): JSValue {.jsfget.} =
+    var collection = document.asNode.getLiveCollection(cnAll) as
+      HTMLAllCollection
+    if collection == nil:
+      collection = jsNew HTMLAllCollectionObj(
+        match: isElement,
+        root: document.asNode,
+        invalid: true
+      )
+      let val = ctx.toJSNew(collection)
+      if JS_IsException(val):
+        return val
+      collection.asCollectionLike.attach()
+      JS_SetIsHTMLDDA(ctx, val)
+      return val
+    return ctx.toJS(collection)
 
-proc fullscreenElement(document: Document): JSValue {.jsfget.} =
-  return JS_NULL
+  proc fullscreen(document: Document): bool {.
+      jsfget, jsfget: "fullscreenEnabled".} =
+    false
 
-proc exitFullscreen(ctx: JSContext; document: Document): JSValue {.jsfunc.} =
-  JS_ThrowTypeError(ctx, "fullscreen is not supported")
-  return ctx.newRejectedPromise()
+  # "lenient setter"
+  proc setFullscreen(document: Document; b: bool) {.
+      jsfset: "fullscreen", jsfset: "fullscreenEnabled".} =
+    discard
+
+  proc fullscreenElement(document: Document): JSValue {.jsfget.} =
+    return JS_NULL
+
+  proc exitFullscreen(ctx: JSContext; document: Document): JSValue {.jsfunc.} =
+    JS_ThrowTypeError(ctx, "fullscreen is not supported")
+    return ctx.newRejectedPromise()
+
+  proc referrer(ctx: JSContext; document: Document): JSValue {.jsfget.} =
+    if document.window != nil:
+      return ctx.toJS(document.window.referrer)
+    return ctx.toJS("")
+
+  proc createNodeIterator(ctx: JSContext; document: Document; root: Node;
+      whatToShow = 0xFFFFFFFFu32; filter: JSValueConst = JS_NULL):
+      JSValue {.jsfunc.} =
+    if not JS_IsObject(filter) and not JS_IsNull(filter):
+      return JS_ThrowTypeError(ctx, "filter is not an object")
+    let this = jsNew NodeIteratorObj(
+      root: root,
+      currentNode: root,
+      iterNode: root,
+      whatToShow: whatToShow,
+      before: true
+    )
+    if this != nil:
+      if not JS_IsNull(filter):
+        this.filter = ctx.dupTraceObj(filter)
+      this.asCollectionLike.attach()
+    ctx.toJSNew(this)
+
+  proc createTreeWalker(ctx: JSContext; document: Document; root: Node;
+      whatToShow = 0xFFFFFFFFu32; filter: JSValueConst = JS_NULL):
+      JSValue {.jsfunc.} =
+    if not JS_IsObject(filter) and not JS_IsNull(filter):
+      return JS_ThrowTypeError(ctx, "filter is not an object")
+    let this = jsNew TreeWalkerObj(
+      root: root,
+      currentNode: root,
+      whatToShow: whatToShow
+    )
+    if this != nil and not JS_IsNull(filter):
+      this.filter = ctx.dupTraceObj(filter)
+    ctx.toJSNew(this)
+
+# XMLDocument
+jsClassDef(XMLDocument):
+  jsextends DocumentDef
+
+# DOMImplementation
+jsClassRaw(DOMImplementationDef, "DOMImplementation"):
+  # A JSObject holding a strong reference to the Document it originates
+  # from.
+  proc newDOMImplementation(ctx: JSContext; document: Document): JSValue =
+    let this = JS_NewObjectFromCtor(ctx, JS_UNDEFINED, classDef.id)
+    if JS_IsException(this):
+      return this
+    let rt = JS_GetRuntime(ctx)
+    JS_SetOpaque(this, JS_DupForeignObject(rt, cast[pointer](document)))
+    return this
+
+  proc finalizeDOMImpl(rt: JSRuntime; this: pointer) {.jsfin.} =
+    JS_FreeForeignObject(rt, this)
+
+  proc markDOMImpl(rt: JSRuntime; this: pointer; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    JS_MarkForeignObject(rt, this, markFunc)
+
+  proc createDocument(ctx: JSContext; implementation: DOMImplementation;
+      namespace: CAtom; qualifiedName: DOMStringNull;
+      doctype = none(DocumentType)): JSValue {.jsfunc.} =
+    let document = newXMLDocument()
+    if document == nil:
+      return JS_ThrowOutOfMemory(ctx)
+    let qualifiedName = qualifiedName.toAtom()
+    let element = if qualifiedName != satUempty:
+      ?ctx.createElementNS(document.asDocument, namespace, qualifiedName)
+    else:
+      Element(nil)
+    if doctype.isSome:
+      document.asParentNode.append(ctx, doctype.get.asNode)
+    if element != nil:
+      document.asParentNode.append(ctx, element.asNode)
+    document.origin = Document(implementation).origin
+    case namespace.toStaticAtom()
+    of satNamespaceHTML: document.contentType = satApplicationXmlHtml
+    of satNamespaceSVG: document.contentType = satImageSvgXml
+    else: discard
+    ctx.toJS(document)
+
+  proc createHTMLDocument(ctx: JSContext; implementation: DOMImplementation;
+      title: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
+    let doc = newDocument(ctx)
+    doc.contentType = satTextHtml
+    let doctype = doc.newDocumentType("html", "", "")
+    let html = doc.newHTMLElement(ttHtml)
+    let head = doc.newHTMLElement(ttHead)
+    let body = doc.newHTMLElement(ttBody)
+    if doctype == nil or html == nil or head == nil or body == nil:
+      return JS_ThrowOutOfMemory(ctx)
+    doc.asParentNode.append(ctx, doctype.asNode)
+    doc.asParentNode.append(ctx, html.asNode)
+    html.asParentNode.append(ctx, head.asNode)
+    if not JS_IsUndefined(title):
+      var ds: DOMString
+      ?ctx.fromJS(title, ds)
+      let titleElement = doc.newHTMLElement(ttTitle)
+      let text = doc.newText(ds)
+      if titleElement == nil or text == nil:
+        return JS_ThrowOutOfMemory(ctx)
+      titleElement.asParentNode.append(ctx, text.asNode)
+      head.asParentNode.append(ctx, titleElement.asNode)
+    html.asParentNode.append(ctx, body.asNode)
+    doc.origin = Document(implementation).origin
+    ctx.toJS(doc)
+
+  proc createDocumentType(ctx: JSContext; implementation: DOMImplementation;
+      qualifiedName, publicId, systemId: DOMString): JSValue {.jsfunc.} =
+    if AsciiWhitespace + {'\0', '>'} in qualifiedName.toOpenArray():
+      return JS_ThrowDOMException(ctx, "InvalidCharacterError",
+        "invalid character in qualified name")
+    let document = Document(implementation)
+    ctx.toJS(document.newDocumentType($qualifiedName, $publicId, $systemId))
+
+  proc hasFeature(implementation: DOMImplementation): bool {.jsfunc.} =
+    return true
 
 # DocumentType
-proc before(ctx: JSContext; this: DocumentType; nodes: varargs[JSValueConst]):
-    Opt[void] {.jsfunc.} =
-  ctx.beforeImpl(this, nodes)
+jsClassDef(DocumentType):
+  jsextends NodeDef
 
-proc after(ctx: JSContext; this: DocumentType; nodes: varargs[JSValueConst]):
-    Opt[void] {.jsfunc.} =
-  ctx.afterImpl(this, nodes)
+  jsget DocumentType, name
+  jsget DocumentType, publicId
+  jsget DocumentType, systemId
 
-proc replaceWith(ctx: JSContext; this: DocumentType;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  ctx.replaceWithImpl(this, nodes)
+  proc before(ctx: JSContext; this: DocumentType;
+      nodes: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+    ctx.beforeImpl(this.asNode, nodes)
 
-proc remove(this: DocumentType) {.jsfunc.} =
-  this.removeImpl()
+  proc after(ctx: JSContext; this: DocumentType; nodes: varargs[JSValueConst]):
+      Opt[void] {.jsfunc.} =
+    ctx.afterImpl(this.asNode, nodes)
+
+  proc replaceWith(ctx: JSContext; this: DocumentType;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    ctx.replaceWithImpl(this.asNode, nodes)
+
+  proc remove(ctx: JSContext; this: DocumentType) {.jsfunc.} =
+    this.asNode.removeImpl(ctx)
 
 # NodeIterator
-proc createNodeIterator(ctx: JSContext; document: Document; root: Node;
-    whatToShow = 0xFFFFFFFFu32; filter: JSValueConst = JS_NULL):
-    JSValue {.jsfunc.} =
-  if not JS_IsObject(filter) and not JS_IsNull(filter):
-    return JS_ThrowTypeError(ctx, "filter is not an object")
-  let this = NodeIterator(
-    root: root,
-    referenceNode: root,
-    iterNode: root,
-    whatToShow: whatToShow,
-    filter: JS_DupValue(ctx, filter),
-    before: true
-  )
-  root.attachLiveCollection(this)
-  ctx.toJS(this)
-
-proc jsRoot(this: NodeIterator): Node {.jsfget: "root".} =
-  this.root
-
-proc jsWhatToShow(this: NodeIterator): uint32 {.jsfget: "whatToShow".} =
-  this.whatToShow
-
-proc jsFilter(ctx: JSContext; this: NodeIterator): JSValue {.
-    jsfget: "filter".} =
-  JS_DupValue(ctx, this.filter)
+jsClassDef(NodeIteratorLike): # fake class
+  jsextends CollectionLikeDef
 
 proc filter(ctx: JSContext; this: NodeIteratorLike; node: Node): Opt[uint32] =
   if this.active:
@@ -4397,21 +4312,20 @@ proc filter(ctx: JSContext; this: NodeIteratorLike; node: Node): Opt[uint32] =
   let n = 1u32 shl (uint32(node.nodeType) - 1)
   if (this.whatToShow and n) == 0:
     return ok(uint32(nfrSkip))
-  if JS_IsNull(this.filter):
+  if this.filter == nil:
     return ok(uint32(nfrAccept))
-  let filter = this.filter
   let node = ctx.toJS(node)
   if JS_IsException(node):
     return err()
   this.active = true
   #TODO call user object's operation (prepare etc.)
+  let filter = JS_DupValue(ctx, this.filter.value)
   let val = if JS_IsFunction(ctx, filter):
     ctx.callSink(filter, JS_UNDEFINED, node)
   else:
-    let atom = JS_NewAtom(ctx, cstringConst"acceptNode")
-    let val = ctx.invokeSink(filter, atom, node)
-    JS_FreeAtom(ctx, atom)
-    val
+    let atom = ctx.getOpaque().strRefs[jstAcceptNode]
+    ctx.invokeSink(filter, atom, node)
+  JS_FreeValue(ctx, filter)
   if JS_IsException(val):
     this.active = false
     return err()
@@ -4422,32 +4336,12 @@ proc filter(ctx: JSContext; this: NodeIteratorLike; node: Node): Opt[uint32] =
     return err()
   ok(res)
 
-proc traverse(ctx: JSContext; this: NodeIterator; next: bool): Opt[Node] {.
-    jsmfunc("previousNode", false), jsmfunc("nextNode", true).} =
-  this.iterNode = this.referenceNode
-  this.iterBefore = this.before
-  while true:
-    if this.iterBefore == next:
-      this.iterBefore = not next
-    else:
-      this.iterNode = if next:
-        this.iterNode.nextDescendant(this.root)
-      else:
-        this.iterNode.previousDescendant(this.root)
-      if this.iterNode == nil:
-        return ok(nil)
-    let res = ctx.filter(this, this.iterNode)
-    if res.isErr:
-      this.iterNode = nil
-      return err()
-    if res.get == uint32(nfrAccept):
-      break
-  this.referenceNode = this.iterNode
-  this.before = this.iterBefore
-  ok(move(this.iterNode))
+template asNodeIteratorLike*[T: NodeIteratorLikeObj](x: JSRef[T]):
+    NodeIteratorLike =
+  NodeIteratorLike(x)
 
-proc detach(this: NodeIterator) {.jsfunc.} =
-  discard
+template filter(ctx: JSContext; this: NodeIterator; node: Node): Opt[uint32] =
+  ctx.filter(this.asNodeIteratorLike, node)
 
 proc adjustForRemovalImpl(iter: NodeIterator; node: Node;
     referenceNode: var Node; before: var bool) =
@@ -4461,164 +4355,157 @@ proc adjustForRemovalImpl(iter: NodeIterator; node: Node;
     referenceNode = node.previousDescendant(iter.root)
 
 proc adjustForRemoval(iter: NodeIterator; node: Node) =
-  iter.adjustForRemovalImpl(node, iter.referenceNode, iter.before)
+  iter.adjustForRemovalImpl(node, iter.currentNode, iter.before)
   if iter.iterNode != nil:
     iter.adjustForRemovalImpl(node, iter.iterNode, iter.iterBefore)
 
-# TreeWalker
-proc createTreeWalker(ctx: JSContext; document: Document; root: Node;
-    whatToShow = 0xFFFFFFFFu32; filter: JSValueConst = JS_NULL):
-    JSValue {.jsfunc.} =
-  if not JS_IsObject(filter) and not JS_IsNull(filter):
-    return JS_ThrowTypeError(ctx, "filter is not an object")
-  ctx.toJS(TreeWalker(
-    root: root,
-    currentNode: root,
-    whatToShow: whatToShow,
-    filter: JS_DupValue(ctx, filter)
-  ))
+jsClassDef(NodeIterator):
+  jsextends NodeIteratorLikeDef
 
-proc jsRoot(this: TreeWalker): Node {.jsfget: "root".} =
-  this.root
+  jsget NodeIterator, currentNode, "referenceNode"
+  jsget NodeIterator, before, "pointerBeforeReferenceNode"
+  jsget NodeIterator, root
+  jsget NodeIterator, whatToShow
+  jsget NodeIterator, filter
 
-proc jsWhatToShow(this: TreeWalker): uint32 {.jsfget: "whatToShow".} =
-  this.whatToShow
-
-proc jsFilter(ctx: JSContext; this: TreeWalker): JSValue {.jsfget: "filter".} =
-  JS_DupValue(ctx, this.filter)
-
-proc parentNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
-  var node = this.currentNode
-  while node != nil and node != this.root:
-    node = node.parentNode
-    if node != nil and ?ctx.filter(this, node) == uint32(nfrAccept):
-      this.currentNode = node
-      return ok(node)
-  ok(nil)
-
-proc traverse(ctx: JSContext; this: TreeWalker; last: bool): Opt[Node] {.
-    jsmfunc("firstChild", false), jsmfunc("lastChild", true).} =
-  let currentNode = this.currentNode
-  var node = if last: currentNode.lastChild else: currentNode.firstChild
-  while node != nil:
-    let res = ?ctx.filter(this, node)
-    if res == uint32(nfrAccept):
-      this.currentNode = node
-      return ok(node)
-    if res == uint32(nfrSkip):
-      let child = if last: node.lastChild else: node.firstChild
-      if child != nil:
-        node = child
-        continue
-    while node != nil:
-      let sibling = if last: node.previousSibling else: node.nextSibling
-      if sibling != nil:
-        node = sibling
-        break
-      let parent = Node(node.parentNode)
-      if parent == this.root or parent == currentNode:
-        node = nil
-      else:
-        node = parent
-  ok(nil)
-
-proc traverseSibling(ctx: JSContext; this: TreeWalker; next: bool): Opt[Node]
-    {.jsmfunc("previousSibling", false), jsmfunc("nextSibling", true).} =
-  var node = this.currentNode
-  if node != this.root:
+  proc traverse(ctx: JSContext; this: NodeIterator; next: bool): Opt[Node] {.
+      jsmfunc("previousNode", false), jsmfunc("nextNode", true).} =
+    var resultNode = Node(nil)
+    this.iterNode = this.currentNode
+    this.iterBefore = this.before
     while true:
-      var sibling = if next: node.nextSibling else: node.previousSibling
-      while sibling != nil:
-        node = sibling
-        let res = ?ctx.filter(this, node)
-        if res == uint32(nfrAccept):
-          this.currentNode = node
-          return ok(node)
-        sibling = if next: node.firstChild else: node.lastChild
-        if res == uint32(nfrReject) or sibling == nil:
-          sibling = if next: node.nextSibling else: node.previousSibling
-      node = node.parentNode
-      if node == this.root or node == nil or
-          ?ctx.filter(this, node) == uint32(nfrAccept):
-        return ok(nil)
-  ok(nil)
+      if this.iterBefore == next:
+        this.iterBefore = not next
+      else:
+        this.iterNode = if next:
+          this.iterNode.nextDescendant(this.root)
+        else:
+          this.iterNode.previousDescendant(this.root)
+        if this.iterNode == nil:
+          return ok(Node(nil))
+      resultNode = this.iterNode
+      let res = ctx.filter(this, resultNode)
+      if res.isErr:
+        this.iterNode = Node(nil)
+        return err()
+      if res.get == uint32(nfrAccept):
+        break
+    this.currentNode = move(this.iterNode)
+    this.before = this.iterBefore
+    ok(move(resultNode))
 
-proc nextNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
-  var node = this.currentNode.nextDescendant(this.root)
-  while node != nil:
-    let res = ?ctx.filter(this, node)
-    if res == uint32(nfrAccept):
-      this.currentNode = node
-      return ok(node)
-    let skip = res == uint32(nfrReject)
-    node = node.nextDescendant(this.root, skip)
-  ok(nil)
+  proc detach(this: NodeIterator) {.jsfunc.} =
+    discard
 
-proc previousNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
-  var node = this.currentNode
-  while node != this.root:
-    while (let sibling = node.previousSibling; sibling != nil):
-      node = sibling
-      var res = ?ctx.filter(this, node)
-      while res != uint32(nfrReject):
-        let last = node.lastChild
-        if last == nil:
-          break
-        res = ?ctx.filter(this, last)
-        node = last
+# TreeWalker
+template filter(ctx: JSContext; this: TreeWalker; node: Node): Opt[uint32] =
+  ctx.filter(this.asNodeIteratorLike, node)
+
+jsClassDef(TreeWalker):
+  jsextends NodeIteratorLikeDef
+
+  jsget TreeWalker, root
+  jsget TreeWalker, whatToShow
+  jsget TreeWalker, filter
+  jsgetset TreeWalker, currentNode
+
+  proc parentNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
+    var node = this.currentNode
+    while node != nil and node != this.root:
+      node = node.parentNode.asNode
+      if node != nil and ?ctx.filter(this, node) == uint32(nfrAccept):
+        this.currentNode = node
+        return ok(node)
+    ok(Node(nil))
+
+  proc traverse(ctx: JSContext; this: TreeWalker; last: bool): Opt[Node] {.
+      jsmfunc("firstChild", false), jsmfunc("lastChild", true).} =
+    let currentNode = this.currentNode
+    var node = if last: currentNode.lastChild else: currentNode.firstChild
+    while node != nil:
+      let res = ?ctx.filter(this, node)
       if res == uint32(nfrAccept):
         this.currentNode = node
         return ok(node)
-    let parent = node.parentNode
-    if node == this.root or parent == nil:
-      return ok(nil)
-    node = parent
-    if ?ctx.filter(this, node) == uint32(nfrAccept):
-      this.currentNode = node
-      return ok(node)
-  ok(nil)
+      if res == uint32(nfrSkip):
+        let child = if last: node.lastChild else: node.firstChild
+        if child != nil:
+          node = child
+          continue
+      while node != nil:
+        let sibling = if last: node.previousSibling else: node.nextSibling
+        if sibling != nil:
+          node = sibling
+          break
+        let parent = node.parentNode.asNode
+        if parent == this.root or parent == currentNode:
+          node = Node(nil)
+        else:
+          node = parent
+    ok(Node(nil))
+
+  proc traverseSibling(ctx: JSContext; this: TreeWalker; next: bool): Opt[Node]
+      {.jsmfunc("previousSibling", false), jsmfunc("nextSibling", true).} =
+    var node = this.currentNode
+    if node != this.root:
+      while true:
+        var sibling = if next: node.nextSibling else: node.previousSibling
+        while sibling != nil:
+          node = sibling
+          let res = ?ctx.filter(this, node)
+          if res == uint32(nfrAccept):
+            this.currentNode = node
+            return ok(node)
+          sibling = if next: node.firstChild else: node.lastChild
+          if res == uint32(nfrReject) or sibling == nil:
+            sibling = if next: node.nextSibling else: node.previousSibling
+        node = node.parentNode.asNode
+        if node == this.root or node == nil or
+            ?ctx.filter(this, node) == uint32(nfrAccept):
+          return ok(Node(nil))
+    ok(Node(nil))
+
+  proc nextNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
+    var node = this.currentNode.nextDescendant(this.root)
+    while node != nil:
+      let res = ?ctx.filter(this, node)
+      if res == uint32(nfrAccept):
+        this.currentNode = node
+        return ok(node)
+      let skip = res == uint32(nfrReject)
+      node = node.nextDescendant(this.root, skip)
+    ok(Node(nil))
+
+  proc previousNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
+    var node = this.currentNode
+    while node != this.root:
+      while (let sibling = node.previousSibling; sibling != nil):
+        node = sibling
+        var res = ?ctx.filter(this, node)
+        while res != uint32(nfrReject):
+          let last = node.lastChild
+          if last == nil:
+            break
+          res = ?ctx.filter(this, last)
+          node = last
+        if res == uint32(nfrAccept):
+          this.currentNode = node
+          return ok(node)
+      let parent = node.parentNode
+      if node == this.root or parent == nil:
+        return ok(Node(nil))
+      node = parent.asNode
+      if ?ctx.filter(this, node) == uint32(nfrAccept):
+        this.currentNode = node
+        return ok(node)
+    ok(Node(nil))
 
 # DOMTokenList
-proc newDOMTokenList(element: Element; name: StaticAtom): DOMTokenList =
-  return DOMTokenList(element: element, localName: name)
+proc localName(this: DOMTokenList): StaticAtom =
+  StaticAtom(this.getMagic())
 
-proc finalize(tokenList: DOMTokenList) {.jsfin.} =
-  freeAtoms(tokenList.toks)
-
-iterator items*(tokenList: DOMTokenList): CAtom {.inline.} =
-  for tok in tokenList.toks:
-    yield tok
-
-proc length(tokenList: DOMTokenList): int {.jsfget.} =
-  return tokenList.toks.len
-
-proc item(ctx: JSContext; tokenList: DOMTokenList; u: uint32): JSValue
-    {.jsfunc.} =
-  if int64(u) < int64(int.high):
-    let i = int(u)
-    if i < tokenList.toks.len:
-      return ctx.toJS(tokenList.toks[i])
-  return JS_NULL
-
-proc containsIgnoreCase(tokenList: DOMTokenList; a: StaticAtom): bool =
-  return tokenList.toks.containsIgnoreCase(a)
-
-proc contains(tokenList: DOMTokenList; s: CAtomTraced): bool {.jsfunc.} =
-  return s in tokenList.toks
-
-proc `$`(tokenList: DOMTokenList): string {.jsfunc: "toString",
-    jsfget: "value".} =
-  var s = ""
-  for i, tok in tokenList.toks:
-    if i != 0:
-      s &= ' '
-    s &= $tok
-  move(s)
-
-proc update(tokenList: DOMTokenList) =
-  if tokenList.element.attrb(tokenList.localName.view()) or
-      tokenList.toks.len > 0:
-    tokenList.element.attr(tokenList.localName.view(), $tokenList)
+proc update(this: DOMTokenList; ctx: JSContext; value: sink string) =
+  this.element.setAttr(ctx, this.localName, move(value))
 
 proc validateDOMTokens(ctx: JSContext; toks: varargs[CAtom]): Opt[void] =
   for tok in toks:
@@ -4631,450 +4518,337 @@ proc validateDOMTokens(ctx: JSContext; toks: varargs[CAtom]): Opt[void] =
       return err()
   ok()
 
-proc add(ctx: JSContext; tokenList: DOMTokenList;
-    argv: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
-  var toks: seq[CAtom]
-  ?ctx.fromJS(argv, toks)
-  if ctx.validateDOMTokens(toks).isErr:
-    freeAtoms(toks)
-    return err()
-  tokenList.toks.add(toks)
-  tokenList.update()
-  ok()
+proc remove(this: DOMTokenList; ctx: JSContext; toks: varargs[CAtom]) =
+  var buf = ""
+  for tok in this.toks:
+    if tok in toks:
+      continue
+    if buf.len > 0:
+      buf &= ' '
+    buf &= $tok
+  this.update(ctx, move(buf))
 
-proc remove(ctx: JSContext; tokenList: DOMTokenList;
-    argv: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
-  var toks: seq[CAtom]
-  ?ctx.fromJS(argv, toks)
-  if ctx.validateDOMTokens(toks).isErr:
-    freeAtoms(toks)
-    return err()
+proc add(this: DOMTokenList; ctx: JSContext; toks: varargs[CAtom]) =
+  var buf = ""
+  for tok in this.toks:
+    if buf.len > 0:
+      buf &= ' '
+    buf &= $tok
   for tok in toks:
-    let i = tokenList.toks.find(tok)
-    if i != -1:
-      tokenList.toks.delete(i)
-  tokenList.update()
-  freeAtoms(toks)
-  ok()
+    if tok notin this.toks:
+      if buf.len > 0:
+        buf &= ' '
+      buf &= $tok
+  this.update(ctx, move(buf))
 
-proc toggle(ctx: JSContext; tokenList: DOMTokenList; token: CAtomTraced;
-    force: JSValueConst = JS_UNDEFINED): Opt[bool] {.jsfunc.} =
-  ?ctx.validateDOMTokens(token.view())
-  let forceBool = JS_ToBool(ctx, force)
-  if forceBool < 0:
-    return err()
-  let i = tokenList.toks.find(token.view())
-  if i != -1:
-    if JS_IsUndefined(force) or forceBool == 0:
-      tokenList.toks.delete(i)
-      tokenList.update()
+jsClassDef(DOMTokenList):
+  jsextends ElementAccessorDef
+
+  classDef.iterable = jitValue
+
+  proc length(this: DOMTokenList): uint32 {.jsfget.} =
+    return this.toks.len
+
+  proc item(ctx: JSContext; this: DOMTokenList; u: uint32): JSValue
+      {.jsfunc.} =
+    if u < this.toks.len:
+      return ctx.toJS(this.toks[u])
+    return JS_NULL
+
+  proc contains(this: DOMTokenList; s: CAtom): bool {.jsfunc.} =
+    return s in this.toks
+
+  proc `$`(this: DOMTokenList): string {.jsfunc: "toString",
+      jsfget: "value".} =
+    var s = ""
+    for i, tok in this.toks:
+      if i != 0:
+        s &= ' '
+      s &= $tok
+    move(s)
+
+  proc add(ctx: JSContext; this: DOMTokenList; argv: varargs[JSValueConst]):
+      Opt[void] {.jsfunc.} =
+    var toks: seq[CAtom]
+    ?ctx.fromJS(argv, toks)
+    ?ctx.validateDOMTokens(toks)
+    this.add(ctx, toks)
+    ok()
+
+  proc remove(ctx: JSContext; this: DOMTokenList; argv: varargs[JSValueConst]):
+      Opt[void] {.jsfunc.} =
+    var toks: seq[CAtom]
+    ?ctx.fromJS(argv, toks)
+    ?ctx.validateDOMTokens(toks)
+    this.remove(ctx, toks)
+    ok()
+
+  proc toggle(ctx: JSContext; this: DOMTokenList; token: CAtom;
+      force: JSValueConst = JS_UNDEFINED): Opt[bool] {.jsfunc.} =
+    ?ctx.validateDOMTokens(token)
+    let forceBool = JS_ToBool(ctx, force)
+    if forceBool < 0:
+      return err()
+    if this.contains(token):
+      if JS_IsUndefined(force) or forceBool == 0:
+        this.remove(ctx, token)
+        return ok(false)
+      return ok(true)
+    if JS_IsUndefined(force) or forceBool == 1:
+      this.add(ctx, token)
+      return ok(true)
+    ok(false)
+
+  proc replace(ctx: JSContext; this: DOMTokenList; token, newToken: CAtom):
+      Opt[bool] {.jsfunc.} =
+    ?ctx.validateDOMTokens(token, newToken)
+    if not this.contains(token):
       return ok(false)
+    var buf = ""
+    for tok in this.toks:
+      if buf.len > 0:
+        buf &= ' '
+      if tok == token:
+        buf &= $newToken
+      else:
+        buf &= $tok
+    this.update(ctx, move(buf))
     return ok(true)
-  if JS_IsUndefined(force) or forceBool == 1:
-    tokenList.toks.add(token.dup())
-    tokenList.update()
-    return ok(true)
-  ok(false)
 
-proc replace(ctx: JSContext; tokenList: DOMTokenList;
-    token, newToken: CAtomTraced): Opt[bool] {.jsfunc.} =
-  ?ctx.validateDOMTokens(token.view(), newToken.view())
-  let i = tokenList.toks.find(token.view())
-  if i == -1:
-    return ok(false)
-  freeAtom(tokenList.toks[i])
-  tokenList.toks[i] = newToken.dup()
-  tokenList.update()
-  return ok(true)
+  proc supports(ctx: JSContext; this: DOMTokenList; token: DOMString): JSValue
+      {.jsfunc.} =
+    case this.localName
+    of satRel:
+      const SupportedTokens = [satAlternate, satStylesheet]
+      let lower = token.toOpenArray().toLowerAscii()
+      return ctx.toJS(lower.toStaticAtom() in SupportedTokens)
+    else:
+      return JS_ThrowTypeError(ctx,
+        "no supported tokens defined for attribute")
 
-proc supports(ctx: JSContext; tokenList: DOMTokenList; token: DOMString):
-    JSValue {.jsfunc.} =
-  case tokenList.localName
-  of satRel:
-    const SupportedTokens = [satAlternate, satStylesheet]
-    let lower = token.toOpenArray().toLowerAscii()
-    return ctx.toJS(lower.toStaticAtom() in SupportedTokens)
-  else:
-    return JS_ThrowTypeError(ctx, "no supported tokens defined for attribute")
-
-proc getter(ctx: JSContext; this: DOMTokenList; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  case ctx.fromIdx(atom, u)
-  of fiIdx: ctx.item(this, u).uninitIfNull()
-  of fiStr: JS_UNINITIALIZED
-  of fiErr: JS_EXCEPTION
-
-proc reflectTokens(this: DOMTokenList; value: string) =
-  this.toks.setLen(0)
-  for x in value.split(AsciiWhitespace):
-    if x != "":
-      let a = x.toAtomTrace()
-      if a notin this:
-        this.toks.add(a.dup())
+  proc getter(ctx: JSContext; this: DOMTokenList; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var u: uint32
+    case ctx.fromIdx(atom, u)
+    of fiIdx: ctx.item(this, u).uninitIfNull()
+    of fiStr: JS_UNINITIALIZED
+    of fiErr: JS_EXCEPTION
 
 # DOMStringMap
-proc toDataStr(name: DOMString): CAtomTraced =
+proc toDataStr(name: DOMString): CAtom =
   let s = "data-" & name.toOpenArray().camelToKebabCase()
-  s.toAtomTrace()
+  s.toAtom()
 
-proc delete(ctx: JSContext; map: DOMStringMap; name: DOMString): bool {.
-    jsfunc.} =
-  let name = name.toDataStr()
-  let i = map.target.findAttr(name)
-  if i != -1:
-    ctx.delAttr(map.target, i)
-  return i != -1
+jsClassDef(DOMStringMap):
+  jsextends ElementAccessorDef
 
-proc getter(ctx: JSContext; map: DOMStringMap; name: DOMString): JSValue
-    {.jsgetownprop.} =
-  let name = name.toDataStr()
-  let i = map.target.findAttr(name)
-  if i != -1:
-    return ctx.toJS(map.target.attrs[i].value)
-  return JS_UNINITIALIZED
+  proc delete(ctx: JSContext; map: DOMStringMap; name: DOMString): bool {.
+      jsfunc.} =
+    let name = name.toDataStr()
+    let i = map.target.asElement.findAttr(name)
+    if i >= 0:
+      map.target.asElement.delAttr(ctx, i)
+    return i >= 0
 
-proc setter(ctx: JSContext; map: DOMStringMap; name, value: DOMString):
-    Opt[void] {.jssetprop.} =
-  var washy = false
-  for c in name.toOpenArray():
-    if not washy or c notin AsciiLowerAlpha:
-      washy = c == '-'
-      continue
-    JS_ThrowDOMException(ctx, "InvalidCharacterError",
-      "lower case after hyphen is not allowed in dataset")
-    return err()
-  let name = name.toDataStr()
-  ?ctx.validateAttrName($name)
-  map.target.attr(name, value)
-  ok()
+  proc getter(ctx: JSContext; map: DOMStringMap; name: DOMString): JSValue
+      {.jsgetownprop.} =
+    let name = name.toDataStr()
+    let i = map.target.asElement.findAttr(name)
+    if i >= 0:
+      return ctx.toJS(map.target.attrs[i].value)
+    return JS_UNINITIALIZED
 
-proc names(ctx: JSContext; map: DOMStringMap): JSPropertyEnumList
-    {.jspropnames.} =
-  var list = newJSPropertyEnumList(ctx, uint32(map.target.attrs.len))
-  for attr in map.target.attrs:
-    let k = $attr.name
-    if k.startsWith("data-") and AsciiUpperAlpha notin k:
-      list.add(k["data-".len .. ^1].kebabToCamelCase())
-  return list
+  proc setter(ctx: JSContext; map: DOMStringMap; name, value: DOMString):
+      Opt[void] {.jssetprop.} =
+    var washy = false
+    for c in name.toOpenArray():
+      if not washy or c notin AsciiLowerAlpha:
+        washy = c == '-'
+        continue
+      JS_ThrowDOMException(ctx, "InvalidCharacterError",
+        "lower case after hyphen is not allowed in dataset")
+      return err()
+    let name = name.toDataStr()
+    ?ctx.validateAttrName($name)
+    map.target.asElement.setAttr(ctx, name, value)
+    ok()
+
+  proc names(ctx: JSContext; map: DOMStringMap): JSPropertyEnumList
+      {.jspropnames.} =
+    var list = newJSPropertyEnumList(ctx, uint32(map.target.attrs.len))
+    for attr in map.target.attrs:
+      let k = $attr.name
+      if k.startsWith("data-") and AsciiUpperAlpha notin k:
+        list.incl(k["data-".len .. ^1].kebabToCamelCase())
+    return list
 
 # NodeList
-proc length(this: NodeList): uint32 {.jsfget.} =
-  return this.getLength()
+jsClassPublicDef(NodeList):
+  jsextends CollectionDef
 
-proc item(ctx: JSContext; this: NodeList; u: uint32): Node {.jsfunc.} =
-  if u < this.getLength():
-    return this.snapshot[u]
-  nil
+  classDef.iterable = jitValue
 
-proc getter(ctx: JSContext; this: NodeList; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  case ctx.fromIdx(atom, u)
-  of fiIdx: ctx.toJS(ctx.item(this, u)).uninitIfNull()
-  of fiStr: JS_UNINITIALIZED
-  of fiErr: JS_EXCEPTION
+  proc length(this: NodeList): uint32 {.jsfget.} =
+    return this.asCollection.getLength()
 
-proc names(ctx: JSContext; this: NodeList): JSPropertyEnumList {.jspropnames.} =
-  let L = this.getLength()
-  var list = newJSPropertyEnumList(ctx, L)
-  for u in 0 ..< L:
-    list.add(u)
-  return list
+  proc item(ctx: JSContext; this: NodeList; u: uint32): Node {.jsfunc.} =
+    if u < this.length:
+      return this.snapshot[u]
+    Node(nil)
+
+  proc getter(ctx: JSContext; this: NodeList; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var u: uint32
+    case ctx.fromIdx(atom, u)
+    of fiIdx: ctx.toJS(ctx.item(this, u)).uninitIfNull()
+    of fiStr: JS_UNINITIALIZED
+    of fiErr: JS_EXCEPTION
+
+  proc names(ctx: JSContext; this: NodeList): JSPropertyEnumList
+      {.jspropnames.} =
+    let L = this.length
+    var list = newJSPropertyEnumList(ctx, L)
+    for u in 0 ..< L:
+      list.add(u)
+    return list
 
 # HTMLCollection
-proc length(this: HTMLCollection): uint32 {.jsfget.} =
-  return this.getLength()
+template asHTMLCollection*[T: HTMLCollectionObj](x: JSRef[T]): HTMLCollection =
+  HTMLCollection(x)
 
-proc item(this: HTMLCollection; u: uint32): Element {.jsfunc.} =
-  if u < this.getLength():
-    return Element(this.snapshot[int(u)])
-  nil
+jsClassPublicDef(HTMLCollection):
+  jsextends CollectionDef
 
-proc namedItem(this: HTMLCollection; atom: CAtomTraced): Element {.jsfunc.} =
-  this.refreshCollection()
-  for it in this.snapshot:
-    let it = Element(it)
-    if it.id == atom or it.namespaceURI == satNamespaceHTML and it.name == atom:
-      return it
-  nil
+  classDef.iterable = jitIndexed
 
-proc getter(ctx: JSContext; this: HTMLCollection; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  var s: CAtomTraced
-  case ctx.fromIdx(atom, u, s)
-  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
-  of fiStr: ctx.toJS(this.namedItem(s)).uninitIfNull()
-  of fiErr: JS_EXCEPTION
+  proc length(this: HTMLCollection): uint32 {.jsfget.} =
+    return this.asCollection.getLength()
 
-proc names(ctx: JSContext; this: HTMLCollection): JSPropertyEnumList
-    {.jspropnames.} =
-  let L = this.getLength()
-  var list = newJSPropertyEnumList(ctx, L)
-  var ids: seq[CAtom] = @[]
-  for u in 0 ..< L:
-    list.add(u)
-    let element = this.item(u)
-    if element == nil:
-      continue
-    if element.id != satUempty and element.id notin ids:
-      ids.add(element.id)
-    if element.namespaceURI == satNamespaceHTML and
-        element.name != satUempty and element.name notin ids:
-      ids.add(element.name)
-  for id in ids:
-    list.add($id)
-  return list
+  proc item*(this: HTMLCollection; u: uint32): Element {.jsfunc.} =
+    if u < this.length:
+      return this.snapshot[int(u)] as Element
+    Element(nil)
 
-# HTMLFormControlsCollection
-proc namedItem(ctx: JSContext; this: HTMLFormControlsCollection;
-    name: CAtomTraced): JSValue {.jsfunc.} =
-  let nodes = newCollection[RadioNodeList](
-    this.root,
-    proc(this: Collection; node: Node): bool =
-      let this = RadioNodeList(this)
-      if not this.parent.match(this.parent, node):
-        return false
-      let element = Element(node)
-      let name = this.atoms[0]
-      element.id == name or
-        element.namespaceURI == satNamespaceHTML and element.name == name,
-    islive = true,
-    childonly = false
-  )
-  nodes.parent = this
-  nodes.atoms = @[name.dup()]
-  let len = nodes.getLength()
-  if len == 0:
-    return JS_NULL
-  if len == 1:
-    return ctx.toJS(nodes.snapshot[0])
-  return ctx.toJS(nodes)
+  proc namedItem*(this: HTMLCollection; atom: CAtom): Element {.jsfunc.} =
+    if atom != satUempty:
+      this.asCollection.refreshCollection()
+      for it in this.snapshot:
+        let it = it as Element
+        if it.id == atom or
+            it.namespaceURI == satNamespaceHTML and it.name == atom:
+          return it
+    Element(nil)
 
-proc names(ctx: JSContext; this: HTMLFormControlsCollection): JSPropertyEnumList
-    {.jspropnames.} =
-  return ctx.names(HTMLCollection(this))
+  proc getter*(ctx: JSContext; this: HTMLCollection; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var u: uint32
+    var s: CAtom
+    case ctx.fromIdx(atom, u, s)
+    of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+    of fiStr: ctx.toJS(this.namedItem(s)).uninitIfNull()
+    of fiErr: JS_EXCEPTION
 
-proc getter(ctx: JSContext; this: HTMLFormControlsCollection; atom: JSAtom):
-    JSValue {.jsgetownprop.} =
-  var u: uint32
-  var s: CAtomTraced
-  case ctx.fromIdx(atom, u, s)
-  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
-  of fiStr: ctx.namedItem(this, s).uninitIfNull()
-  of fiErr: JS_EXCEPTION
+  proc names*(ctx: JSContext; this: HTMLCollection): JSPropertyEnumList
+      {.jspropnames.} =
+    let L = this.length
+    var list = newJSPropertyEnumList(ctx, L)
+    for u in 0 ..< L:
+      list.add(u)
+    for u in 0 ..< L:
+      let element = this.item(u)
+      if element == nil:
+        continue
+      if element.id != satUempty:
+        list.incl($element.id)
+      if element.namespaceURI == satNamespaceHTML and
+          element.name != CAtomNull and element.name != satUempty:
+        list.incl($element.name)
+    return list
 
 # HTMLAllCollection
-proc length(this: HTMLAllCollection): uint32 {.jsfget.} =
-  this.getLength()
+jsClassDef(HTMLAllCollection):
+  jsextends CollectionDef
 
-proc item(this: HTMLAllCollection; u: uint32): Element {.jsfunc.} =
-  if u < this.getLength():
-    return Element(this.snapshot[u])
-  nil
+  proc length(this: HTMLAllCollection): uint32 {.jsfget.} =
+    this.asCollection.getLength()
 
-proc getter(ctx: JSContext; this: HTMLAllCollection; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  case ctx.fromIdx(atom, u)
-  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
-  of fiStr: JS_UNINITIALIZED
-  of fiErr: JS_EXCEPTION
+  proc item(this: HTMLAllCollection; u: uint32): Element {.jsfunc.} =
+    if u < this.length:
+      return this.snapshot[u] as Element
+    Element(nil)
 
-proc names(ctx: JSContext; this: HTMLAllCollection): JSPropertyEnumList
-    {.jspropnames.} =
-  let L = this.getLength()
-  var list = newJSPropertyEnumList(ctx, L)
-  for u in 0 ..< L:
-    list.add(u)
-  return list
+  proc getter(ctx: JSContext; this: HTMLAllCollection; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var u: uint32
+    case ctx.fromIdx(atom, u)
+    of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+    of fiStr: JS_UNINITIALIZED
+    of fiErr: JS_EXCEPTION
 
-proc all(ctx: JSContext; document: Document): JSValue {.jsfget.} =
-  if document.cachedAll == nil:
-    let res = newCollection[HTMLAllCollection](
-      root = document,
-      match = isElement,
-      islive = true,
-      childonly = false
-    )
-    document.cachedAll = res
-    let val = ctx.toJS(res)
-    JS_SetIsHTMLDDA(ctx, val)
-    return val
-  return ctx.toJS(document.cachedAll)
-
-# Location
-proc newLocation*(window: Window): Location =
-  let location = Location(window: window)
-  let ctx = window.jsctx
-  if ctx != nil:
-    let val = ctx.toJS(location)
-    let valueOf0 = ctx.getOpaque().valRefs[jsvObjectPrototypeValueOf]
-    let valueOf = JS_DupValue(ctx, valueOf0)
-    doAssert ctx.defineProperty(val, "valueOf", valueOf) != dprException
-    doAssert ctx.defineProperty(val, "toPrimitive",
-      JS_UNDEFINED) != dprException
-    #TODO [[DefaultProperties]]
-    JS_FreeValue(ctx, val)
-  return location
-
-proc document(location: Location): Document =
-  return location.window.document
-
-proc url(location: Location): URL =
-  let document = location.document
-  if document != nil:
-    return document.url
-  return parseURL0("about:blank")
-
-#TODO CORS (SecurityError)
-proc `$`(location: Location): string {.jsuffunc: "toString".} =
-  return location.url.serialize()
-
-proc href(location: Location): string {.jsuffget.} =
-  return $location
-
-proc setHref(ctx: JSContext; location: Location; s: string): JSValue {.
-    jsfset: "href", jsuffunc: "assign", jsuffunc: "replace".} =
-  if location.document == nil:
-    return JS_UNDEFINED
-  return ctx.setLocation(location.document, s)
-
-proc reload(location: Location) {.jsuffunc.} =
-  if location.document == nil:
-    return
-  location.document.window.navigate(location.url)
-
-proc origin*(location: Location): string {.jsuffget.} =
-  return location.url.jsOrigin
-
-proc protocol(ctx: JSContext; location: Location): JSValue {.jsuffget.} =
-  return ctx.protocol(location.url)
-
-proc setProtocol(ctx: JSContext; location: Location; s: string): JSValue
-    {.jsfset: "protocol".} =
-  let document = location.document
-  if document == nil:
-    return JS_UNDEFINED
-  let copyURL = newURL(location.url)
-  copyURL.setProtocol(s)
-  if copyURL.schemeType notin {stHttp, stHttps}:
-    return JS_ThrowDOMException(ctx, "SyntaxError", "invalid URL")
-  document.window.navigate(copyURL)
-  return JS_UNDEFINED
-
-proc host(location: Location): string {.jsuffget.} =
-  return location.url.host
-
-proc setHost(location: Location; s: string) {.jsfset: "host".} =
-  let document = location.document
-  if document == nil:
-    return
-  let copyURL = newURL(location.url)
-  copyURL.setHost(s)
-  document.window.navigate(copyURL)
-
-proc hostname(location: Location): string {.jsuffget.} =
-  return location.url.hostname
-
-proc setHostname(location: Location; s: string) {.jsfset: "hostname".} =
-  let document = location.document
-  if document == nil:
-    return
-  let copyURL = newURL(location.url)
-  copyURL.setHostname(s)
-  document.window.navigate(copyURL)
-
-proc port(location: Location): string {.jsuffget.} =
-  return location.url.port
-
-proc setPort(location: Location; s: string) {.jsfset: "port".} =
-  let document = location.document
-  if document == nil:
-    return
-  let copyURL = newURL(location.url)
-  copyURL.setPort(s)
-  document.window.navigate(copyURL)
-
-proc pathname(location: Location): string {.jsuffget.} =
-  return location.url.pathname
-
-proc setPathname(location: Location; s: string) {.jsfset: "pathname".} =
-  let document = location.document
-  if document == nil:
-    return
-  let copyURL = newURL(location.url)
-  copyURL.setPathname(s)
-  document.window.navigate(copyURL)
-
-proc search(location: Location): string {.jsuffget.} =
-  return location.url.search
-
-proc setSearch(location: Location; s: string) {.jsfset: "search".} =
-  let document = location.document
-  if document == nil:
-    return
-  let copyURL = newURL(location.url)
-  copyURL.setSearch(s)
-  document.window.navigate(copyURL)
-
-proc hash(location: Location): string {.jsuffget.} =
-  return location.url.hash
-
-proc setHash(location: Location; s: string) {.jsfset: "hash".} =
-  let document = location.document
-  if document == nil:
-    return
-  let copyURL = newURL(location.url)
-  copyURL.setHash(s)
-  document.window.navigate(copyURL)
+  proc names(ctx: JSContext; this: HTMLAllCollection): JSPropertyEnumList
+      {.jspropnames.} =
+    let L = this.length
+    var list = newJSPropertyEnumList(ctx, L)
+    for u in 0 ..< L:
+      list.add(u)
+    return list
 
 # Attr
 proc newAttr(element: Element; dataIdx: int): Attr =
-  let attr = Attr(
-    internalNext: element.document,
+  jsNew AttrObj(
+    internalNext: element.asNode.document.asNode,
     dataIdx: dataIdx,
     ownerElement: element,
   )
-  let namespace = attr.data.namespace.dup()
-  let qualifiedName = attr.data.name.dupTrace()
-  if namespace == CAtomNull: # no namespace -> qualifiedName == localName
-    attr.prefix = CAtomNull
-    attr.localName = qualifiedName.dup()
-  else: # namespace -> qualifiedName == prefix & ':' & localName
-    let prefixs = ($qualifiedName).until(':')
-    let prefixLen = prefixs.len
-    attr.prefix = prefixs.toAtom()
-    attr.localName = qualifiedName.view().substr(prefixLen + 1)
-  return attr
 
-proc finalize(attr: Attr) {.jsfin.} =
-  freeAtom(attr.prefix)
-  freeAtom(attr.localName)
-
-proc jsOwnerElement(attr: Attr): Element {.jsfget: "ownerElement".} =
-  if attr.ownerElement of AttrDummyElement:
-    return nil
-  return attr.ownerElement
-
-proc ownerDocument(attr: Attr): Document {.jsfget.} =
-  return attr.ownerElement.ownerDocument
+proc newAttr(document: Document; data: AttrData): Attr =
+  let dummy = jsNew AttrDummyElementObj(
+    internalNext: document.asNode,
+    attrs: @[data]
+  )
+  if dummy == nil:
+    return Attr(nil)
+  newAttr(dummy.asElement, 0)
 
 proc data(attr: Attr): lent AttrData =
   return attr.ownerElement.attrs[attr.dataIdx]
 
-proc namespaceURI(attr: Attr): CAtom {.jsfget.} =
-  return attr.data.namespace
+jsClassDef(Attr):
+  jsextends NodeDef
 
-proc value(attr: Attr): string {.jsfget.} =
-  return attr.data.value
+  proc name(attr: Attr): lent CAtom {.jsfget.} =
+    return attr.data.name
 
-proc name(attr: Attr): CAtom {.jsfget.} =
-  return attr.data.name
+  proc namespaceURI(attr: Attr): lent CAtom {.jsfget.} =
+    return attr.data.namespace
 
-proc setValue(attr: Attr; ds: DOMString) {.jsfset: "value".} =
-  attr.ownerElement.attr(attr.data.name.view(), ds)
+  proc prefix(ctx: JSContext; attr: Attr): JSValue {.jsfget.} =
+    if attr.namespaceURI != CAtomNull:
+      let name = attr.name
+      let i = name.find(':')
+      if i >= 0:
+        return ctx.toJS(($name).toOpenArray(0, i - 1))
+    return JS_NULL
+
+  proc localName(ctx: JSContext; attr: Attr): JSValue {.jsfget.} =
+    let name = attr.name
+    if attr.namespaceURI != CAtomNull:
+      let i = name.find(':')
+      if i >= 0:
+        return ctx.toJS(($name).toOpenArray(i + 1, name.len - 1))
+    return ctx.toJS(name)
+
+  proc value(attr: Attr): string {.jsfget.} =
+    return attr.data.value
+
+  proc setValue(ctx: JSContext; attr: Attr; ds: DOMString) {.
+      jsfset: "value".} =
+    attr.ownerElement.setAttr(ctx, attr.data.name, ds)
+
+  proc jsOwnerElement(attr: Attr): Element {.jsfget: "ownerElement".} =
+    if attr.ownerElement of AttrDummyElement:
+      return Element(nil)
+    return attr.ownerElement
 
 # NamedNodeMap
 proc findAttr(map: NamedNodeMap; dataIdx: int): int =
@@ -5085,123 +4859,72 @@ proc findAttr(map: NamedNodeMap; dataIdx: int): int =
 
 proc getAttr(map: NamedNodeMap; dataIdx: int): Attr =
   let i = map.findAttr(dataIdx)
-  if i != -1:
+  if i >= 0:
     return map.attrlist[i]
   let attr = map.element.newAttr(dataIdx)
-  map.attrlist.add(attr)
+  if attr != nil:
+    map.attrlist.add(attr)
   return attr
 
-proc getNamedItem(map: NamedNodeMap; qualifiedName: CAtomTraced): Attr {.
-    jsfunc.} =
-  let i = map.element.findAttr(qualifiedName)
-  if i != -1:
-    return map.getAttr(i)
-  return nil
+jsClassDef(NamedNodeMap):
+  jsextends ElementAccessorDef
 
-proc getNamedItemNS(map: NamedNodeMap; namespace, localName: CAtomTraced): Attr
-    {.jsfunc.} =
-  let i = map.element.findAttrNS(namespace, localName)
-  if i != -1:
-    return map.getAttr(i)
-  return nil
+  proc mark(rt: JSRuntime; map: NamedNodeMap; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for attr in map.attrlist:
+      rt.markObj(attr, markFunc)
 
-proc length(map: NamedNodeMap): uint32 {.jsfget.} =
-  return uint32(map.element.attrs.len)
+  proc getNamedItem(map: NamedNodeMap; qualifiedName: CAtom): Attr {.
+      jsfunc.} =
+    let i = map.element.findAttr(qualifiedName)
+    if i >= 0:
+      return map.getAttr(i)
+    return Attr(nil)
 
-proc item(map: NamedNodeMap; u: uint32): Attr {.jsfunc.} =
-  if int64(u) < int64(map.element.attrs.len):
-    return map.getAttr(int(u))
-  return nil
+  proc getNamedItemNS(map: NamedNodeMap; namespace, localName: CAtom):
+      Attr {.jsfunc.} =
+    let i = map.element.findAttrNS(namespace, localName)
+    if i >= 0:
+      return map.getAttr(i)
+    return Attr(nil)
 
-proc getter(ctx: JSContext; this: NamedNodeMap; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  var s: CAtomTraced
-  case ctx.fromIdx(atom, u, s)
-  of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
-  of fiStr: ctx.toJS(this.getNamedItem(s)).uninitIfNull()
-  of fiErr: JS_EXCEPTION
+  proc length(map: NamedNodeMap): uint32 {.jsfget.} =
+    return uint32(map.element.attrs.len)
 
-proc names(ctx: JSContext; map: NamedNodeMap): JSPropertyEnumList
-    {.jspropnames.} =
-  let len = if map.element.namespaceURI == satNamespaceHTML:
-    uint32(map.attrlist.len + map.element.attrs.len)
-  else:
-    uint32(map.attrlist.len)
-  var list = newJSPropertyEnumList(ctx, len)
-  for u in 0 ..< len:
-    list.add(u)
-  let element = map.element
-  for attr in element.attrs:
-    let name = attr.name
-    if element.namespaceURI == satNamespaceHTML and AsciiUpperAlpha in name:
-      continue
-    list.add($name)
-  return list
+  proc item(map: NamedNodeMap; u: uint32): Attr {.jsfunc.} =
+    if int64(u) < int64(map.element.attrs.len):
+      return map.getAttr(int(u))
+    return Attr(nil)
 
-# CharacterData
-proc length(this: CharacterData): int {.jsfget.} =
-  return ($this.data).utf16Len
+  proc getter(ctx: JSContext; this: NamedNodeMap; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var u: uint32
+    var s: CAtom
+    case ctx.fromIdx(atom, u, s)
+    of fiIdx: ctx.toJS(this.item(u)).uninitIfNull()
+    of fiStr: ctx.toJS(this.getNamedItem(s)).uninitIfNull()
+    of fiErr: JS_EXCEPTION
 
-proc previousElementSibling(this: CharacterData): Element {.jsfget.} =
-  return this.previousElementSiblingImpl
-
-proc nextElementSibling(this: CharacterData): Element {.jsfget.} =
-  return this.nextElementSiblingImpl
-
-proc before(ctx: JSContext; this: CharacterData; nodes: varargs[JSValueConst]):
-    Opt[void] {.jsfunc.} =
-  ctx.beforeImpl(this, nodes)
-
-proc after(ctx: JSContext; this: CharacterData; nodes: varargs[JSValueConst]):
-    Opt[void] {.jsfunc.} =
-  ctx.afterImpl(this, nodes)
-
-proc replaceWith(ctx: JSContext; this: CharacterData;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  ctx.replaceWithImpl(this, nodes)
-
-proc remove*(this: CharacterData) {.jsfunc.} =
-  this.removeImpl()
+  proc names(ctx: JSContext; map: NamedNodeMap): JSPropertyEnumList
+      {.jspropnames.} =
+    let len = if map.element.namespaceURI == satNamespaceHTML:
+      uint32(map.attrlist.len + map.element.attrs.len)
+    else:
+      uint32(map.attrlist.len)
+    var list = newJSPropertyEnumList(ctx, len)
+    for u in 0 ..< len:
+      list.add(u)
+    let element = map.element
+    for attr in element.attrs:
+      let name = attr.name
+      if element.namespaceURI == satNamespaceHTML and AsciiUpperAlpha in name:
+        continue
+      list.incl($name)
+    return list
 
 # Element
-proc freeAttr(data: AttrData) =
-  freeAtom(data.name)
-  freeAtom(data.namespace)
-
-proc finalize(element: Element) {.jsfin.} =
-  freeAtom(element.namespaceURI)
-  freeAtom(element.localName)
-  freeAtom(element.tagName)
-  freeAtom(element.id)
-  freeAtom(element.name)
-  for it in element.attrs:
-    freeAttr(it)
-
-proc dupAttrs(element: Element): seq[AttrData] =
-  result = newSeqOfCap[AttrData](element.attrs.len)
-  for attr in element.attrs:
-    result.add(AttrData(
-      name: attr.name.dup(),
-      namespace: attr.namespace.dup(),
-      value: attr.value
-    ))
-
-proc deleteAttr(element: Element; i: int) =
-  freeAttr(element.attrs[i])
-  element.attrs.delete(i)
-
 proc hash(element: Element): Hash =
-  return hash(cast[pointer](element))
-
-proc firstElementChild(this: Element): Element {.jsfget.} =
-  return ParentNode(this).firstElementChild
-
-proc lastElementChild(this: Element): Element {.jsfget.} =
-  return ParentNode(this).lastElementChild
-
-proc childElementCount(this: Element): uint32 {.jsfget.} =
-  return this.childElementCountImpl
+  hash(cast[pointer](element))
 
 proc isFirstVisualNode*(element: Element): bool =
   let parent = element.parentNode
@@ -5209,8 +4932,9 @@ proc isFirstVisualNode*(element: Element): bool =
     for child in parent.childList:
       if child == element:
         return true
-      if child of Text and not Text(child).data.s.onlyWhitespace():
-        break
+      if (let text = child as Text; text != nil):
+        if not text.data.s.onlyWhitespace():
+          break
   return false
 
 proc isLastVisualNode*(element: Element): bool =
@@ -5221,20 +4945,21 @@ proc isLastVisualNode*(element: Element): bool =
         return true
       if child of Element:
         break
-      if child of Text and not Text(child).data.s.onlyWhitespace():
-        break
+      if (let text = child as Text; text != nil):
+        if not text.data.s.onlyWhitespace():
+          break
   return false
 
-proc innerHTML(element: Element): string {.jsfget.} =
-  #TODO xml
-  return element.serializeFragment(writeShadow = true)
+proc isVisuallyEmpty*(element: Element): bool =
+  for child in element.asParentNode.childList:
+    if child of Element:
+      return false
+    if (let text = child as Text; text != nil):
+      if not text.data.s.onlyWhitespace():
+        return false
+  true
 
-proc outerHTML(element: Element): string {.jsfget.} =
-  #TODO xml
-  result = ""
-  result.serializeFragmentInner(element, ttUnknown, writeShadow = true)
-
-proc tagTypeNoNS(element: Element): TagType =
+proc tagTypeNoNS*(element: Element): TagType =
   return element.localName.toTagType()
 
 proc tagType*(element: Element; namespace = satNamespaceHTML): TagType =
@@ -5242,35 +4967,30 @@ proc tagType*(element: Element; namespace = satNamespaceHTML): TagType =
     return ttUnknown
   return element.tagTypeNoNS
 
-proc prefix(element: Element): string {.jsfget.} =
-  let i = element.tagName.find(':')
-  if i < 0:
-    return ""
-  return ($element.tagName).substr(0, i - 1)
-
-proc jsTagName(ctx: JSContext; element: Element): JSValue {.
-    jsfget: "tagName".} =
-  if element.namespaceURI == satNamespaceHTML:
-    return ctx.toJS(($element.tagName).toUpperAscii())
-  return ctx.toJS(element.tagName)
-
-proc normalizeAttrQName(element: Element; qualifiedName: CAtomTraced):
-    CAtomTraced =
-  if element.namespaceURI == satNamespaceHTML and not element.document.isxml:
+proc normalizeAttrQName(element: Element; qualifiedName: CAtom):
+    CAtom =
+  if element.namespaceURI == satNamespaceHTML and
+      not element.asNode.document.isxml:
     return qualifiedName.toLowerAscii()
-  return qualifiedName.dupTrace()
+  return qualifiedName
 
-proc cmpAttrName(a: AttrData; b: CAtomTraced): int =
-  return cmp(uint32(a.name), uint32(b))
+proc cmpAttrName(a: AttrData; b: CAtom): int =
+  return cmp(a.name, b)
 
-proc findAttr(element: Element; qualifiedName: CAtomTraced): int =
+proc findAttr(element: Element; qualifiedName: CAtom): int =
   let qualifiedName = element.normalizeAttrQName(qualifiedName)
   let n = element.attrs.lowerBound(qualifiedName, cmpAttrName)
   if n < element.attrs.len and element.attrs[n].name == qualifiedName:
     return n
   return -1
 
-proc findAttrNS(element: Element; namespace, localName: CAtomTraced): int =
+proc findAttr*(element: Element; name: StaticAtom): int =
+  element.findAttr(name.view())
+
+proc getAttr*(element: Element; i: int): lent string =
+  element.attrs[i].value
+
+proc findAttrNS(element: Element; namespace, localName: CAtom): int =
   if namespace == CAtomNull:
     for i, attr in element.attrs.mypairs:
       if attr.namespace == CAtomNull and attr.name == localName:
@@ -5283,54 +5003,26 @@ proc findAttrNS(element: Element; namespace, localName: CAtomTraced): int =
       return i
   return -1
 
-proc hasAttributes(element: Element): bool {.jsfunc.} =
-  return element.attrs.len > 0
+proc getAccessor(element: Element; magic: StaticAtom): ElementAccessor =
+  var it = element.accessorsHead
+  while it != nil:
+    if it.getMagic() == uint32(magic):
+      return it
+    it = it.nextAccessor
+  ElementAccessor(nil)
 
-proc attributes(ctx: JSContext; element: Element): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(element, wwmAttributes)
+proc addAccessor(element: Element; accessor: ElementAccessor;
+    name: StaticAtom) =
+  accessor.setMagic(uint32(name))
+  accessor.nextAccessor = move(element.accessorsHead)
+  element.accessorsHead = accessor
 
-proc cachedAttributes(ctx: JSContext; element: Element): NamedNodeMap =
-  let this = ctx.toJS(element)
-  if JS_IsException(this):
-    return nil
-  let res = ctx.getWeak(wwmAttributes, this)
-  JS_FreeValue(ctx, this)
-  var map: NamedNodeMap
-  if ctx.fromJSFree(res, map).isErr:
-    return nil
-  return map
+proc getCachedAttributes(element: Element): NamedNodeMap =
+  element.getAccessor(satAttributes) as NamedNodeMap
 
-proc hasAttribute(element: Element; qualifiedName: CAtomTraced): bool
-    {.jsfunc.} =
-  return element.findAttr(qualifiedName) != -1
-
-proc hasAttributeNS(element: Element; namespace, localName: CAtomTraced): bool
-    {.jsfunc.} =
-  return element.findAttrNS(namespace, localName) != -1
-
-proc getAttributeNames(ctx: JSContext; element: Element): JSValue {.jsfunc.} =
-  var s = newSeqOfCap[JSValue](element.attrs.len)
-  for it in element.attrs:
-    s.add(ctx.toJS(it.name))
-  return ctx.newArrayFrom(s)
-
-proc getAttribute(ctx: JSContext; element: Element;
-    qualifiedName: CAtomTraced): JSValue {.jsfunc.} =
-  let i = element.findAttr(qualifiedName)
-  if i != -1:
-    return ctx.toJS(element.attrs[i].value)
-  return JS_NULL
-
-proc getAttributeNS(ctx: JSContext; element: Element;
-    namespace, localName: CAtomTraced): JSValue {.jsfunc.} =
-  let i = element.findAttrNS(namespace, localName)
-  if i != -1:
-    return ctx.toJS(element.attrs[i].value)
-  return JS_NULL
-
-proc attr*(element: Element; s: CAtomTraced): lent string =
+proc attr*(element: Element; s: CAtom): lent string =
   let i = element.findAttr(s)
-  if i != -1:
+  if i >= 0:
     return element.attrs[i].value
   # the compiler cries if I return string literals :/
   let emptyStr {.global.} = ""
@@ -5363,50 +5055,18 @@ proc attrdgz*(element: Element; s: StaticAtom): Opt[float64] =
     return err()
   ok(d)
 
-proc attrb*(element: Element; s: CAtomTraced): bool =
-  return element.findAttr(s) != -1
+proc attrb*(element: Element; s: CAtom): bool =
+  return element.findAttr(s) >= 0
 
 proc attrb*(element: Element; at: StaticAtom): bool =
   return element.attrb(at.view())
-
-proc getElementsByTagName(element: Element; tagName: CAtomTraced):
-    HTMLCollection {.jsfunc.} =
-  return getElementsByTagNameImpl(element, tagName)
-
-proc getElementsByClassName(element: Element; classNames: DOMString):
-    HTMLCollection {.jsfunc.} =
-  return getElementsByClassNameImpl(element, classNames)
-
-proc children(ctx: JSContext; parentNode: Element): JSValue {.jsfget.} =
-  return childrenImpl(ctx, parentNode)
-
-proc previousElementSibling*(element: Element): Element {.jsfget.} =
-  return element.previousElementSiblingImpl
-
-proc nextElementSibling*(element: Element): Element {.jsfget.} =
-  return element.nextElementSiblingImpl
-
-proc before(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
-    Opt[void] {.jsfunc.} =
-  ctx.beforeImpl(this, nodes)
-
-proc after(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
-    Opt[void] {.jsfunc.} =
-  ctx.afterImpl(this, nodes)
-
-proc replaceWith(ctx: JSContext; this: Element;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  ctx.replaceWithImpl(this, nodes)
-
-proc remove*(this: Element) {.jsfunc.} =
-  this.removeImpl()
 
 proc isDisplayed(element: Element): bool =
   element.ensureStyle()
   return element.computed{"display"} != DisplayNone
 
 proc nextDisplayedElement(element: Element): Element =
-  for child in element.elementList:
+  for child in element.asParentNode.elementList:
     if child.isDisplayed():
       return child
   # climb up until we find a non-last leaf (this might be node itself)
@@ -5417,11 +5077,11 @@ proc nextDisplayedElement(element: Element): Element =
       if next.isDisplayed():
         return next
       next = next.nextElementSibling
-    element = element.parentElement
+    element = element.asNode.parentElement
     if element == nil:
       break
   # done
-  return nil
+  Element(nil)
 
 # Does this precede other?
 proc precedes(this, other: Element): bool =
@@ -5429,10 +5089,10 @@ proc precedes(this, other: Element): bool =
   while other != nil:
     if other == this:
       return true
-    let otherParent = other.parentElement
+    let otherParent = other.asNode.parentElement
     var this = this
     while this != nil:
-      let thisParent = this.parentElement
+      let thisParent = this.asNode.parentElement
       if thisParent == otherParent:
         return this.elIndex < other.elIndex
       this = thisParent
@@ -5443,142 +5103,30 @@ proc findAncestorIncl*(element: Element; tagType: TagType): Element =
   for element in element.branchElems:
     if element.tagType == tagType:
       return element
-  return nil
+  Element(nil)
 
 proc scriptingEnabled(element: Element): bool =
-  return element.document.scriptingEnabled
+  return element.asNode.document.scriptingEnabled
 
-proc isSubmitButton*(element: Element): bool =
-  if element.tagType == ttButton:
-    return element.attr(satType).equalsIgnoreCase("submit")
-  elif element of HTMLInputElement:
-    let element = HTMLInputElement(element)
-    return element.inputType in {itSubmit, itImage}
-  return false
-
-proc isButton*(element: Element): bool =
-  if element.tagType == ttButton:
-    return true
-  if element of HTMLInputElement:
-    let element = HTMLInputElement(element)
-    return element.inputType in {itSubmit, itButton, itReset, itImage}
-  return false
-
-proc action*(element: Element): string =
-  if element.isSubmitButton():
-    if element.attrb(satFormaction):
-      return element.attr(satFormaction)
-  if element of FormAssociatedElement:
-    let element = FormAssociatedElement(element)
-    if element.form != nil:
-      if element.form.attrb(satAction):
-        return element.form.attr(satAction)
-  if element.tagType == ttForm:
-    return element.attr(satAction)
-  return ""
-
-proc enctype*(element: Element): FormEncodingType =
-  if element.tagType == ttForm:
-    # Note: see below, this is not in the standard.
-    if element.attrb(satEnctype):
-      let s = element.attr(satEnctype)
-      return parseEnumNoCase[FormEncodingType](s).get(fetUrlencoded)
-  if element.isSubmitButton():
-    if element.attrb(satFormenctype):
-      let s = element.attr(satFormenctype)
-      return parseEnumNoCase[FormEncodingType](s).get(fetUrlencoded)
-  if element of FormAssociatedElement:
-    let element = FormAssociatedElement(element)
-    if (let form = element.form; form != nil):
-      if form.attrb(satEnctype):
-        let s = form.attr(satEnctype)
-        return parseEnumNoCase[FormEncodingType](s).get(fetUrlencoded)
-  return fetUrlencoded
-
-proc getFormMethod*(element: Element): FormMethod =
-  if element.tagType == ttForm:
-    # The standard says nothing about this, but this code path is reached
-    # on implicit form submission and other browsers seem to agree on this
-    # behavior.
-    return parseFormMethod(element.attr(satMethod))
-  if element.isSubmitButton():
-    if element.attrb(satFormmethod):
-      return parseFormMethod(element.attr(satFormmethod))
-  if element of FormAssociatedElement:
-    let element = FormAssociatedElement(element)
-    if element.form != nil:
-      if element.form.attrb(satMethod):
-        return parseFormMethod(element.form.attr(satMethod))
-  return fmGet
-
-proc scrollTo(element: Element) {.jsfunc.} =
-  discard #TODO maybe in app mode?
-
-proc scrollIntoView(element: Element) {.jsfunc.} =
-  discard #TODO ditto
-
-proc parseFragment*(ctx: JSContext; element: Element; s: openArray[char]):
+proc parseFragment*(ctx: JSContext; target: ParentNode; s: openArray[char]):
     DocumentFragment =
+  # target is DocumentFragment or Element
   #TODO xml
-  let newChildren = parseHTMLFragmentImpl(element, s)
-  let fragment = element.document.newDocumentFragment()
-  for child in newChildren:
-    fragment.append(child, ctx)
+  var element = target as Element
+  if element == nil:
+    element = (target as DocumentFragment).host
+  let newChildren = parseHTMLFragment(ctx, element, s)
+  let fragment = target.asNode.document.newDocumentFragment()
+  if fragment != nil:
+    for child in newChildren:
+      fragment.asParentNode.append(ctx, child)
   return fragment
-
-proc innerHTML(ctx: JSContext; element: Element; s: DOMStringNull) {.jsfset.} =
-  #TODO shadow root
-  let fragment = ctx.parseFragment(element, s.toOpenArray())
-  let nodeCtx = if element of HTMLTemplateElement:
-    HTMLTemplateElement(element).content
-  else:
-    element
-  nodeCtx.replaceAll(fragment, ctx)
-
-proc outerHTML(ctx: JSContext; element: Element; s: DOMStringNull): JSValue
-    {.jsfset.} =
-  let parent0 = element.parentNode
-  if parent0 == nil:
-    return JS_UNDEFINED
-  if parent0 of Document:
-    return JS_ThrowDOMException(ctx, "NoModificationAllowedError",
-      "outerHTML is disallowed for document elements")
-  let parent: Element = if parent0 of DocumentFragment:
-    element.document.newHTMLElement(ttBody)
-  else:
-    # neither a document, nor a document fragment => parent must be an
-    # element node
-    Element(parent0)
-  let fragment = ctx.parseFragment(parent, s.toOpenArray())
-  ctx.replaceChildWithThrow(parent, element, fragment)
 
 type InsertAdjacentPosition = enum
   iapBeforeBegin = "beforebegin"
   iapAfterEnd = "afterend"
   iapAfterBegin = "afterbegin"
   iapBeforeEnd = "beforeend"
-
-proc insertAdjacentHTML(ctx: JSContext; this: Element;
-    position, text: DOMString): JSValue {.jsfunc.} =
-  let pos0 = parseEnumNoCase[InsertAdjacentPosition](position.toOpenArray())
-  if pos0.isErr:
-    return JS_ThrowDOMException(ctx, "SyntaxError", "invalid position")
-  let position = pos0.get
-  var nodeCtx = this
-  if position in {iapBeforeBegin, iapAfterEnd}:
-    if this.parentNode of Document or this.parentNode == nil:
-      return JS_ThrowDOMException(ctx, "NoModificationAllowedError",
-        "parent is not a valid element")
-    nodeCtx = this.parentElement
-  if nodeCtx == nil or not this.document.isxml and nodeCtx.tagType == ttHtml:
-    nodeCtx = this.document.newHTMLElement(ttBody)
-  let fragment = ctx.parseFragment(nodeCtx, text.toOpenArray())
-  case position
-  of iapBeforeBegin: this.parentNode.insert(fragment, this, ctx)
-  of iapAfterBegin: this.insert(fragment, this.firstChild, ctx)
-  of iapBeforeEnd: this.append(fragment, ctx)
-  of iapAfterEnd: this.parentNode.insert(fragment, this.nextSibling, ctx)
-  return JS_UNDEFINED
 
 proc insertAdjacent(ctx: JSContext; this: Node; position: DOMString;
     node: Node): JSValue =
@@ -5590,19 +5138,11 @@ proc insertAdjacent(ctx: JSContext; this: Node; position: DOMString;
     if this.parentNode == nil:
       JS_NULL
     else:
-      ctx.insertBefore(this.parentNode, node, option(this))
-  of iapAfterBegin: ctx.insertBefore(this, node, option(this.firstChild))
-  of iapBeforeEnd: ctx.insertBefore(this, node, none(Node))
+      ctx.insertBefore(this.parentNode.asNode, node, jsNull(this))
+  of iapAfterBegin: ctx.insertBefore(this, node, jsNull(this.firstChild))
+  of iapBeforeEnd: ctx.insertBefore(this, node, jsNull(Node))
   of iapAfterEnd:
-    ctx.insertBefore(this.parentNode, node, option(this.nextSibling))
-
-proc insertAdjacentElement(ctx: JSContext; this: Element; position: DOMString;
-    element: Element): JSValue {.jsfunc.} =
-  ctx.insertAdjacent(this, position, element)
-
-proc insertAdjacentText(ctx: JSContext; this: Element; position, s: DOMString):
-    JSValue {.jsfunc.} =
-  ctx.toUndefined(ctx.insertAdjacent(this, position, this.document.newText(s)))
+    ctx.insertBefore(this.parentNode.asNode, node, jsNull(this.nextSibling))
 
 proc hover*(element: Element): bool =
   return efHover in element.flags
@@ -5612,147 +5152,76 @@ proc setHover*(element: Element; hover: bool) =
     element.flags.toggle({efHover})
     element.invalidate(dtHover)
 
-proc parseColor(element: Element; s: string): Opt[ARGBColor] =
+proc parseColor(element: Element; s: DOMString): Opt[ARGBColor] =
   var ctx = initCSSParser(s)
   if color := ctx.parseColor():
     case color.t
-    of cctARGB: return ok(color.argb)
+    of cctArgb, cctOklab: return ok(color.argb())
     of cctCurrent:
-      let window = element.document.window
+      let window = element.asNode.document.window
       if window != nil and window.settings.scripting == smApp and
-          element.isConnected():
+          element.asNode.isConnected():
         element.ensureStyle()
-        if element.computed{"color"}.t == cctARGB:
-          return ok(element.computed{"color"}.argb)
+        if element.computed{"color"}.t in {cctArgb, cctOklab}:
+          return ok(element.computed{"color"}.argb())
       return ok(rgba(0, 0, 0, 255))
     of cctCell: discard
   return err()
 
-proc getBoundingClientRect(element: Element): DOMRect {.jsfunc.} =
-  let window = element.document.window
-  if window == nil:
-    return DOMRect()
-  if window.settings.scripting == smApp:
-    window.ensureLayout(element)
-    let objs = getClientRectsImpl(element, firstOnly = true, blockOnly = false)
-    if objs.len > 0:
-      return objs[0]
-    return DOMRect()
-  var width = float64(dummyAttrs.ppc)
-  var height = float64(dummyAttrs.ppl)
-  if element of HTMLImageElement:
-    (width, height) = HTMLImageElement(element).getImageRect()
-  return DOMRect(width: width, height: height)
-
-proc getClientRects(element: Element): DOMRectList {.jsfunc.} =
-  let res = DOMRectList()
-  let window = element.document.window
-  if window != nil:
-    if window.settings.scripting == smApp:
-      window.ensureLayout(element)
-      res.list = getClientRectsImpl(element, firstOnly = false,
-        blockOnly = false)
-    else:
-      res.list.add(element.getBoundingClientRect())
-  res
+proc parseColorImpl(target: EventTarget; s: DOMString): Opt[ARGBColor] {.
+    exportc: "cha_$1".} =
+  return (target as Element).parseColor(s)
 
 proc getBlockRect(element: Element): DOMRect =
-  let window = element.document.window
+  let window = element.asNode.document.window
   if window != nil:
     if window.settings.scripting != smApp:
       return element.getBoundingClientRect()
     window.ensureLayout(element)
-    let res = element.getClientRectsImpl(firstOnly = true, blockOnly = true)
+    let res = element.getClientRects(firstOnly = true, blockOnly = true)
     if res.len > 0:
       return res[0]
-  return DOMRect()
+  return DOMRect(nil)
 
-#TODO clientLeft, clientTop, offsetLeft, offsetTop
-
-proc clientWidth(element: Element): int32 {.jsfget.} =
-  let rect = element.getBlockRect()
-  if rect != nil and rect.width <= float64(int32.high):
-    return int32(rect.width)
-  0
-
-proc clientHeight(element: Element): int32 {.jsfget.} =
-  let rect = element.getBlockRect()
-  if rect != nil and rect.height <= float64(int32.high):
-    return int32(rect.height)
-  0
-
-#TODO these should add the border too
-proc offsetWidth(element: Element): int32 {.jsfget.} =
-  let rect = element.getBlockRect()
-  if rect != nil and rect.width <= float64(int32.high):
-    return int32(rect.width)
-  0
-
-proc offsetHeight(element: Element): int32 {.jsfget.} =
-  let rect = element.getBlockRect()
-  if rect != nil and rect.height <= float64(int32.high):
-    return int32(rect.height)
-  0
-
-const WindowEvents* = [satError, satLoad, satFocus, satBlur]
+const ScriptEventMap = {
+  satOnclick: satClick,
+  satOninput: satInput,
+  satOnchange: satChange,
+  satOnload: satLoad,
+  satOnerror: satError,
+  satOnblur: satBlur,
+  satOnfocus: satFocus,
+  satOnsubmit: satSubmit,
+  satOncontextmenu: satContextmenu,
+  satOndblclick: satDblclick,
+}
 
 proc reflectScriptAttr(element: Element; name: StaticAtom; value: string):
     bool =
-  let document = element.document
-  const ScriptEventMap = {
-    satOnclick: satClick,
-    satOninput: satInput,
-    satOnchange: satChange,
-    satOnload: satLoad,
-    satOnerror: satError,
-    satOnblur: satBlur,
-    satOnfocus: satFocus,
-    satOnsubmit: satSubmit,
-    satOncontextmenu: satContextmenu,
-    satOndblclick: satDblclick,
-  }
+  let document = element.asNode.document
   for (n, t) in ScriptEventMap:
     if n == name:
-      var target = EventTarget(element)
-      var target2 = none(EventTarget)
-      if element.tagType == ttBody and t in WindowEvents:
-        target = document.window
-        target2 = option(EventTarget(element))
-      document.reflectEvent(target, n, t, value, target2)
+      let target = element.getEventTarget(t)
+      if target != nil:
+        document.reflectEvent(target, n, t, value)
       return true
   false
 
 proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
     value: string) =
   case element.tagType
-  of ttInput:
-    let input = HTMLInputElement(element)
-    case name
-    of satValue: input.setValue(value)
-    of satChecked: input.setChecked(has)
-    of satType:
-      input.inputType = parseEnumNoCase[InputType](value).get(itText)
-    else: discard
-  of ttOption:
-    let option = HTMLOptionElement(element)
-    if name == satSelected:
-      option.selected = has
-  of ttButton:
-    let button = HTMLButtonElement(element)
-    if name == satType:
-      button.ctype = parseEnumNoCase[ButtonType](value).get(btSubmit)
   of ttLink:
-    let link = HTMLLinkElement(element)
+    let link = element as HTMLLinkElement
     if name == satRel:
-      link.relList.reflectTokens(value) # do not return
-    let document = link.document
-    let connected = link.isConnected()
+      link.asElement.reflectTokens(link.relList, satRel, value) # do not return
+    let document = link.asNode.document
+    let connected = link.asNode.isConnected()
     if name == satDisabled:
       let wasDisabled = link.isDisabled()
       link.enabled = some(not has)
       let disabled = link.isDisabled()
       if wasDisabled != disabled:
-        for sheet in link.sheets:
+        for sheet in link.asSheetElement.sheets:
           sheet.disabled = disabled
         if connected:
           document.ruleMap = nil
@@ -5765,13 +5234,9 @@ proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
       if window != nil:
         window.loadLink(link)
   of ttA:
-    let anchor = HTMLAnchorElement(element)
+    let anchor = element as HTMLAnchorElement
     if name == satRel:
-      anchor.relList.reflectTokens(value)
-  of ttArea:
-    let area = HTMLAreaElement(element)
-    if name == satRel:
-      area.relList.reflectTokens(value)
+      anchor.asElement.reflectTokens(anchor.relList, satRel, value)
   of ttCanvas:
     if element.scriptingEnabled and name in {satWidth, satHeight}:
       let w = element.attrul(satWidth).get(300)
@@ -5779,15 +5244,15 @@ proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
       if w <= uint64(int.high) and h <= uint64(int.high):
         let w = int(w)
         let h = int(h)
-        let canvas = HTMLCanvasElement(element)
+        let canvas = element as HTMLCanvasElement
         if canvas.bitmap == nil or canvas.bitmap.width != w or
             canvas.bitmap.height != h:
-          let window = element.document.window
+          let window = element.asNode.document.window
           if canvas.ctx2d != nil and canvas.ctx2d.ps != nil:
             let i = window.pendingCanvasCtls.find(canvas.ctx2d)
             window.pendingCanvasCtls.del(i)
             canvas.ctx2d.ps.sclose()
-            canvas.ctx2d = nil
+            canvas.ctx2d = CanvasRenderingContext2D(nil)
           canvas.bitmap = NetworkBitmap(
             contentType: "image/x-cha-canvas",
             imageId: window.getImageId(),
@@ -5796,41 +5261,40 @@ proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
             height: h
           )
   of ttImg:
-    let image = HTMLImageElement(element)
+    let image = element as HTMLImageElement
     # https://html.spec.whatwg.org/multipage/images.html#relevant-mutations
     if name == satSrc:
       image.fetchStarted = false
-      let window = image.document.window
+      let window = image.asNode.document.window
       if window != nil:
         window.loadImage(image)
-  else: discard
+  else:
+    element.reflectAttributeForm(name, has, value)
 
 # Called whenever an attribute changes on the element.
 # If `has' is false, then value is "".  Otherwise, value is the new
 # attribute value.
-proc reflectAttr0(element: Element; name: CAtomTraced; has: bool;
+proc reflectAttr0(element: Element; name: CAtom; has: bool;
     value: string) =
   let name = name.toStaticAtom()
   case name
   of satId:
-    if element.id != satUempty:
-      freeAtom(element.id)
-      element.document.removeElementId(element)
+    let root = element.asNode.rootNode as RootNode
+    if element.id != satUempty and root != nil:
+      root.removeElementId(element)
     if has:
       element.id = value.toAtom()
     else:
-      element.id = satUempty.toAtom()
-    if element.id != satUempty:
-      let root = element.rootNode
-      if root of Document:
-        Document(root).addElementId(element)
+      element.id = satUempty.view()
+    if element.id != satUempty and root != nil:
+      root.addElementId(element)
   of satName:
-    freeAtom(element.name)
     if has:
       element.name = value.toAtom()
     else:
-      element.name = satUempty.toAtom()
-  of satClass: element.classList.reflectTokens(value)
+      element.name = CAtomNull
+  of satClass:
+    element.reflectTokens(element.classList, satClass, value)
   #TODO internalNonce
   of satStyle:
     if has:
@@ -5848,416 +5312,171 @@ proc reflectAttr0(element: Element; name: CAtomTraced; has: bool;
   else:
     element.reflectLocalAttr(name, has, value)
 
-proc reflectAttr(element: Element; name: CAtomTraced; has: bool;
+proc reflectAttr(element: Element; name: CAtom; has: bool;
     value: string) =
   element.reflectAttr0(name, has, value)
-  element.document.invalidateCollections()
+  element.asNode.document.invalidateCollections()
   element.invalidate()
 
-proc reflectAttrDel(element: Element; name: CAtomTraced) =
+proc reflectAttrDel(element: Element; name: CAtom) =
   element.reflectAttr(name, false, "")
 
 proc reflectAttr(element: Element; attr: AttrData) =
-  element.reflectAttr(attr.name.view(), true, attr.value)
+  element.reflectAttr(attr.name, true, attr.value)
 
 proc elIndex*(this: Element): uint32 =
   if this.parentNode == nil:
     return 0
-  let parent = this.parentElement
+  let parent = this.asNode.parentElement
   if parent == nil:
     return 0 # <html>
-  if parent.firstChild == this:
+  if parent.asNode.firstChild == this:
     return 0
   if efChildElIndicesInvalid in parent.flags:
     var n = 0'u32
-    for element in parent.elementList:
-      element.internalElIndex = n
+    for element in parent.asParentNode.elementList:
+      element.setMagic(n)
       inc n
     parent.flags.excl(efChildElIndicesInvalid)
-  return this.internalElIndex
+  return this.getMagic()
 
 proc isPreviousSiblingOf*(this, other: Element): bool =
   return this.parentNode == other.parentNode and this.elIndex <= other.elIndex
-
-proc querySelector(ctx: JSContext; this: Element; q: DOMString): JSValue
-    {.jsfunc.} =
-  return ctx.querySelectorImpl(this, q)
-
-proc querySelectorAll(ctx: JSContext; this: Element; q: DOMString): JSValue
-    {.jsfunc.} =
-  return ctx.querySelectorAllImpl(this, q)
 
 proc isDisabled*(this: Element): bool =
   case this.tagType
   of ttButton, ttInput, ttSelect, ttTextarea, ttFieldset:
     if this.attrb(satDisabled):
       return true
-    var lastLegend: Element = nil
-    for it in this.ancestors:
+    var lastLegend: Element
+    for it in this.asNode.ancestors:
       case it.tagType
       of ttLegend: lastLegend = it
       of ttFieldset:
         if it.attrb(satDisabled):
-          return it.firstChild != lastLegend
+          return it.asNode.firstChild != lastLegend
       else: discard
     return false
   of ttOptgroup:
     return this.attrb(satDisabled)
   of ttOption:
-    let parent = this.parentElement
-    return parent.tagType == ttOptgroup and parent.attrb(satDisabled) or
-      this.attrb(satDisabled)
+    let parent = this.asNode.parentElement
+    return (parent != nil and parent.tagType == ttOptgroup and
+      parent.attrb(satDisabled)) or this.attrb(satDisabled)
   else: #TODO form-associated custom element
     return false
 
-proc newHTMLElement(tagType: TagType; document: Document): HTMLElement =
-  case tagType
-  of ttInput:
-    HTMLInputElement()
-  of ttA:
-    let anchor = HTMLAnchorElement(internalNext: document)
-    anchor.relList = anchor.newDOMTokenList(satRel)
-    anchor
-  of ttSelect:
-    HTMLSelectElement()
-  of ttOptgroup:
-    HTMLOptGroupElement()
-  of ttOption:
-    HTMLOptionElement()
-  of ttH1, ttH2, ttH3, ttH4, ttH5, ttH6:
-    HTMLHeadingElement()
-  of ttBr:
-    HTMLBRElement()
-  of ttSpan:
-    HTMLSpanElement()
-  of ttOl:
-    HTMLOListElement()
-  of ttUl:
-    HTMLUListElement()
-  of ttMenu:
-    HTMLMenuElement()
-  of ttLi:
-    HTMLLIElement()
-  of ttStyle:
-    HTMLStyleElement()
-  of ttLink:
-    let link = HTMLLinkElement(internalNext: document)
-    link.relList = link.newDOMTokenList(satRel)
-    link
-  of ttForm:
-    let form = HTMLFormElement(internalNext: document)
-    form.relList = form.newDOMTokenList(satRel)
-    form
-  of ttTemplate:
-    let templ = HTMLTemplateElement(content: newDocumentFragment(document))
-    templ.content.host = templ
-    templ
-  of ttScript:
-    HTMLScriptElement(forceAsync: true)
-  of ttBase:
-    HTMLBaseElement()
-  of ttButton:
-    HTMLButtonElement()
-  of ttTextarea:
-    HTMLTextAreaElement()
-  of ttLabel:
-    HTMLLabelElement()
-  of ttCanvas:
-    let imageId = if document.window != nil:
-      -1
-    else:
-      document.window.getImageId()
-    let bitmap = if document.scriptingEnabled:
-      NetworkBitmap(
-        contentType: "image/x-cha-canvas",
-        imageId: imageId,
-        cacheId: -1,
-        width: 300,
-        height: 150
-      )
-    else:
-      nil
-    HTMLCanvasElement(bitmap: bitmap)
-  of ttImg:
-    HTMLImageElement()
-  of ttVideo:
-    HTMLVideoElement()
-  of ttAudio:
-    HTMLAudioElement()
-  of ttArea:
-    let area = HTMLAreaElement(internalNext: document)
-    area.relList = area.newDOMTokenList(satRel)
-    area
-  of ttTable:
-    HTMLTableElement()
-  of ttCaption:
-    HTMLTableCaptionElement()
-  of ttTr:
-    HTMLTableRowElement()
-  of ttTbody, ttThead, ttTfoot:
-    HTMLTableSectionElement()
-  of ttMeta:
-    HTMLMetaElement()
-  of ttIframe:
-    HTMLIFrameElement()
-  of ttDetails:
-    HTMLDetailsElement()
-  of ttFrame:
-    HTMLFrameElement()
-  of ttQ, ttBlockquote:
-    HTMLQuoteElement()
-  of ttData:
-    HTMLDataElement()
-  of ttHead:
-    HTMLHeadElement()
-  of ttTitle:
-    HTMLTitleElement()
-  of ttObject:
-    HTMLObjectElement()
-  of ttSource:
-    HTMLSourceElement()
-  of ttIns, ttDel:
-    HTMLModElement()
-  of ttProgress:
-    HTMLProgressElement()
-  of ttSlot:
-    HTMLSlotElement()
-  of ttOutput:
-    HTMLOutputElement()
-  of ttHtml:
-    HTMLHtmlElement()
-  of ttP:
-    HTMLParagraphElement()
-  of ttDiv:
-    HTMLDivElement()
-  of ttDl:
-    HTMLDListElement()
-  of ttFont:
-    HTMLFontElement()
-  of ttBody:
-    HTMLBodyElement()
-  of ttHr:
-    HTMLHRElement()
-  of ttPre:
-    HTMLPreElement()
-  of ttPicture:
-    HTMLPictureElement()
-  of ttEmbed:
-    HTMLEmbedElement()
-  of ttTrack:
-    HTMLTrackElement()
-  of ttMap:
-    HTMLMapElement()
-  of ttCol, ttColgroup:
-    HTMLTableColElement()
-  of ttTd, ttTh:
-    HTMLTableCellElement()
-  of ttDatalist:
-    HTMLDataListElement()
-  of ttMeter:
-    HTMLMeterElement()
-  of ttFieldset:
-    HTMLFieldSetElement()
-  of ttLegend:
-    HTMLLegendElement()
-  of ttSelectedcontent:
-    HTMLSelectedContentElement()
-  of ttArticle, ttSection, ttNav, ttAside, ttHgroup, ttHeader, ttFooter,
-      ttAddress, ttDt, ttDd, ttFigure, ttFigcaption, ttMain, ttSearch, ttEm,
-      ttStrong, ttSmall, ttS, ttCite, ttDfn, ttAbbr, ttRuby, ttRt, ttRp,
-      ttCode, ttVar, ttSamp, ttKbd, ttSub, ttSup, ttI, ttB, ttU, ttMark,
-      ttBdi, ttBdo, ttWbr, ttSummary, ttNoscript:
-    HTMLElement()
-  else:
-    HTMLUnknownElement()
-
-#TODO custom elements
-proc newElement(document: Document;
-    localName, namespaceURI, tagName: CAtomTraced): Element =
-  let tagType = localName.toTagType()
-  let sns = namespaceURI.toStaticAtom()
-  let element: Element = if namespaceURI == satNamespaceHTML:
-    newHTMLElement(tagType, document)
-  elif sns == satNamespaceSVG:
-    if tagType == ttSvg:
-      SVGSVGElement()
-    else:
-      SVGElement()
-  else:
-    Element()
-  element.id = satUempty.toAtom()
-  element.name = satUempty.toAtom()
-  element.localName = localName.dup()
-  element.namespaceURI = namespaceURI.dup()
-  element.tagName = tagName.dup()
-  element.internalNext = document
-  element.classList = element.newDOMTokenList(satClass)
-  element.custom = if localName.isValidCustomElementName():
-    cesUndefined
-  else:
-    cesUncustomized
-  element
-
-proc newElement*(document: Document; localName: CAtomTraced;
+proc newElement*(document: Document; localName: CAtom;
     namespace = satNamespaceHTML): Element =
-  return document.newElement(localName, namespace.view(), localName.dupTrace())
+  let tagName = ($localName).toUpperAscii().toAtom()
+  return document.newElement(localName, namespace.view(), tagName)
 
-proc renderBlocking(element: Element): bool =
+proc isRenderBlocking(element: Element): bool =
   if element.attr(satBlocking).containsToken("render"):
     return true
-  if element of HTMLScriptElement:
-    let element = HTMLScriptElement(element)
-    if element.ctype == stClassic and element.parserDocument != nil and
+  let script = element as HTMLScriptElement
+  if script != nil:
+    if script.scriptType == stClassic and script.parserDocument != nil and
         not element.attrb(satAsync) and not element.attrb(satDefer):
       return true
   return false
 
 proc blockRendering(element: Element) =
-  let document = element.document
-  if document.contentType == satTextHtml and
-      document.findFirst(ttBody) == nil:
-    element.document.renderBlockingElements.add(element)
+  let document = element.asNode.document
+  if document.contentType == satTextHtml and document.findFirst(ttBody) == nil:
+    document.renderBlockingElements.add(element)
 
 proc invalidate*(element: Element) =
-  element.document.invalid = true
-  var node = Node(element)
+  element.asNode.document.invalid = true
+  var node = element.asNode
   while node != nil:
     var skip = false
-    if node of Element:
-      let desc = Element(node)
+    let desc = node as Element
+    if desc != nil:
       skip = desc.computed == nil or efRestyle in desc.flags
       desc.flags.incl(efRestyle)
-    node = node.nextDescendant(Node(element), skip)
+    node = node.nextDescendant(element.asNode, skip)
 
 proc ensureStyle*(element: Element) =
   if element.computed == nil or efRestyle in element.flags:
     element.flags.excl(efRestyle)
-    element.applyStyleImpl()
+    element.applyStyle()
 
-proc resetElement*(element: Element; ctx: JSContext) =
-  case element.tagType
-  of ttInput:
-    let input = HTMLInputElement(element)
-    case input.inputType
-    of itCheckbox, itRadio:
-      input.setChecked(input.attrb(satChecked))
-    of itFile:
-      if input.internalFiles != nil:
-        input.internalFiles.clear()
-    else:
-      input.setValue(input.attr(satValue))
-    input.invalidate()
-  of ttSelect:
-    let select = HTMLSelectElement(element)
-    select.userValidity = false
-    for option in select.options:
-      if option.attrb(satSelected):
-        option.selected = true
-      else:
-        option.selected = false
-      option.dirty = false
-      option.invalidate(dtChecked)
-    select.setSelectedness()
-  of ttTextarea:
-    let textarea = HTMLTextAreaElement(element)
-    textarea.dirty = false
-    textarea.invalidate()
-  of ttOutput:
-    let output = HTMLOutputElement(element)
-    output.replaceAll(output.defaultValue.toDOMStringView(), ctx)
-    output.dirty = false
-    output.internalValue = ""
-  else: discard
+proc hasInsertionSteps(element: Element): bool =
+  element.tagType in {ttLink, ttImg, ttStyle, ttScript} or
+    element.tagType(satNamespaceSVG) == ttSvg or
+    element.hasInsertionStepsForm()
+
+proc hasClass*(element: Element; class: CAtom): bool =
+  if efQuirks in element.flags:
+    return element.classList.containsIgnoreCase(class)
+  return element.classList.contains(class)
+
+proc hasId*(element: Element; id: CAtom): bool =
+  if efQuirks in element.flags:
+    return element.id.equalsIgnoreCase(id)
+  return element.id == id
 
 # Returns true if has post-connection steps.
 proc insertionSteps(element: Element): bool =
   case element.tagType
-  of ttOption:
-    if element.parentElement != nil:
-      let parent = element.parentElement
-      var select: HTMLSelectElement
-      if parent of HTMLSelectElement:
-        select = HTMLSelectElement(parent)
-      elif parent.tagType == ttOptgroup and parent.parentElement != nil and
-          parent.parentElement of HTMLSelectElement:
-        select = HTMLSelectElement(parent.parentElement)
-      if select != nil:
-        select.setSelectedness()
   of ttLink:
-    let link = HTMLLinkElement(element)
-    let document = link.document
-    if link.isConnected() and document.sheetTitle == "" and
+    let link = element as HTMLLinkElement
+    let document = link.asNode.document
+    if link.asNode.isConnected() and document.sheetTitle == "" and
         link.enabled.get(true) and
         not link.relList.containsIgnoreCase(satAlternate):
-      document.sheetTitle = link.attr(satTitle)
+      document.sheetTitle = link.asElement.attr(satTitle)
     let window = document.window
     if window != nil:
       window.loadLink(link)
   of ttImg:
-    let window = element.document.window
+    let window = element.asNode.document.window
     if window != nil:
-      let image = HTMLImageElement(element)
+      let image = element as HTMLImageElement
       window.loadImage(image)
   of ttStyle:
-    let style = HTMLStyleElement(element)
-    if style.isConnected():
-      let document = style.document
+    let style = element as HTMLStyleElement
+    if style.asNode.isConnected():
+      let document = style.asNode.document
       if document.sheetTitle == "":
-        document.sheetTitle = style.attr(satTitle)
+        document.sheetTitle = style.asElement.attr(satTitle)
       style.updateSheet()
   of ttScript:
     return true
   elif element.tagType(satNamespaceSVG) == ttSvg:
-    return true
-  elif element of FormAssociatedElement:
-    let element = FormAssociatedElement(element)
-    if not element.parserInserted:
-      element.resetFormOwner()
+    #TODO this doesn't work if JS adds descendants to the SVG tag
+    let svg = element as SVGSVGElement
+    let document = svg.asNode.document
+    if svg.parserDocument != document:
+      let window = document.window
+      if window != nil:
+        window.loadSVG(svg)
+  else:
+    element.insertionStepsForm()
   false
 
 proc removingSteps(element: Element) =
   # We'll have to restyle on insert anyway, so don't keep style/layout data
   # alive for out-of-tree elements.
+  unlinkElementBox(element)
   element.box = nil
   element.computed = nil
-  if element of FormAssociatedElement:
-    let element = FormAssociatedElement(element)
-    element.resetFormOwner()
-  elif element of SheetElement:
-    SheetElement(element).removeSheet()
+  if (let element = element as SheetElement; element != nil):
+    element.removeSheet()
+  else:
+    element.removingStepsForm()
 
-proc postConnectionSteps(element: Element) =
-  case element.tagType
-  of ttScript:
-    let script = HTMLScriptElement(element)
-    if script.isConnected and script.parserDocument == nil:
-      script.prepare()
-  elif element.tagType(satNamespaceSVG) == ttSvg:
-    # we invoke loadSVG here to avoid the case where the descendants still
-    # point to an already inserted node
-    #TODO this doesn't work if JS adds descendants to the SVG tag
-    let svg = SVGSVGElement(element)
-    if svg.parserDocument != svg.document:
-      let window = svg.document.window
-      if window != nil:
-        window.loadSVG(svg)
-  else: discard
+proc postConnectionSteps(element: Element; ctx: JSContext) =
+  let script = element as HTMLScriptElement
+  if script.asNode.isConnected and script.parserDocument == nil:
+    script.prepare(ctx)
 
-proc prepend(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
-    JSValue {.jsfunc.} =
-  return ctx.prependImpl(this, nodes)
-
-proc append(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
-    JSValue {.jsfunc.} =
-  return ctx.appendImpl(this, nodes)
-
-proc replaceChildren(ctx: JSContext; this: Element;
-    nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
-  return ctx.replaceChildrenImpl(this, nodes)
-
-proc delAttr(ctx: JSContext; element: Element; i: int) =
-  let name = element.attrs[i].name.dupTrace()
-  let map = ctx.cachedAttributes(element)
+proc delAttr(element: Element; ctx: JSContext; i: int) =
+  let name = element.attrs[i].name
+  element.asNode.queueMutationRecord(ctx, mrtAttributes, name, CAtomNull,
+    nil, true, element.attrs[i].value, [], [], Node(nil), Node(nil))
+  let map = element.getCachedAttributes()
   if map != nil:
     # delete from attrlist + adjust indices invalidated
     var j = -1
@@ -6266,142 +5485,72 @@ proc delAttr(ctx: JSContext; element: Element; i: int) =
         j = k
       elif attr.dataIdx > i:
         dec attr.dataIdx
-    if j != -1:
+    if j >= 0:
       let attr = map.attrlist[j]
-      let data = attr.data
-      attr.ownerElement = AttrDummyElement(
-        internalNext: attr.ownerElement.document,
-        attrs: @[data]
-      )
+      #TODO OOM
+      attr.ownerElement = (jsNew AttrDummyElementObj(
+        internalNext: attr.asNode.document.asNode,
+        attrs: @[attr.data]
+      )).asElement
       attr.dataIdx = 0
       map.attrlist.del(j) # ordering does not matter
-  element.deleteAttr(i) # ordering matters
+  element.attrs.delete(i) # ordering matters
   element.reflectAttrDel(name)
 
-proc attr(element: Element; name: CAtomTraced; value: DOMString) =
+proc delAttr(element: Element; ctx: JSContext; name: CAtom) =
+  let i = element.findAttr(name)
+  if i >= 0:
+    element.delAttr(ctx, i)
+
+proc setAttr(element: Element; ctx: JSContext; name: CAtom;
+    value: sink string) =
   var i = element.attrs.upperBound(name, cmpAttrName)
   if i > 0 and element.attrs[i - 1].name == name:
     dec i
-    element.attrs[i].value = $value
-  else:
-    element.attrs.insert(AttrData(
-      namespace: CAtomNull,
-      name: name.dup(),
-      value: $value
-    ), i)
-  element.reflectAttr(element.attrs[i])
-
-proc attr(element: Element; name: StaticAtom; value: DOMString) =
-  element.attr(name.view(), value)
-
-proc attr*(element: Element; name: CAtomTraced; value: sink string) =
-  var i = element.attrs.upperBound(name, cmpAttrName)
-  if i > 0 and element.attrs[i - 1].name == name:
-    dec i
+    element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
+      CAtomNull, nil, true, element.attrs[i].value, [], [], Node(nil),
+      Node(nil))
     element.attrs[i].value = value
   else:
-    element.attrs.insert(AttrData(
-      namespace: CAtomNull,
-      name: name.dup(),
-      value: value
-    ), i)
+    element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
+      CAtomNull, nil, false, "", [], [], Node(nil), Node(nil))
+    element.attrs.insert(AttrData(name: name, value: value), i)
   element.reflectAttr(element.attrs[i])
 
-proc attr(element: Element; name: StaticAtom; value: sink string) =
-  element.attr(name.view(), value)
+proc setAttr*(element: Element; ctx: JSContext; name: StaticAtom;
+    value: sink string) =
+  element.setAttr(ctx, name.view(), value)
+
+proc setAttr(element: Element; ctx: JSContext; name: CAtom;
+    value: DOMString) =
+  var i = element.attrs.upperBound(name, cmpAttrName)
+  if i > 0 and element.attrs[i - 1].name == name:
+    dec i
+    element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
+      CAtomNull, nil, true, element.attrs[i].value, [], [], Node(nil),
+      Node(nil))
+    element.attrs[i].value = $value
+  else:
+    element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
+      CAtomNull, nil, false, "", [], [], Node(nil), Node(nil))
+    element.attrs.insert(AttrData(name: name, value: $value), i)
+  element.reflectAttr(element.attrs[i])
+
+proc setAttr*(element: Element; ctx: JSContext; name: StaticAtom;
+    value: DOMString) =
+  element.setAttr(ctx, name.view(), value)
 
 proc sinkAttrs*(element: Element; attrs: sink seq[AttrData]) =
   element.attrs = move(attrs)
   for attr in element.attrs:
     element.reflectAttr(attr)
 
-proc attrl(element: Element; name: StaticAtom; value: int32) =
-  element.attr(name, $value)
-
-proc attrul(element: Element; name: StaticAtom; value: uint32) =
-  element.attr(name, $value)
-
-proc attrulgz(element: Element; name: StaticAtom; value: uint32) =
-  if value > 0:
-    element.attrul(name, value)
-
-proc attrd(element: Element; name: StaticAtom; value: float64) =
-  element.attr(name, dtoa(value))
-
-proc setAttribute(ctx: JSContext; element: Element;
-    qualifiedName, value: DOMString): Opt[void] {.jsfunc.} =
-  ?ctx.validateAttrName(qualifiedName.toOpenArray())
-  let qualifiedName = if element.namespaceURI == satNamespaceHTML and
-      not element.document.isxml:
-    qualifiedName.toAtomLowerTrace()
-  else:
-    qualifiedName.toAtomTrace()
-  element.attr(qualifiedName, value)
-  ok()
-
-proc setAttributeNS(ctx: JSContext; element: Element; namespace: CAtomTraced;
-    qualifiedName: CAtomTraced; value: DOMString): Opt[void] {.jsfunc.} =
-  var namespace = namespace.dupTrace()
-  var localName = qualifiedName.dupTrace()
-  ?ctx.validateAndExtract(namespace, localName, nvAttribute)
-  var i = element.findAttrNS(namespace, localName)
-  if i != -1:
-    element.attrs[i].value = $value
-  else:
-    i = element.attrs.upperBound(qualifiedName, cmpAttrName)
-    element.attrs.insert(AttrData(
-      namespace: namespace.dup(),
-      name: qualifiedName.dup(),
-      value: $value
-    ), i)
-  element.reflectAttr(element.attrs[i])
-  ok()
-
-proc removeAttribute(ctx: JSContext; element: Element;
-    qualifiedName: CAtomTraced) {.jsfunc.} =
-  let i = element.findAttr(qualifiedName)
-  if i != -1:
-    ctx.delAttr(element, i)
-
-proc removeAttributeNS(ctx: JSContext; element: Element;
-    namespace, localName: CAtomTraced) {.jsfunc.} =
-  let i = element.findAttrNS(namespace, localName)
-  if i != -1:
-    ctx.delAttr(element, i)
-
-proc toggleAttribute(ctx: JSContext; element: Element;
-    qualifiedName: DOMString; force: JSValueConst = JS_UNDEFINED): Opt[bool]
-    {.jsfunc.} =
-  let forceBool = JS_ToBool(ctx, force)
-  if forceBool < 0:
-    return err()
-  ?ctx.validateAttrName(qualifiedName.toOpenArray())
-  let qualifiedName = element.normalizeAttrQName(qualifiedName.toAtomTrace())
-  if not element.attrb(qualifiedName):
-    if JS_IsUndefined(force) or forceBool == 1:
-      element.attr(qualifiedName, "")
-      return ok(true)
-    return ok(false)
-  if JS_IsUndefined(force) or forceBool == 0:
-    let i = element.findAttr(qualifiedName)
-    if i != -1:
-      ctx.delAttr(element, i)
-    return ok(false)
-  return ok(true)
-
-proc setId(element: Element; id: DOMString) {.jsfset: "id".} =
-  element.attr(satId, id)
-
-proc focus(ctx: JSContext; element: Element) {.jsfunc.} =
-  let window = ctx.getWindow()
-  if window != nil and window.settings.autofocus:
-    element.document.setFocus(element)
-
-proc blur(ctx: JSContext; element: Element) {.jsfunc.} =
-  let window = ctx.getWindow()
-  if window != nil and window.settings.autofocus:
-    if element.document.focus == element:
-      element.document.setFocus(nil)
+proc addAttrsIfMissing*(element: Element; attrs: seq[AttrData]) =
+  for attr in attrs:
+    var i = element.attrs.upperBound(attr.name, cmpAttrName)
+    if i <= 0 or element.attrs[i - 1].name != attr.name:
+      element.attrs.insert(attr, i)
+      element.reflectAttr(element.attrs[i])
 
 proc hint*(element: Element): bool =
   efHint in element.flags
@@ -6415,7 +5564,7 @@ proc getCharset(element: Element): Charset =
   let charset = getCharset(element.attr(satCharset))
   if charset != csUnknown:
     return charset
-  return element.document.charset
+  return element.asNode.document.charset
 
 proc isDefined*(element: Element): bool =
   element.custom in {cesUncustomized, cesCustom}
@@ -6427,113 +5576,557 @@ proc getProgressPosition*(element: Element): float64 =
   let max = element.attrdgz(satMax).get(1)
   return min(value, max) / max
 
-proc requestFullscreen(ctx: JSContext; element: Element): JSValue {.jsfunc.} =
-  JS_ThrowTypeError(ctx, "fullscreen is not supported")
-  return ctx.newRejectedPromise()
-
 proc getBitmap*(element: Element): NetworkBitmap =
   case element.tagType
   of ttImg:
-    return HTMLImageElement(element).bitmap
+    return (element as HTMLImageElement).bitmap
   of ttCanvas:
-    let bmp = HTMLCanvasElement(element).bitmap
+    let bmp = (element as HTMLCanvasElement).bitmap
     if bmp != nil and bmp.cacheId != -1:
       return bmp
     return nil
   elif element.tagType(satNamespaceSVG) == ttSvg:
-    return SVGSVGElement(element).bitmap
+    return (element as SVGSVGElement).bitmap
   else:
     return nil
-
-proc shadowRoot(this: Element): ShadowRoot {.jsfget.} =
-  let first = this.internalFirst
-  if first of ShadowRoot:
-    return ShadowRoot(first)
-  return nil
 
 proc setShadowRoot(this: Element; shadow: ShadowRoot) =
   if this.internalFirst != nil:
     shadow.internalNext = move(this.internalFirst)
-  this.internalFirst = shadow
+  this.internalFirst = shadow.asNode
 
-proc attachShadow(ctx: JSContext; this: Element; init: ShadowRootInit):
-    Opt[ShadowRoot] {.jsfunc.} =
-  let document = this.document
-  let customElements = if init.customElementRegistry != nil:
-    init.customElementRegistry
+proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues =
+  var computed = element.computed
+  while computed != nil:
+    if computed.pseudo == pseudo:
+      return computed
+    computed = computed.next
+  nil
+
+proc getDOMTokenList*(element: Element; arr: DOMTokenArray; name: StaticAtom):
+    DOMTokenList =
+  var list = element.getAccessor(name) as DOMTokenList
+  if list == nil:
+    list = jsNew DOMTokenListObj(
+      element: element,
+      toks: DOMTokenArrayView(arr)
+    )
+    if list == nil:
+      return list
+    element.addAccessor(list.asElementAccessor, name)
+  list
+
+proc reflectTokens*(element: Element; arr: var DOMTokenArray; name: StaticAtom;
+    value: string) =
+  if value == "":
+    arr = DOMTokenArray(nil)
   else:
-    document.customElements
-  if customElements != nil and not customElements.scoped and
-      customElements != document.customElements:
-    JS_ThrowDOMException(ctx, "NotSupportedError",
-      "custom element registry is not scoped")
-    return err()
-  if this.namespaceURI != satNamespaceHTML:
-    JS_ThrowDOMException(ctx, "NotSupportedError",
-      "only HTML elements can have shadow trees")
-    return err()
-  const AllowedTags = {
-    ttArticle, ttAside, ttBlockquote, ttBody, ttDiv, ttFooter,
-    ttH1, ttH2, ttH3, ttH4, ttH5, ttH6, ttHeader, ttMain,
-    ttNav, ttP, ttSection, ttSpan
-  }
-  let validCustom = this.localName.view().isValidCustomElementName()
-  if not validCustom and this.tagType notin AllowedTags:
-    JS_ThrowDOMException(ctx, "NotSupportedError", "invalid tag name")
-    return err()
-  if validCustom: #TODO or is value is non-null
-    #TODO check for disable shadow
-    discard
-  let old = this.shadowRoot
-  if old != nil:
-    if not old.declarative or old.mode != init.mode:
-      JS_ThrowDOMException(ctx, "NotSupportedError",
-        "cannot replace old shadow root")
+    var toks = newSeqOfCap[CAtom](16)
+    for x in value.split(AsciiWhitespace):
+      if x != "":
+        let a = x.toAtom()
+        if a notin toks:
+          toks.add(a)
+    arr = newDOMTokenArray(toks)
+    let list = element.getAccessor(name) as DOMTokenList
+    if list != nil:
+      # arr is guaranteed to outlive the DOMTokenList because the latter
+      # references element
+      list.toks = DOMTokenArrayView(arr)
+
+proc shadowRoot(this: Element): ShadowRoot =
+  this.internalFirst as ShadowRoot
+
+jsClassPublicDef(Element):
+  jsextends ParentNodeDef
+
+  jsget Element, namespaceURI
+  jsget Element, localName
+  jsget Element, id
+  jsget Element, tagName
+
+  proc finalize(rt: JSRuntime; element: Element) {.jsfin.} =
+    unlinkElementBox(element)
+
+  proc getClassList(this: Element): DOMTokenList {.jsnfget: "classList".} =
+    this.getDOMTokenList(this.classList, satClass)
+
+  proc firstElementChild*(this: Element): Element {.jsfget.} =
+    return this.asParentNode.firstElementChild
+
+  proc lastElementChild*(this: Element): Element {.jsfget.} =
+    return this.asParentNode.lastElementChild
+
+  proc childElementCount(this: Element): uint32 {.jsfget.} =
+    return this.asParentNode.childElementCountImpl
+
+  proc innerHTML(element: Element): string {.jsfget.} =
+    #TODO xml
+    return element.asNode.serializeFragment(writeShadow = true)
+
+  proc outerHTML(element: Element): string {.jsfget.} =
+    #TODO xml
+    result = ""
+    result.serializeFragmentInner(element.asNode, ttUnknown,
+      writeShadow = true)
+
+  proc prefix(element: Element): string {.jsfget.} =
+    let i = element.tagName.find(':')
+    if i < 0:
+      return ""
+    return ($element.tagName).substr(0, i - 1)
+
+  proc hasAttributes(element: Element): bool {.jsfunc.} =
+    return element.attrs.len > 0
+
+  proc attributes(element: Element): NamedNodeMap {.jsnfget.} =
+    var map = element.getCachedAttributes()
+    if map == nil:
+      map = jsNew NamedNodeMapObj(element: element)
+      if map != nil:
+        element.addAccessor(map.asElementAccessor, satAttributes)
+    map
+
+  proc hasAttribute(element: Element; qualifiedName: CAtom): bool
+      {.jsfunc.} =
+    return element.findAttr(qualifiedName) >= 0
+
+  proc hasAttributeNS(element: Element; namespace, localName: CAtom):
+      bool {.jsfunc.} =
+    return element.findAttrNS(namespace, localName) >= 0
+
+  proc getAttributeNames(ctx: JSContext; element: Element): JSValue
+      {.jsfunc.} =
+    var s = newSeqOfCap[JSValue](element.attrs.len)
+    for it in element.attrs:
+      s.add(ctx.toJS(it.name))
+    return ctx.newArrayFrom(s)
+
+  proc getAttribute(ctx: JSContext; element: Element;
+      qualifiedName: CAtom): JSValue {.jsfunc.} =
+    let i = element.findAttr(qualifiedName)
+    if i >= 0:
+      return ctx.toJS(element.attrs[i].value)
+    return JS_NULL
+
+  proc getAttributeNS(ctx: JSContext; element: Element;
+      namespace, localName: CAtom): JSValue {.jsfunc.} =
+    let i = element.findAttrNS(namespace, localName)
+    if i >= 0:
+      return ctx.toJS(element.attrs[i].value)
+    return JS_NULL
+
+  proc getElementsByTagName(element: Element; tagName: CAtom):
+      HTMLCollection {.jsnfunc.} =
+    element.asParentNode.getElementsByTagNameImpl(tagName)
+
+  proc getElementsByClassName(element: Element; classNames: DOMString):
+      HTMLCollection {.jsnfunc.} =
+    element.asParentNode.getElementsByClassNameImpl(classNames)
+
+  proc children(element: Element): HTMLCollection {.jsnfget.} =
+    element.asParentNode.childrenImpl
+
+  proc previousElementSibling*(element: Element): Element {.jsfget.} =
+    return element.asNode.previousElementSiblingImpl
+
+  proc nextElementSibling*(element: Element): Element {.jsfget.} =
+    return element.asNode.nextElementSiblingImpl
+
+  proc before(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
+      Opt[void] {.jsfunc.} =
+    ctx.beforeImpl(this.asNode, nodes)
+
+  proc after(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
+      Opt[void] {.jsfunc.} =
+    ctx.afterImpl(this.asNode, nodes)
+
+  proc replaceWith(ctx: JSContext; this: Element;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    ctx.replaceWithImpl(this.asNode, nodes)
+
+  proc remove(ctx: JSContext; this: Element) {.jsfunc.} =
+    this.asNode.removeImpl(ctx)
+
+  proc scrollTo(element: Element) {.jsfunc.} =
+    discard #TODO maybe in app mode?
+
+  proc scrollIntoView(element: Element) {.jsfunc.} =
+    discard #TODO ditto
+
+  proc setInnerHTML(ctx: JSContext; element: Element; s: DOMStringNull)
+      {.jsfset: "innerHTML".} =
+    let fragment = ctx.parseFragment(element.asParentNode,
+      s.toOpenArray()).asNode
+    if fragment != nil:
+      let templ = element as HTMLTemplateElement
+      let nodeCtx = if templ != nil:
+        templ.content.asParentNode
+      else:
+        element.asParentNode
+      nodeCtx.replaceAll(ctx, fragment)
+
+  proc outerHTML(ctx: JSContext; element: Element; s: DOMStringNull): JSValue
+      {.jsfset.} =
+    let parent0 = element.parentNode
+    if parent0 == nil:
+      return JS_UNDEFINED
+    if parent0 of Document:
+      return JS_ThrowDOMException(ctx, "NoModificationAllowedError",
+        "outerHTML is disallowed for document elements")
+    let parent = if parent0 of DocumentFragment:
+      element.asNode.document.newHTMLElement(ttBody).asElement
+    else:
+      # neither a document, nor a document fragment => parent must be an
+      # element node
+      parent0 as Element
+    let fragment = ctx.parseFragment(parent.asParentNode, s.toOpenArray())
+    if fragment == nil:
+      return JS_ThrowOutOfMemory(ctx)
+    ctx.replaceChildWithThrow(parent.asNode, element.asNode, fragment.asNode)
+
+  proc insertAdjacentHTML(ctx: JSContext; this: Element;
+      position, text: DOMString): JSValue {.jsfunc.} =
+    let pos0 = parseEnumNoCase[InsertAdjacentPosition](position.toOpenArray())
+    if pos0.isErr:
+      return JS_ThrowDOMException(ctx, "SyntaxError", "invalid position")
+    let position = pos0.get
+    var nodeCtx = this
+    if position in {iapBeforeBegin, iapAfterEnd}:
+      if this.parentNode of Document or this.parentNode == nil:
+        return JS_ThrowDOMException(ctx, "NoModificationAllowedError",
+          "parent is not a valid element")
+      nodeCtx = this.asNode.parentElement
+    if nodeCtx == nil or
+        not this.asNode.document.isxml and nodeCtx.tagType == ttHtml:
+      nodeCtx = this.asNode.document.newHTMLElement(ttBody).asElement
+      if nodeCtx == nil:
+        return JS_ThrowOutOfMemory(ctx)
+    let fragment = ctx.parseFragment(nodeCtx.asParentNode,
+      text.toOpenArray()).asNode
+    if fragment == nil:
+      return JS_ThrowOutOfMemory(ctx)
+    case position
+    of iapBeforeBegin: this.parentNode.insert(ctx, fragment, this.asNode)
+    of iapAfterBegin:
+      this.asParentNode.insert(ctx, fragment, this.asNode.firstChild)
+    of iapBeforeEnd: this.asParentNode.append(ctx, fragment)
+    of iapAfterEnd:
+      this.parentNode.insert(ctx, fragment, this.asNode.nextSibling)
+    return JS_UNDEFINED
+
+  proc insertAdjacentElement(ctx: JSContext; this: Element;
+      position: DOMString; element: Element): JSValue {.jsfunc.} =
+    ctx.insertAdjacent(this.asNode, position, element.asNode)
+
+  proc insertAdjacentText(ctx: JSContext; this: Element;
+      position, s: DOMString): JSValue {.jsfunc.} =
+    let text = this.asNode.document.newText(s).asNode
+    if text == nil:
+      return JS_ThrowOutOfMemory(ctx)
+    ctx.toUndefined(ctx.insertAdjacent(this.asNode, position, text))
+
+  proc getBoundingClientRect(element: Element): DOMRect {.jsfunc.} =
+    let window = element.asNode.document.window
+    if window == nil:
+      return jsNew DOMRectObj()
+    if window.settings.scripting == smApp:
+      window.ensureLayout(element)
+      let objs = getClientRects(element, firstOnly = true, blockOnly = false)
+      if objs.len > 0:
+        return objs[0]
+      return jsNew DOMRectObj()
+    var width = float64(dummyAttrs.ppc)
+    var height = float64(dummyAttrs.ppl)
+    let img = element as HTMLImageElement
+    if img != nil:
+      (width, height) = img.getImageRect()
+    jsNew DOMRectObj(width: width, height: height)
+
+  proc getClientRects(element: Element): DOMRectList {.jsnfunc.} =
+    let res = jsNew DOMRectListObj()
+    if res != nil:
+      let window = element.asNode.document.window
+      if window != nil:
+        if window.settings.scripting == smApp:
+          window.ensureLayout(element)
+          res.list = getClientRects(element, firstOnly = false,
+            blockOnly = false)
+        else:
+          res.list.add(element.getBoundingClientRect())
+    res
+
+  #TODO clientLeft, clientTop, offsetLeft, offsetTop
+
+  proc clientWidth(element: Element): int32 {.jsfget.} =
+    let rect = element.getBlockRect()
+    if rect != nil and rect.width <= float64(int32.high):
+      return int32(rect.width)
+    0
+
+  proc clientHeight(element: Element): int32 {.jsfget.} =
+    let rect = element.getBlockRect()
+    if rect != nil and rect.height <= float64(int32.high):
+      return int32(rect.height)
+    0
+
+  #TODO these should add the border too
+  proc offsetWidth(element: Element): int32 {.jsfget.} =
+    let rect = element.getBlockRect()
+    if rect != nil and rect.width <= float64(int32.high):
+      return int32(rect.width)
+    0
+
+  proc offsetHeight(element: Element): int32 {.jsfget.} =
+    let rect = element.getBlockRect()
+    if rect != nil and rect.height <= float64(int32.high):
+      return int32(rect.height)
+    0
+
+  proc querySelector(ctx: JSContext; this: Element; q: DOMString): JSValue
+      {.jsfunc.} =
+    return ctx.querySelectorImpl(this.asParentNode, q)
+
+  proc querySelectorAll(ctx: JSContext; this: Element; q: DOMString): JSValue
+      {.jsfunc.} =
+    return ctx.querySelectorAllImpl(this.asParentNode, q)
+
+  proc prepend(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
+      JSValue {.jsfunc.} =
+    return ctx.prependImpl(this.asNode, nodes)
+
+  proc append(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
+      JSValue {.jsfunc.} =
+    return ctx.appendImpl(this.asNode, nodes)
+
+  proc replaceChildren(ctx: JSContext; this: Element;
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
+    return ctx.replaceChildrenImpl(this.asNode, nodes)
+
+  proc setAttribute(ctx: JSContext; element: Element;
+      qualifiedName, value: DOMString): Opt[void] {.jsfunc.} =
+    ?ctx.validateAttrName(qualifiedName.toOpenArray())
+    let qualifiedName = if element.namespaceURI == satNamespaceHTML and
+        not element.asNode.document.isxml:
+      qualifiedName.toAtomLower()
+    else:
+      qualifiedName.toAtom()
+    element.setAttr(ctx, qualifiedName, value)
+    ok()
+
+  proc setAttributeNS(ctx: JSContext; element: Element;
+      namespace, qualifiedName: CAtom; value: DOMString): Opt[void]
+      {.jsfunc.} =
+    var namespace = namespace
+    var localName = qualifiedName
+    ?ctx.validateAndExtract(namespace, localName, nvAttribute)
+    var i = element.findAttrNS(namespace, localName)
+    if i >= 0:
+      element.asNode.queueMutationRecord(ctx, mrtAttributes, qualifiedName,
+        namespace, nil, true, element.attrs[i].value, [], [], Node(nil),
+        Node(nil))
+      element.attrs[i].value = $value
+    else:
+      element.asNode.queueMutationRecord(ctx, mrtAttributes, qualifiedName,
+        namespace, nil, false, "", [], [], Node(nil), Node(nil))
+      i = element.attrs.upperBound(qualifiedName, cmpAttrName)
+      element.attrs.insert(AttrData(
+        namespace: namespace,
+        name: qualifiedName,
+        value: $value
+      ), i)
+    element.reflectAttr(element.attrs[i])
+    ok()
+
+  proc removeAttribute(ctx: JSContext; element: Element;
+      qualifiedName: CAtom) {.jsfunc.} =
+    element.delAttr(ctx, qualifiedName)
+
+  proc removeAttributeNS(ctx: JSContext; element: Element;
+      namespace, localName: CAtom) {.jsfunc.} =
+    let i = element.findAttrNS(namespace, localName)
+    if i >= 0:
+      element.delAttr(ctx, i)
+
+  proc toggleAttribute(ctx: JSContext; element: Element;
+      qualifiedName: DOMString; force: JSValueConst = JS_UNDEFINED): Opt[bool]
+      {.jsfunc.} =
+    let forceBool = JS_ToBool(ctx, force)
+    if forceBool < 0:
       return err()
-    let removedNodes = old.getChildList()
-    for child in removedNodes:
-      child.removeImpl()
-    old.declarative = false
-    return ok(old)
-  let shadow = ShadowRoot(
-    host: this,
-    mode: init.mode,
-    delegatesFocus: init.delegatesFocus,
-    #TODO available to internals
-    slotAssignment: init.slotAssignment,
-    clonable: init.clonable,
-    serializable: init.serializable,
-    customElements: customElements
-  )
-  this.setShadowRoot(shadow)
-  ok(shadow)
+    ?ctx.validateAttrName(qualifiedName.toOpenArray())
+    let qualifiedName = element.normalizeAttrQName(qualifiedName.toAtom())
+    let i = element.findAttr(qualifiedName)
+    if i < 0:
+      if JS_IsUndefined(force) or forceBool == 1:
+        element.setAttr(ctx, qualifiedName, "")
+        return ok(true)
+      return ok(false)
+    if JS_IsUndefined(force) or forceBool == 0:
+      element.delAttr(ctx, i)
+      return ok(false)
+    return ok(true)
 
-proc closest(ctx: JSContext; this: Element; q: DOMString): JSValue {.jsfunc.} =
-  let selectors = ctx.parseSelectors(q)
-  if selectors.len == 0:
-    return JS_EXCEPTION
-  for element in this.branchElems:
-    if element.matchesImpl(selectors):
-      return ctx.toJS(element)
-  return JS_NULL
+  proc setId(ctx: JSContext; element: Element; id: DOMString) {.
+      jsfset: "id".} =
+    element.setAttr(ctx, satId, id)
 
-proc matches(ctx: JSContext; this: Element; q: DOMString): JSValue {.jsfunc.} =
-  let selectors = ctx.parseSelectors(q)
-  if selectors.len == 0:
-    return JS_EXCEPTION
-  return ctx.toJS(this.matchesImpl(selectors))
+  proc focus*(element: Element) {.jsfunc.} =
+    let document = element.asNode.document
+    let window = document.window
+    if window != nil and window.settings.autofocus:
+      document.setFocus(element)
+
+  proc blur(element: Element) {.jsfunc.} =
+    let document = element.asNode.document
+    let window = document.window
+    if window != nil and window.settings.autofocus:
+      if document.focus == element:
+        document.setFocus(Element(nil))
+
+  proc requestFullscreen(ctx: JSContext; element: Element): JSValue
+      {.jsfunc.} =
+    JS_ThrowTypeError(ctx, "fullscreen is not supported")
+    return ctx.newRejectedPromise()
+
+  proc getOpenShadowRoot(this: Element): ShadowRoot {.jsfget: "shadowRoot".} =
+    let shadow = this.shadowRoot
+    if shadow == nil or shadow.mode == srmClosed:
+      return ShadowRoot(nil)
+    shadow
+
+  proc attachShadow(ctx: JSContext; this: Element; init: ShadowRootInit):
+      Opt[ShadowRoot] {.jsnfunc.} =
+    let document = this.asNode.document
+    let customElements = if init.customElementRegistry != nil:
+      init.customElementRegistry
+    else:
+      document.customElements
+    if customElements != nil:
+      ?ctx.checkRegistryScope(document, customElements)
+    if this.namespaceURI != satNamespaceHTML:
+      JS_ThrowDOMException(ctx, "NotSupportedError",
+        "only HTML elements can have shadow trees")
+      return err()
+    const AllowedTags = {
+      ttArticle, ttAside, ttBlockquote, ttBody, ttDiv, ttFooter,
+      ttH1, ttH2, ttH3, ttH4, ttH5, ttH6, ttHeader, ttMain,
+      ttNav, ttP, ttSection, ttSpan
+    }
+    let validCustom = this.localName.isValidCustomElementName()
+    if not validCustom and this.tagType notin AllowedTags:
+      JS_ThrowDOMException(ctx, "NotSupportedError", "invalid tag name")
+      return err()
+    if validCustom: #TODO or is value is non-null
+      #TODO check for disable shadow
+      discard
+    let old = this.shadowRoot
+    if old != nil:
+      if not old.declarative or old.mode != init.mode:
+        JS_ThrowDOMException(ctx, "NotSupportedError",
+          "cannot replace old shadow root")
+        return err()
+      let removedNodes = old.asParentNode.getChildList()
+      for child in removedNodes:
+        child.removeImpl(ctx)
+      old.declarative = false
+      return ok(old)
+    let shadow = jsNew ShadowRootObj(
+      host: this,
+      mode: init.mode,
+      delegatesFocus: init.delegatesFocus,
+      #TODO available to internals
+      slotAssignment: init.slotAssignment,
+      clonable: init.clonable,
+      serializable: init.serializable,
+      customElements: customElements
+    )
+    if shadow != nil:
+      this.setShadowRoot(shadow)
+    ok(shadow)
+
+  proc closest(ctx: JSContext; this: Element; q: DOMString): JSValue
+      {.jsfunc.} =
+    let selectors = ctx.parseSelectors(q)
+    if selectors.len == 0:
+      return JS_EXCEPTION
+    for element in this.branchElems:
+      if element.matchesList(selectors):
+        return ctx.toJS(element)
+    return JS_NULL
+
+  proc matches(ctx: JSContext; this: Element; q: DOMString): JSValue
+      {.jsfunc.} =
+    let selectors = ctx.parseSelectors(q)
+    if selectors.len == 0:
+      return JS_EXCEPTION
+    return ctx.toJS(this.matchesList(selectors))
+
+  proc style(element: Element): CSSStyleDeclaration {.jsnfget.} =
+    if element.cachedStyle == nil:
+      element.cachedStyle = newCSSStyleDeclaration(element, "")
+    return element.cachedStyle
+
+  proc setStyle(ctx: JSContext; element: Element; s: CSSOMString) {.
+      jsfset: "style".} =
+    element.setAttr(ctx, satStyle, s)
+
+  #TODO slot should be unscopable
+  proc getAttrMagic(element: Element; magic: StaticAtom): lent string {.
+      jsmfget("className", satClass), jsmfget("slot", satSlot).} =
+    element.attr(magic)
+
+  proc setAttrMagic(ctx: JSContext; element: Element; magic: StaticAtom;
+      name: DOMString) {.jsmfset("className", satClass),
+      jsmfset("slot", satSlot).} =
+    element.setAttr(ctx, magic, name)
+
+# AttrDummyElement
+jsClassDef(AttrDummyElement): # fake class
+  jsextends ElementDef
+
+# XMLSerializer
+jsClassRaw(XMLSerializerDef, "XMLSerializer"):
+  proc newXMLSerializer(ctx: JSContext; ctor: JSValueConst): JSValue
+      {.jsctor2.} =
+    return JS_NewObjectFromCtor(ctx, ctor, classDef.id)
+
+  proc serializeToString(ctx: JSContext; this: JSValueConst; root: Node):
+      JSValue {.jsfunc.} =
+    #TODO ...yeah
+    var res = ""
+    res.serializeFragmentInner(root, ttUnknown, writeShadow = true)
+    ctx.toJS(res)
 
 # ShadowRoot
-proc host(this: ShadowRoot): Element {.jsfget.} =
-  DocumentFragment(this).host
-
 proc globalCustomElements(this: ShadowRoot): CustomElementRegistry =
   if not this.customElements.scoped:
     return this.customElements
-  let document = this.document
+  let document = this.asNode.document
   if not document.customElements.scoped:
     return document.customElements
-  return nil
+  return CustomElementRegistry(nil)
+
+jsClassDef(ShadowRoot):
+  jsextends DocumentFragmentDef
+
+  jsget ShadowRoot, mode
+  jsget ShadowRoot, delegatesFocus
+  jsget ShadowRoot, slotAssignment
+  jsget ShadowRoot, clonable
+  jsget ShadowRoot, serializable
+
+  proc host(this: ShadowRoot): Element {.jsfget.} =
+    this.asDocumentFragment.host
+
+  proc innerHTML(this: ShadowRoot): string {.jsfget.} =
+    return this.asNode.serializeFragment(writeShadow = true)
+
+  proc setInnerHTML(ctx: JSContext; this: ShadowRoot; s: DOMStringNull)
+      {.jsfset: "innerHTML".} =
+    let fragment = ctx.parseFragment(this.asParentNode, s.toOpenArray()).asNode
+    if fragment != nil:
+      this.asParentNode.replaceAll(ctx, fragment)
 
 # CSSStyleDeclaration
 #
@@ -6567,30 +6160,77 @@ proc globalCustomElements(this: ShadowRoot): CustomElementRegistry =
 # changed, for p we check whether input's :checked pseudo-class has
 # changed.
 
+proc tabIsEmpty(item: DependencyItem): bool =
+  item.key == nil
+
+proc tabKeyEq(item: DependencyItem; element: Element): bool =
+  item.key == (ptr ElementObj)(element)
+
+proc tabHashFast(item: DependencyItem): Hash =
+  item.hcache
+
+proc tabKeyEq(a, b: DependencyItem): bool =
+  a == b
+
+iterator getAll(map: DependencyMap; element: Element): lent Element =
+  for it in map.tab.tabGetAll(element):
+    yield Element(it.value)
+
+iterator popAll(map: var DependencyMap; element: Element): Element =
+  for it in map.tab.tabPopAll(element, hash(element)):
+    yield cast[Element](it.value)
+
+proc del(map: var DependencyMap; key, value: Element) =
+  let item = DependencyItem(
+    key: (ptr ElementObj)(key),
+    value: (ptr ElementObj)(value),
+    hcache: hash(cast[pointer](key))
+  )
+  tabDelImpl(map.tab, map.load, item, item.hcache)
+
+proc add0(map: var DependencyMap; item: DependencyItem) =
+  let mask = map.tab.len - 1
+  var item = item
+  let hcache = item.hcache
+  var home = hcache and mask
+  for i, it in map.tab.mtabPairs(hcache):
+    if it.key == nil:
+      it = item
+      break
+    if tabSwap(home, it.hcache, i, mask): # displace
+      swap(it, item)
+
+proc add(map: var DependencyMap; key, value: Element) =
+  let item = DependencyItem(
+    key: (ptr ElementObj)(key),
+    value: (ptr ElementObj)(value),
+    hcache: hash(cast[pointer](key))
+  )
+  for it in map.tab.prepareTableAdd(map.load, init = 4):
+    if it.key != nil:
+      map.add0(it)
+  map.add0(item)
+  inc map.load
+
 proc invalidate*(element: Element; dep: DependencyType) =
   if dep in element.selfDepends:
     element.invalidate()
-  element.document.styleDependencies[dep].dependedBy.withValue(element, p):
-    for it in p[]:
-      it.invalidate()
-
-proc findAndDelete(map: var seq[Element]; element: Element) =
-  map.del(map.find(element))
+  let document = element.asNode.document
+  for it in document.styleDependencies[dep].dependedBy.getAll(element):
+    it.invalidate()
 
 proc applyStyleDependencies*(document: Document; element: Element;
     depends: DependencyInfo) =
   element.selfDepends = {}
   for t, map in document.styleDependencies.mpairs:
-    map.dependsOn.withValue(element, p):
-      for it in p[]:
-        map.dependedBy.mgetOrPut(it, @[]).findAndDelete(element)
-      map.dependsOn.del(element)
+    for it in map.dependsOn.popAll(element):
+      map.dependedBy.del(element, it)
     for el in depends[t]:
       if el == element:
         element.selfDepends.incl(t)
         continue
-      map.dependedBy.mgetOrPut(el, @[]).add(element)
-      map.dependsOn.mgetOrPut(element, @[]).add(el)
+      map.dependedBy.add(el, element)
+      map.dependsOn.add(element, el)
 
 proc add*(depends: var DependencyInfo; element: Element; t: DependencyType) =
   depends[t].add(element)
@@ -6604,30 +6244,19 @@ proc merge*(a: var DependencyInfo; b: DependencyInfo) =
 proc newCSSStyleDeclaration(element: Element; value: string; computed = false;
     readonly = false): CSSStyleDeclaration =
   # Note: element may be nil
-  return CSSStyleDeclaration(
+  jsNew CSSStyleDeclarationObj(
     decls: value.parseDeclarations(),
     element: element,
     computed: computed,
     readonly: readonly
   )
 
-proc cssText(this: CSSStyleDeclaration): string {.jsfget.} =
-  if this.computed:
-    return ""
-  result = ""
-  for it in this.decls:
-    if result.len > 0:
-      result &= ' '
-    result &= $it
-
-proc length(this: CSSStyleDeclaration): uint32 =
-  return uint32(this.decls.len)
-
-proc item(ctx: JSContext; this: CSSStyleDeclaration; u: uint32): JSValue
-    {.jsfunc.} =
-  if u < this.length:
-    return ctx.toJS(this.decls[int(u)].name)
-  return ctx.toJS("")
+proc checkReadOnly(ctx: JSContext; this: CSSStyleDeclaration): Opt[void] =
+  if this.readonly:
+    JS_ThrowDOMException(ctx, "NoModificationAllowedError",
+      "cannot modify read-only declaration")
+    return err()
+  ok()
 
 proc find(this: CSSStyleDeclaration; p: CSSPropertyType): int =
   for i, decl in this.decls.mypairs:
@@ -6637,7 +6266,7 @@ proc find(this: CSSStyleDeclaration; p: CSSPropertyType): int =
 
 proc find(this: CSSStyleDeclaration; s: openArray[char]): int =
   if s.startsWith("--"):
-    let v = s.toOpenArray(2, s.high).toAtomTrace()
+    let v = s.toOpenArray(2, s.high).toAtom()
     for i, decl in this.decls.mypairs:
       if decl.t == cdtVariable and decl.v == v:
         return i
@@ -6645,48 +6274,6 @@ proc find(this: CSSStyleDeclaration; s: openArray[char]): int =
   if p := propertyType(s):
     return this.find(p)
   return -1
-
-proc getPropertyValue(this: CSSStyleDeclaration; s: CSSOMString): string
-    {.jsfunc.} =
-  var res = ""
-  if (let sh = shorthandType(s.toOpenArray()); sh != cstNone):
-    var flags: array[CSSImportantFlag, bool]
-    for p in ShorthandMap[sh]:
-      let i = this.find(p)
-      if i < 0:
-        return ""
-      flags[this.decls[i].f] = true
-      if flags[cifNormal] and flags[cifImportant]:
-        return ""
-      for it in this.decls[i].value:
-        res &= $it
-      res &= ' '
-    if res.len > 0:
-      res.setLen(res.high)
-  elif (let i = this.find(s.toOpenArray()); i >= 0):
-    for it in this.decls[i].value:
-      res &= $it
-  move(res)
-
-proc getter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  var u: uint32
-  var ds: DOMString
-  case ctx.fromIdx(atom, u, ds)
-  of fiIdx:
-    if u < this.length:
-      return ctx.toJS(this.decls[int(u)].name)
-    return JS_UNINITIALIZED
-  of fiStr:
-    if ds.toOpenArray() == "cssFloat":
-      return ctx.toJS(this.getPropertyValue(initDOMStringLit("float")))
-    if ds.toOpenArray().isSupportedProperty():
-      return ctx.toJS(this.getPropertyValue(ds))
-    let s = ds.toOpenArray().camelToKebabCase()
-    if s.isSupportedProperty():
-      return ctx.toJS(this.getPropertyValue(s.toDOMStringView()))
-    return JS_UNINITIALIZED
-  of fiErr: return JS_EXCEPTION
 
 # Consumes toks.
 proc parseDeclValue(decl: var CSSDeclaration; value: CSSOMString): Opt[void] =
@@ -6704,114 +6291,476 @@ proc parseDeclValue(decl: var CSSDeclaration; value: CSSOMString): Opt[void] =
   decl.value = move(toks)
   ok()
 
-proc checkReadOnly(ctx: JSContext; this: CSSStyleDeclaration): Opt[void] =
-  if this.readonly:
-    JS_ThrowDOMException(ctx, "NoModificationAllowedError",
-      "cannot modify read-only declaration")
-    return err()
-  ok()
-
-proc updateStyleAttr(this: CSSStyleDeclaration) =
+proc updateStyleAttr(this: CSSStyleDeclaration; ctx: JSContext) =
   this.updating = true
-  this.element.attr(satStyle, this.cssText)
+  this.element.setAttr(ctx, satStyle, this.cssText)
 
-proc removeProperty(ctx: JSContext; this: CSSStyleDeclaration;
-    name: CSSOMString): JSValue {.jsfunc.} =
-  if ctx.checkReadOnly(this).isErr:
-    return JS_EXCEPTION
-  let name = name.toOpenArray().toLowerAscii()
-  let value = this.getPropertyValue(name.toDOMStringView())
-  let sh = shorthandType(name)
-  if sh != cstNone:
-    for t in ShorthandMap[sh]:
-      let i = this.find(t)
-      if i != -1:
+jsClassDef(CSSStyleDeclaration):
+  proc cssText(this: CSSStyleDeclaration): string {.jsfget.} =
+    result = ""
+    if not this.computed:
+      for it in this.decls:
+        if result.len > 0:
+          result &= ' '
+        result &= $it
+
+  proc setCSSText(ctx: JSContext; this: CSSStyleDeclaration; s: CSSOMString):
+      Opt[void] {.jsfset: "cssText".} =
+    ?ctx.checkReadOnly(this)
+    this.element.setAttr(ctx, satStyle, s)
+    ok()
+
+  proc length(this: CSSStyleDeclaration): uint32 =
+    return uint32(this.decls.len)
+
+  proc item(ctx: JSContext; this: CSSStyleDeclaration; u: uint32): JSValue
+      {.jsfunc.} =
+    if u < this.length:
+      return ctx.toJS(this.decls[int(u)].name)
+    return ctx.toJS("")
+
+  proc getPropertyValue(this: CSSStyleDeclaration; s: CSSOMString): string
+      {.jsfunc.} =
+    var res = ""
+    if (let sh = shorthandType(s.toOpenArray()); sh != cstNone):
+      var flags: array[CSSImportantFlag, bool]
+      for p in ShorthandMap[sh]:
+        let i = this.find(p)
+        if i < 0:
+          return ""
+        flags[this.decls[i].f] = true
+        if flags[cifNormal] and flags[cifImportant]:
+          return ""
+        for it in this.decls[i].value:
+          res &= $it
+        res &= ' '
+      if res.len > 0:
+        res.setLen(res.high)
+    elif (let i = this.find(s.toOpenArray()); i >= 0):
+      for it in this.decls[i].value:
+        res &= $it
+    move(res)
+
+  proc getter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom): JSValue
+      {.jsgetownprop.} =
+    var u: uint32
+    var ds: DOMString
+    case ctx.fromIdx(atom, u, ds)
+    of fiIdx:
+      if u < this.length:
+        return ctx.toJS(this.decls[int(u)].name)
+      return JS_UNINITIALIZED
+    of fiStr:
+      if ds.toOpenArray() == "cssFloat":
+        return ctx.toJS(this.getPropertyValue(initDOMStringLit("float")))
+      if ds.toOpenArray().isSupportedProperty():
+        return ctx.toJS(this.getPropertyValue(ds))
+      let s = ds.toOpenArray().camelToKebabCase()
+      if s.isSupportedProperty():
+        return ctx.toJS(this.getPropertyValue(s.toDOMStringView()))
+      return JS_UNINITIALIZED
+    of fiErr: return JS_EXCEPTION
+
+  proc removeProperty(ctx: JSContext; this: CSSStyleDeclaration;
+      name: CSSOMString): JSValue {.jsfunc.} =
+    ?ctx.checkReadOnly(this)
+    let name = name.toOpenArray().toLowerAscii()
+    let value = this.getPropertyValue(name.toDOMStringView())
+    let sh = shorthandType(name)
+    if sh != cstNone:
+      for t in ShorthandMap[sh]:
+        let i = this.find(t)
+        if i >= 0:
+          this.decls.delete(i)
+    else:
+      let i = this.find(name)
+      if i >= 0:
         this.decls.delete(i)
-  else:
-    let i = this.find(name)
-    if i != -1:
-      this.decls.delete(i)
-  this.updateStyleAttr()
-  return ctx.toJS(value)
+    this.updateStyleAttr(ctx)
+    return ctx.toJS(value)
 
-proc setProperty(ctx: JSContext; this: CSSStyleDeclaration;
-    name, value: CSSOMString): JSValue {.jsfunc.} =
-  if ctx.checkReadOnly(this).isErr:
-    return JS_EXCEPTION
-  if not name.toOpenArray().isSupportedProperty():
+  proc setProperty(ctx: JSContext; this: CSSStyleDeclaration;
+      name, value: CSSOMString): JSValue {.jsfunc.} =
+    ?ctx.checkReadOnly(this)
+    if not name.toOpenArray().isSupportedProperty():
+      return JS_UNDEFINED
+    if value.len == 0:
+      return ctx.removeProperty(this, name)
+    let name = name.toOpenArray().toLowerAscii()
+    if (let i = this.find(name); i >= 0):
+      if this.decls[i].parseDeclValue(value).isErr:
+        return JS_UNDEFINED # ignore
+    else:
+      let x = initCSSDeclaration(name)
+      if x.isErr:
+        return JS_UNDEFINED # ignore
+      var decl = x.get
+      if decl.parseDeclValue(value).isErr:
+        return JS_UNDEFINED # ignore
+      this.decls.add(move(decl))
+    this.updateStyleAttr(ctx)
     return JS_UNDEFINED
-  if value.len == 0:
-    return ctx.removeProperty(this, name)
-  let name = name.toOpenArray().toLowerAscii()
-  if (let i = this.find(name); i != -1):
-    if this.decls[i].parseDeclValue(value).isErr:
-      return JS_UNDEFINED # ignore
-  else:
-    let x = initCSSDeclaration(name)
-    if x.isErr:
-      return JS_UNDEFINED # ignore
-    var decl = x.get
-    if decl.parseDeclValue(value).isErr:
-      return JS_UNDEFINED # ignore
-    this.decls.add(move(decl))
-  this.updateStyleAttr()
-  return JS_UNDEFINED
 
-proc setter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom;
-    value: CSSOMString): JSValue {.jssetprop.} =
-  if ctx.checkReadOnly(this).isErr:
-    return JS_EXCEPTION
-  var u: uint32
-  var ds: DOMString
-  case ctx.fromIdx(atom, u, ds)
-  of fiIdx: return JS_UNINITIALIZED
-  of fiStr:
-    var name = $ds
-    if name == "cssFloat":
-      name = "float"
-    name = camelToKebabCase(name)
-    return ctx.setProperty(this, name.toDOMStringView(), value)
-  of fiErr:
-    return JS_EXCEPTION
-
-proc style(element: Element): CSSStyleDeclaration {.jsfget.} =
-  if element.cachedStyle == nil:
-    element.cachedStyle = newCSSStyleDeclaration(element, "")
-  return element.cachedStyle
-
-proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues =
-  var computed = element.computed
-  while computed != nil:
-    if computed.pseudo == pseudo:
-      return computed
-    computed = computed.next
-  nil
+  proc setter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom;
+      value: CSSOMString): JSValue {.jssetprop.} =
+    ?ctx.checkReadOnly(this)
+    var u: uint32
+    var ds: DOMString
+    case ctx.fromIdx(atom, u, ds)
+    of fiIdx: return JS_UNINITIALIZED
+    of fiStr:
+      var name = $ds
+      if name == "cssFloat":
+        name = "float"
+      name = camelToKebabCase(name)
+      return ctx.setProperty(this, name.toDOMStringView(), value)
+    of fiErr:
+      return JS_EXCEPTION
 
 # HTMLElement
 proc newHTMLElement*(document: Document; tagType: TagType): HTMLElement =
-  #TODO take StaticAtom for tagType
   let element = document.newElement(tagType.toStaticAtom().view(),
     satNamespaceHTML)
-  return HTMLElement(element)
+  return element as HTMLElement
 
 proc crossOrigin(element: HTMLElement): CORSAttribute =
-  if not element.attrb(satCrossorigin):
+  if not element.asElement.attrb(satCrossorigin):
     return caNoCors
-  let s = element.attr(satCrossorigin)
+  let s = element.asElement.attr(satCrossorigin)
   if s.equalsIgnoreCase("use-credentials"):
     return caUseCredentials
   caAnonymous
 
 proc referrerPolicy(element: HTMLElement): Opt[ReferrerPolicy] =
-  parseEnumNoCase[ReferrerPolicy](element.attr(satReferrerpolicy))
+  parseEnumNoCase[ReferrerPolicy](element.asElement.attr(satReferrerpolicy))
 
-proc dataset(ctx: JSContext; element: HTMLElement): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(element, wwmDataset)
+proc getSrc*(this: HTMLElement): tuple[src, contentType: string] =
+  let src = this.asElement.attr(satSrc)
+  if src != "":
+    return (src, "")
+  for el in this.asParentNode.elementDescendants(ttSource):
+    let src = el.asElement.attr(satSrc)
+    if src != "":
+      return (src, el.asElement.attr(satType))
+  return ("", "")
+
+proc tagType*(element: HTMLElement): TagType =
+  return element.asElement.tagTypeNoNS
+
+type
+  ReflectType = enum
+    rtStr, rtStrNull, rtUrl, rtBool, rtLong, rtUlongGz, rtUlong, rtDoubleGz,
+    rtReferrerPolicy, rtCrossOrigin, rtMethod, rtForm, rtDir
+
+  ReflectEntry = object
+    attrname: StaticAtom
+    t: ReflectType
+    u: uint32 # 32 bits of opaque associated data (mostly default values)
+
+template makes(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtStr)
+
+template makesnull(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtStrNull)
+
+template makeurl(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtUrl)
+
+template makeb(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtBool)
+
+template makel(name: StaticAtom; default = 0'u32): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtLong, u: default)
+
+template makeul(name: StaticAtom; default = 0'u32): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtUlong, u: default)
+
+template makeulgz(name: StaticAtom; default = 0'u32): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtUlongGz, u: default)
+
+template makerp(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtReferrerPolicy)
+
+template makeco(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtCrossOrigin)
+
+template makem(name: StaticAtom): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtMethod)
+
+template makedgz(name: StaticAtom; default: uint32): ReflectEntry =
+  ReflectEntry(attrname: name, t: rtDoubleGz, u: default)
+
+template makeform(): ReflectEntry =
+  ReflectEntry(attrname: satForm, t: rtForm)
+
+template makedir(): ReflectEntry =
+  ReflectEntry(attrname: satDir, t: rtDir)
+
+# Note: this table only works for tag types with a registered interface.
+type ReflectedAttr* = enum
+  raTarget = "target"
+  raColor = "color"
+  raFace = "face"
+  raSizeStr = "size"
+  raValueStr = "value"
+  raValueLong = "value"
+  raRequired = "required"
+  raReversed = "reversed"
+  raName = "name"
+  raOpen = "open"
+  raNovalidate = "novalidate"
+  raSelected = "selected"
+  raRel = "rel"
+  raFor = "for"
+  raHttpequiv = "http-equiv"
+  raContent = "content"
+  raMedia = "media"
+  raDatetime = "datetime"
+  raType = "type"
+  raCols = "cols"
+  raRows = "rows"
+  raSizeSelect = "size"
+  raSizeInput = "size"
+  raWidth = "width"
+  raHeight = "height"
+  raAlt = "alt"
+  raSrcset = "srcset"
+  raSizes = "sizes"
+  raCrossorigin = "crossorigin"
+  raReferrerpolicy = "referrerpolicy"
+  raMethod = "method"
+  raFormmethod = "formmethod"
+  raUsemap = "usemap"
+  raIsmap = "ismap"
+  raDisabled = "disabled"
+  raSrc = "src"
+  raCite = "cite"
+  raHref = "href"
+  raData = "data"
+  raValueDoubleGz = "value"
+  raValuetype = "valuetype"
+  raMax = "max"
+  raForm = "form"
+  # super-global attributes
+  raTitle = "title"
+  raLang = "lang"
+  raDir = "dir"
+  raHidden = "hidden"
+
+const ReflectMap = [
+  # non-global attributes
+  raTarget: makes(satTarget),
+  raColor: makesnull(satColor),
+  raFace: makes(satFace),
+  raSizeStr: makes(satSize),
+  raValueStr: makes(satValue),
+  raValueLong: makel(satValue),
+  raRequired: makeb(satRequired),
+  raReversed: makeb(satReversed),
+  raName: makes(satName),
+  raOpen: makes(satOpen),
+  raNovalidate: makeb(satNovalidate),
+  raSelected: makeb(satSelected),
+  raRel: makes(satRel),
+  raFor: makes(satFor),
+  raHttpequiv: makes(satHttpEquiv),
+  raContent: makes(satContent),
+  raMedia: makes(satMedia),
+  raDatetime: makes(satDatetime),
+  raType: makes(satType),
+  raCols: makeul(satCols, 20u32),
+  raRows: makeul(satRows, 1u32),
+  raSizeSelect: makeulgz(satSize, 0u32),
+  raSizeInput: makeulgz(satSize, 20u32),
+  raWidth: makeul(satWidth, 300u32),
+  raHeight: makeul(satHeight, 150u32),
+  raAlt: makes(satAlt),
+  raSrcset: makes(satSrcset),
+  raSizes: makes(satSizes),
+  raCrossorigin: makeco(satCrossorigin),
+  raReferrerpolicy: makerp(satReferrerpolicy),
+  raMethod: makem(satMethod),
+  raFormmethod: makem(satFormmethod),
+  raUsemap: makes(satUsemap),
+  raIsmap: makeb(satIsmap),
+  raDisabled: makeb(satDisabled),
+  raSrc: makeurl(satSrc),
+  raCite: makeurl(satCite),
+  raHref: makeurl(satHref),
+  raData: makeurl(satData),
+  raValueDoubleGz: makedgz(satValue, 0),
+  raValuetype: makedgz(satValue, 0),
+  raMax: makedgz(satMax, 1),
+  raForm: makeform(),
+  # super-global attributes
+  raTitle: makes(satTitle),
+  raLang: makes(satLang),
+  raDir: makedir(),
+  raHidden: makeb(satHidden)
+]
+
+const SuperGlobalAttrs = [raTitle, raLang, raDir, raHidden]
+
+static:
+  # In the reflection magic we allocate 9 bits to attribute names and 7 bits
+  # to class names.
+  doAssert ReflectMap.len < 512
+
+proc jsReflectGet0(ctx: JSContext; htmlElement: HTMLElement; magic: cint):
+    JSValue =
+  let element = htmlElement.asElement
+  let entry = ReflectMap[ReflectedAttr(uint16(magic) and 0x1FF)]
+  let name = entry.attrname
+  case entry.t
+  of rtStr, rtStrNull: return ctx.toJS(element.attr(name))
+  of rtUrl:
+    let s = element.attr(name)
+    if url := element.asNode.document.parseURL(s):
+      return ctx.toJS($url)
+    return ctx.toJS(s)
+  of rtReferrerPolicy:
+    if s := htmlElement.referrerPolicy:
+      return ctx.toJS($s)
+    return ctx.toJS("")
+  of rtCrossOrigin:
+    case (let co = htmlElement.crossOrigin; co)
+    of caNoCors: return JS_NULL
+    else: return ctx.toJS($co)
+  of rtMethod:
+    return ctx.toJS(element.getFormMethodAttr(name))
+  of rtDir:
+    let value = element.attr(name)
+    if value in ["ltr", "rtl", "auto"]:
+      return ctx.toJS(value)
+    return ctx.toJS("")
+  of rtForm: return ctx.toJS(element.getElementForm())
+  of rtBool: return ctx.toJS(element.attrb(name))
+  of rtLong:
+    let i = cast[int32](entry.u)
+    return ctx.toJS(element.attrl(name).get(i))
+  of rtUlong: return ctx.toJS(element.attrul(name).get(entry.u))
+  of rtUlongGz: return ctx.toJS(element.attrulgz(name).get(entry.u))
+  of rtDoubleGz:
+    # we do not have fractional default values, so we actually store them
+    # as uint32 and convert here.
+    let f = float32(entry.u)
+    return ctx.toJS(element.attrdgz(name).get(f))
+
+proc jsReflectSet0(ctx: JSContext; htmlElement: HTMLElement; val: JSValueConst;
+    magic: cint): JSValue {.cdecl.} =
+  let element = htmlElement.asElement
+  let entry = ReflectMap[ReflectedAttr(uint16(magic) and 0x1FF)]
+  let name = entry.attrname
+  case entry.t
+  of rtStr, rtUrl, rtReferrerPolicy, rtMethod, rtDir:
+    var x: DOMString
+    ?ctx.fromJS(val, x)
+    element.setAttr(ctx, name, x)
+  of rtStrNull:
+    var x: DOMStringNull
+    ?ctx.fromJS(val, x)
+    element.setAttr(ctx, name, x)
+  of rtCrossOrigin:
+    if JS_IsNull(val):
+      element.delAttr(ctx, name.view())
+    else:
+      var x: DOMString
+      ?ctx.fromJS(val, x)
+      element.setAttr(ctx, name, x)
+  of rtBool:
+    var x: bool
+    ?ctx.fromJS(val, x)
+    if x:
+      element.setAttr(ctx, name, "")
+    else:
+      element.delAttr(ctx, name.view())
+  of rtLong:
+    var x: int32
+    ?ctx.fromJS(val, x)
+    element.setAttr(ctx, name, $x)
+  of rtUlong:
+    var x: uint32
+    ?ctx.fromJS(val, x)
+    element.setAttr(ctx, name, $x)
+  of rtUlongGz:
+    var x: uint32
+    ?ctx.fromJS(val, x)
+    if x > 0:
+      element.setAttr(ctx, name, $x)
+  of rtDoubleGz:
+    var x: float64
+    ?ctx.fromJS(val, x)
+    if classify(x) in {fcInf, fcNegInf, fcNan}:
+      return JS_ThrowTypeError(ctx, "double expected")
+    element.setAttr(ctx, name, dtoa(x))
+  of rtForm: discard
+  return JS_UNDEFINED
+
+proc jsReflectGet(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
+    {.cdecl.} =
+  let element = ctx.getReflectElement(this, magic)
+  if element == nil:
+    return JS_EXCEPTION
+  ctx.jsReflectGet0(cast[HTMLElement](element), magic)
+
+proc jsReflectSet(ctx: JSContext; this, val: JSValueConst; magic: cint):
+    JSValue {.cdecl.} =
+  let element = ctx.getReflectElement(this, magic)
+  if element == nil:
+    return JS_EXCEPTION
+  ctx.jsReflectSet0(cast[HTMLElement](element), val, magic)
+
+proc jsReflectEventGet(ctx: JSContext; this: JSValueConst; magic: cint):
+    JSValue {.cdecl.} =
+  var element: ptr HTMLElementObj
+  ?ctx.fromJS(this, element)
+  let name = StaticAtom(magic)
+  let this = Element(element).getEventTarget(name)
+  if this == nil:
+    return JS_UNDEFINED
+  return ctx.eventReflectGetImpl(this, name)
+
+proc jsReflectEventSet(ctx: JSContext; this, val: JSValueConst; magic: cint):
+    JSValue {.cdecl.} =
+  var element: ptr HTMLElementObj
+  ?ctx.fromJS(this, element)
+  let name = StaticAtom(magic)
+  let target = Element(element).getEventTarget(name)
+  if target == nil:
+    return JS_UNDEFINED
+  return ctx.eventReflectSetImpl(target, val, name)
+
+jsClassPublicDef(HTMLElement):
+  jsextends ElementDef
+
+  event.htmlElementClassID = classDef.id
+
+  proc dataset(element: HTMLElement): DOMStringMap {.jsnfget.} =
+    var dataset = element.asElement.getAccessor(satDataset) as DOMStringMap
+    if dataset == nil:
+      dataset = jsNew DOMStringMapObj(target: element)
+      if dataset != nil:
+        element.asElement.addAccessor(dataset.asElementAccessor, satDataset)
+    move(dataset)
+
+  proc click(ctx: JSContext; element: HTMLElement) {.jsfunc.} =
+    let event = newEvent(satClick, element.asEventTarget, bubbles = true,
+      cancelable = true)
+    if event != nil:
+      let canceled = ctx.dispatch(element.asEventTarget, event)
+      if not canceled:
+        let window = ctx.getWindow()
+        if window != nil:
+          window.click(element)
+
+template htmlClassDef(name: untyped) =
+  jsClassDef(name):
+    jsextends HTMLElementDef
 
 # HTMLHyperlinkElementUtils (for <a> and <area>)
 proc reinitURL*(element: Element): Opt[URL] =
   if element.attrb(satHref):
-    let url = element.document.parseURL(element.attr(satHref))
+    let url = element.asNode.document.parseURL(element.attr(satHref))
     if url.isOk and url.get.schemeType != stBlob:
       return url
   return err()
@@ -6840,7 +6789,7 @@ proc hyperlinkSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
   if sa == satHref:
     var s: DOMString
     if ctx.fromJS(val, s).isOk:
-      element.attr(satHref, s)
+      element.setAttr(ctx, satHref, s)
       return JS_DupValue(ctx, val)
     return JS_EXCEPTION
   if url := element.reinitURL():
@@ -6850,35 +6799,25 @@ proc hyperlinkSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
       return JS_EXCEPTION
     var ds: DOMString
     if ctx.fromJSFree(href, ds).isOk:
-      element.attr(satHref, ds)
+      element.setAttr(ctx, satHref, ds)
   return JS_DupValue(ctx, val)
 
-proc click(ctx: JSContext; element: HTMLElement) {.jsfunc.} =
-  let event = newEvent(satClick, element, bubbles = true, cancelable = true)
-  let canceled = ctx.dispatch(element, event)
-  if not canceled:
-    let window = ctx.getWindow()
-    if window != nil:
-      window.click(element)
-
 # <a>
-proc toString(anchor: HTMLAnchorElement): string {.jsfunc.} =
-  if href := anchor.reinitURL():
-    return $href
-  return ""
+jsClassPublicDef(HTMLAnchorElement):
+  jsextends HTMLElementDef
 
-proc setRelList(anchor: HTMLAnchorElement; ds: DOMString) {.
-    jsfset: "relList".} =
-  anchor.attr(satRel, ds)
+  proc toString(this: HTMLAnchorElement): string {.jsfunc.} =
+    if href := this.asElement.reinitURL():
+      return $href
+    return ""
 
-# <area>
-proc toString(area: HTMLAreaElement): string {.jsfunc.} =
-  if href := area.reinitURL():
-    return $href
-  return ""
+  proc getRelList(this: HTMLAnchorElement): DOMTokenList {.
+      jsnfget: "relList".} =
+    this.asElement.getDOMTokenList(this.relList, satRel)
 
-proc setRelList(area: HTMLAreaElement; ds: DOMString) {.jsfset: "relList".} =
-  area.attr(satRel, ds)
+  proc setRelList(ctx: JSContext; this: HTMLAnchorElement; ds: DOMString) {.
+      jsfset: "relList".} =
+    this.asElement.setAttr(ctx, satRel, ds)
 
 # <audio>
 proc newAudio(ctx: JSContext; this_target: JSValueConst; argc: cint;
@@ -6888,60 +6827,47 @@ proc newAudio(ctx: JSContext; this_target: JSValueConst; argc: cint;
   if argc >= 1 and not JS_IsUndefined(argv[0]):
     var ds: DOMString
     ?ctx.fromJS(argv[0], ds)
-    this.attr(satSrc, ds)
+    this.asElement.setAttr(ctx, satSrc, ds)
   ctx.toJS(this)
 
 # <base>
-proc href(base: HTMLBaseElement): string {.jsfget.} =
-  #TODO with fallback base url
-  if url := parseURL(base.attr(satHref)):
-    return $url
-  return ""
+jsClassDef(HTMLBaseElement):
+  jsextends HTMLElementDef
 
-# <button>
-proc setType(this: HTMLButtonElement; s: DOMString) {.jsfset: "type".} =
-  this.attr(satType, s)
+  proc href(base: HTMLBaseElement): string {.jsfget.} =
+    #TODO with fallback base url
+    if url := parseURL(base.asElement.attr(satHref)):
+      return $url
+    return ""
 
 # <canvas>
-proc getContext*(jctx: JSContext; this: HTMLCanvasElement;
-    contextId: DOMString; options: JSValueConst = JS_UNDEFINED):
-    CanvasRenderingContext2D {.jsfunc.} =
-  if contextId.toOpenArray() == "2d":
-    if this.ctx2d == nil:
-      let window = jctx.getWindow()
-      let loader = window.loader
-      let ctx2d = create2DContext(loader, this, this.bitmap, options)
-      if ctx2d == nil:
-        return nil
-      this.ctx2d = ctx2d
-      window.pendingCanvasCtls.add(ctx2d)
-    return this.ctx2d
-  return nil
-
-type ToBlobEnv {.final.} = ref object of BlobOpaque
+type ToBlobEnv* {.final.} = ref object of BlobOpaque
   ctx: JSContext
-  callback: JSValue
+  callback: JSCallback
   isPNG: bool
   this: HTMLCanvasElement
   url: URL
 
+proc mark*(rt: JSRuntime; env: ToBlobEnv; markFunc: JS_MarkFunc) =
+  JS_MarkValue(rt, env.callback, markFunc)
+  rt.markObj(env.this, markFunc)
+  rt.markObj(env.url, markFunc)
+
 proc onFinishToBlob(response: Response; success: bool) =
   let env = ToBlobEnv(response.opaque)
   let ctx = env.ctx
-  let callback = env.callback
+  let callback = move(env.callback)
   let this = env.this
   let blob = response.onFinishBlob(success)
   if blob == nil:
-    JS_FreeValue(ctx, callback)
     JS_FreeContext(ctx)
     return
   let jsBlob = ctx.toJS(blob)
   if JS_IsException(jsBlob):
-    JS_FreeValue(ctx, callback)
     JS_FreeContext(ctx)
     return
-  let window = this.document.window
-  let res = ctx.callSinkFree(callback, JS_UNDEFINED, jsBlob)
+  let window = this.asNode.document.window
+  let res = ctx.callSink(callback.value, JS_UNDEFINED, jsBlob)
   if JS_IsException(res):
     window.console.error("Exception in canvas toBlob:",
       ctx.getExceptionMsg())
@@ -6952,16 +6878,15 @@ proc onFinishToBlob(response: Response; success: bool) =
 proc toBlob1(opaque: RootRef; response: Response) =
   let env = ToBlobEnv(opaque)
   let ctx = env.ctx
-  let callback = env.callback
   let this = env.this
   if response == nil:
+    let callback = move(env.callback)
     if not env.isPNG:
       # Redo as PNG.  (Yes, this is spec-mandated.)
       ctx.toBlob(this, callback, "image/png")
     else: # the png encoder doesn't work...
-      let window = this.document.window
+      let window = this.asNode.document.window
       window.console.error("missing/broken PNG encoder")
-    JS_FreeValue(ctx, callback)
     JS_FreeContext(ctx)
   else:
     response.onFinish = onFinishToBlob
@@ -6972,7 +6897,6 @@ proc toBlob0(opaque: RootRef; response: Response) =
   let env = ToBlobEnv(opaque)
   let ctx = env.ctx
   if response == nil:
-    JS_FreeValue(ctx, env.callback)
     JS_FreeContext(ctx)
     return
   let this = env.this
@@ -6985,140 +6909,64 @@ proc toBlob0(opaque: RootRef; response: Response) =
     headers = headers,
     body = RequestBody(t: rbtOutput, outputId: response.outputId)
   )
-  let window = this.document.window
+  let window = this.asNode.document.window
   window.corsFetch(request, toBlob1, env)
   window.loader.close(response)
 
-proc toBlob(ctx: JSContext; this: HTMLCanvasElement; callback: JSValueConst;
-    contentType = "image/png"; qualityVal: JSValueConst = JS_UNDEFINED)
-    {.jsfunc.} =
-  let contentType = contentType.toLowerAscii()
-  if not contentType.startsWith("image/") or this.bitmap.cacheId == 0:
-    return
-  let url = parseURL0("img-codec+" & contentType.after('/') & ":encode")
-  if url == nil:
-    return
-  let headers = newHeaders(hgRequest, {
-    "Cha-Image-Dimensions": $this.bitmap.width & 'x' & $this.bitmap.height
-  })
-  if JS_IsNumber(qualityVal):
-    # standard-compliant special case; it also means that we don't have to
-    # propagate exceptions here (as nothing can throw one)
-    var quality: float64
-    if ctx.fromJS(qualityVal, quality).isOk and 0 <= quality and quality <= 1:
-      quality *= 99
-      quality += 1
-      headers.add("Cha-Image-Quality", dtoa(quality))
-  # callback will go out of scope when we return, so capture a new reference.
-  let callback = JS_DupValue(ctx, callback)
-  let request = newRequest(
-    "img-codec+x-cha-canvas:decode",
-    httpMethod = hmPost,
-    body = RequestBody(t: rbtCache, cacheId: this.bitmap.cacheId)
-  )
-  let env = ToBlobEnv(
-    ctx: JS_DupContext(ctx),
-    callback: JS_DupValue(ctx, callback),
-    isPNG: contentType == "image/png",
-    this: this,
-    url: url
-  )
-  let window = this.document.window
-  window.corsFetch(request, toBlob0, env)
+jsClassDef(HTMLCanvasElement):
+  jsextends HTMLElementDef
 
-# <form>
-proc canSubmitImplicitly*(form: HTMLFormElement): bool =
-  const BlocksImplicitSubmission = {
-    itText, itSearch, itURL, itTel, itEmail, itPassword, itDate, itMonth,
-    itWeek, itTime, itDatetimeLocal, itNumber
-  }
-  var found = false
-  for control in form.controls:
-    if control of HTMLInputElement:
-      let input = HTMLInputElement(control)
-      if input.inputType in BlocksImplicitSubmission:
-        if found:
-          return false
-        found = true
-    elif control.isSubmitButton():
-      return false
-  return true
+  proc getContext*(jctx: JSContext; this: HTMLCanvasElement;
+      contextId: DOMString; options: JSValueConst = JS_UNDEFINED):
+      CanvasRenderingContext2D {.jsfunc.} =
+    if contextId.toOpenArray() == "2d":
+      if this.ctx2d == nil:
+        let window = jctx.getWindow()
+        let loader = window.loader
+        let ctx2d = create2DContext(loader, this.asEventTarget, this.bitmap,
+          options)
+        if ctx2d != nil:
+          this.ctx2d = ctx2d
+          window.pendingCanvasCtls.add(ctx2d)
+      return this.ctx2d
+    return CanvasRenderingContext2D(nil)
 
-proc setRelList(form: HTMLFormElement; s: DOMString) {.jsfset: "relList".} =
-  form.attr(satRel, s)
-
-proc elements(form: HTMLFormElement): HTMLFormControlsCollection {.jsfget.} =
-  if form.cachedElements == nil:
-    form.cachedElements = newCollection[HTMLFormControlsCollection](
-      root = form.rootNode,
-      match = proc(this: Collection; node: Node): bool =
-        if node of FormAssociatedElement:
-          let element = FormAssociatedElement(node)
-          if element.tagType in ListedElements:
-            let this = HTMLFormControlsCollection(this)
-            return element.form == this.form
-        return false,
-      islive = true,
-      childonly = false
+  proc toBlob(ctx: JSContext; this: HTMLCanvasElement;
+      callback: JSCallback; contentType = "image/png";
+      qualityVal: JSValueConst = JS_UNDEFINED) {.jsfunc.} =
+    let contentType = contentType.toLowerAscii()
+    if not contentType.startsWith("image/") or this.bitmap.cacheId == 0:
+      return
+    let url = parseURL0("img-codec+" & contentType.after('/') & ":encode")
+    if url == nil:
+      return
+    let headers = newHeaders(hgRequest, {
+      "Cha-Image-Dimensions": $this.bitmap.width & 'x' & $this.bitmap.height
+    })
+    if JS_IsNumber(qualityVal):
+      # standard-compliant special case; it also means that we don't have to
+      # propagate exceptions here (as nothing can throw one)
+      var quality: float64
+      if ctx.fromJS(qualityVal, quality).isOk and
+          0 <= quality and quality <= 1:
+        quality *= 99
+        quality += 1
+        headers.add("Cha-Image-Quality", dtoa(quality))
+    let request = newRequest(
+      "img-codec+x-cha-canvas:decode",
+      httpMethod = hmPost,
+      body = RequestBody(t: rbtCache, cacheId: this.bitmap.cacheId),
+      internal = true
     )
-    form.cachedElements.form = form
-  form.cachedElements
-
-proc getter(ctx: JSContext; this: HTMLFormElement; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  let elements = this.elements()
-  return ctx.getter(elements, atom)
-
-proc length(this: HTMLFormElement): uint32 {.jsfget.} =
-  let elements = this.elements()
-  elements.getLength()
-
-proc resetForm*(form: HTMLFormElement; ctx: JSContext) =
-  for control in form.controls:
-    control.resetElement(ctx)
-    control.invalidate()
-
-# FormAssociatedElement
-proc setForm*(element: FormAssociatedElement; form: HTMLFormElement) =
-  element.form = form
-  if form.controlsTail == nil:
-    form.controlsHead = element
-  else:
-    form.controlsTail.next = element
-  element.prev = form.controlsTail
-  form.controlsTail = element
-  form.document.invalidateCollections()
-
-proc resetFormOwner(element: FormAssociatedElement) =
-  element.parserInserted = false
-  if element.form != nil:
-    if element.tagType notin ListedElements:
-      return
-    let lastForm = element.findAncestor(ttForm)
-    if not element.attrb(satForm) and lastForm == element.form:
-      return
-  let form = element.form
-  if form != nil:
-    if element.prev == nil:
-      form.controlsHead = element.next
-    else:
-      element.prev.next = element.next
-    if element.next == nil:
-      form.controlsTail = element.prev
-    else:
-      element.next.prev = element.prev
-    element.prev = nil
-    element.next = nil
-    element.form = nil
-  if element.tagType in ListedElements and element.isConnected:
-    let id = element.attr(satForm).toAtomTrace()
-    let form = element.document.getElementById(id)
-    if form of HTMLFormElement:
-      element.setForm(HTMLFormElement(form))
-  if element.form == nil:
-    for ancestor in element.ancestors:
-      if ancestor of HTMLFormElement:
-        element.setForm(HTMLFormElement(ancestor))
+    let env = ToBlobEnv(
+      ctx: JS_DupContext(ctx),
+      callback: callback,
+      isPNG: contentType == "image/png",
+      this: this,
+      url: url
+    )
+    let window = this.asNode.document.window
+    window.corsFetch(request, toBlob0, env)
 
 # <img>
 proc newImage(ctx: JSContext; _: JSValueConst; argc: cint;
@@ -7128,127 +6976,49 @@ proc newImage(ctx: JSContext; _: JSValueConst; argc: cint;
   if argc >= 1 and not JS_IsUndefined(argv[0]):
     var x: uint32
     ?ctx.fromJS(argv[0], x)
-    this.attrul(satWidth, x)
+    this.asElement.setAttr(ctx, satWidth, $x)
   if argc >= 2 and not JS_IsUndefined(argv[1]):
     var x: uint32
     ?ctx.fromJS(argv[1], x)
-    this.attrul(satHeight, x)
+    this.asElement.setAttr(ctx, satHeight, $x)
   ctx.toJS(this)
 
 proc getImageRect(this: HTMLImageElement): tuple[w, h: float64] =
-  let window = this.document.window
+  let window = this.asNode.document.window
   if window != nil and window.settings.scripting == smApp:
-    window.ensureLayout(this)
-    let objs = getClientRectsImpl(this, firstOnly = true, blockOnly = false)
+    window.ensureLayout(this.asElement)
+    let objs = getClientRects(this.asElement, firstOnly = true,
+      blockOnly = false)
     if objs.len > 0:
       return (objs[0].width, objs[0].height)
   let bitmap = this.bitmap
   if bitmap == nil:
     return (0'f64, 0'f64)
+  let this = this.asElement
   let width = float64(this.attrul(satWidth).get(uint32(bitmap.width)))
   let height = float64(this.attrul(satHeight).get(uint32(bitmap.height)))
   return (width, height)
 
-proc width(this: HTMLImageElement): uint32 {.jsfget.} =
-  return uint32(this.getImageRect().w)
+jsClassPublicDef(HTMLImageElement):
+  jsextends HTMLElementDef
 
-proc setWidth(this: HTMLImageElement; u: uint32) {.jsfset: "width".} =
-  this.attrul(satWidth, u)
+  proc width(this: HTMLImageElement): uint32 {.jsfget.} =
+    return uint32(this.getImageRect().w)
 
-proc height(this: HTMLImageElement): uint32 {.jsfget.} =
-  return uint32(this.getImageRect().h)
+  proc setWidth(ctx: JSContext; this: HTMLImageElement; u: uint32) {.
+      jsfset: "width".} =
+    this.asElement.setAttr(ctx, satWidth, $u)
 
-proc setHeight(this: HTMLImageElement; u: uint32) {.jsfset: "height".} =
-  this.attrul(satHeight, u)
+  proc height(this: HTMLImageElement): uint32 {.jsfget.} =
+    return uint32(this.getImageRect().h)
 
-# <input>
-proc value*(this: HTMLInputElement): lent string {.jsfget.} =
-  if this.internalValue == nil:
-    this.internalValue = newRefString("")
-  return this.internalValue.s
-
-proc setValue*(this: HTMLInputElement; value: sink string) =
-  this.internalValue = newRefString(value)
-  this.invalidate()
-
-proc setValue(this: HTMLInputElement; ds: DOMString) {.jsfset: "value".} =
-  this.setValue($ds)
-
-proc setType(this: HTMLInputElement; s: DOMString) {.jsfset: "type".} =
-  this.attr(satType, s)
-
-proc checked*(input: HTMLInputElement): bool {.inline.} =
-  return input.internalChecked
-
-proc setChecked*(input: HTMLInputElement; b: bool) {.jsfset: "checked".} =
-  # Note: input elements are implemented as a replaced text, so we must
-  # fully invalidate them on checked change.
-  if input.inputType == itRadio and b:
-    for radio in input.radiogroup:
-      radio.invalidate(dtChecked)
-      radio.invalidate()
-      radio.internalChecked = false
-  input.invalidate(dtChecked)
-  input.invalidate()
-  input.internalChecked = b
-
-proc files*(this: HTMLInputElement): FileList {.jsfget.} =
-  if this.internalFiles == nil:
-    this.internalFiles = newFileList()
-  this.internalFiles
-
-proc inputString*(input: HTMLInputElement): RefString =
-  case input.inputType
-  of itCheckbox, itRadio:
-    if input.checked:
-      return newRefString("*")
-    return newRefString(" ")
-  of itPassword:
-    return newRefString('*'.repeat(input.value.pointLen))
-  of itReset:
-    if input.attrb(satValue):
-      return input.internalValue
-    return newRefString("RESET")
-  of itSubmit, itButton:
-    if input.attrb(satValue):
-      return input.internalValue
-    return newRefString("SUBMIT")
-  of itFile:
-    return newRefString(input.files.getName())
-  else:
-    return input.internalValue
-
-proc select(ctx: JSContext; input: HTMLInputElement) {.jsfunc.} =
-  ctx.focus(input)
-
-proc addFile*(this: HTMLInputElement; file: WebFile) =
-  this.files.add(file)
-  this.invalidate()
-
-# <label>
-proc control*(label: HTMLLabelElement): FormAssociatedElement {.jsfget.} =
-  let f = label.attr(satFor)
-  if f != "":
-    let id = f.toAtomTrace()
-    let elem = label.document.getElementById(id)
-    if elem of FormAssociatedElement and elem.tagType in LabelableElements:
-      return FormAssociatedElement(elem)
-    return nil
-  for elem in label.elementDescendants(LabelableElements):
-    if elem of FormAssociatedElement: #TODO remove this
-      return FormAssociatedElement(elem)
-    return nil
-  return nil
-
-proc form(label: HTMLLabelElement): HTMLFormElement {.jsfget.} =
-  let control = label.control
-  if control != nil:
-    return control.form
-  return nil
+  proc setHeight(ctx: JSContext; this: HTMLImageElement; u: uint32) {.
+      jsfset: "height".} =
+    this.asElement.setAttr(ctx, satHeight, $u)
 
 # SheetElement
 proc findPrevSheet(this: SheetElement): CSSStylesheet =
-  var node = this.previousDescendant()
+  var node = this.asNode.previousDescendant()
   while node != nil:
     if node of SheetElement:
       let element = SheetElement(node)
@@ -7258,22 +7028,22 @@ proc findPrevSheet(this: SheetElement): CSSStylesheet =
   nil
 
 proc findNextSheet(this: SheetElement): CSSStylesheet =
-  var node = Node(this).nextDescendant(nil)
+  var node = this.asNode.nextDescendant(Node(nil))
   while node != nil:
-    if node of SheetElement:
-      let element = SheetElement(node)
-      if element.sheetHead != nil:
-        return element.sheetHead
-    node = node.nextDescendant(nil)
+    let element = node as SheetElement
+    if element != nil and element.sheetHead != nil:
+      return element.sheetHead
+    node = node.nextDescendant(Node(nil))
   nil
 
 proc isDisabled(this: SheetElement): bool =
-  this of HTMLLinkElement and HTMLLinkElement(this).isDisabled()
+  let link = this as HTMLLinkElement
+  link != nil and link.isDisabled()
 
 proc insertSheet(this: SheetElement) =
   if this.sheetHead != nil:
     assert this.sheetHead.prev == nil and this.sheetTail.next == nil
-    let document = this.document
+    let document = this.asNode.document
     let prev = this.findPrevSheet()
     let next = this.findNextSheet()
     if prev != nil:
@@ -7296,7 +7066,7 @@ proc insertSheet(this: SheetElement) =
 
 proc removeSheet(this: SheetElement) =
   if this.sheetHead != nil:
-    let document = this.document
+    let document = this.asNode.document
     let prev = this.sheetHead.prev
     let next = this.sheetTail.next
     if prev == nil:
@@ -7317,360 +7087,65 @@ proc updateSheet(this: SheetElement; head, tail: CSSStylesheet) =
   this.removeSheet()
   this.sheetHead = head
   this.sheetTail = tail
-  if this.isConnected():
+  if this.asNode.isConnected():
     this.insertSheet()
+
+jsClassDef(SheetElement): # fake class
+  jsextends HTMLElementDef
 
 # <link>
 proc isDisabled(link: HTMLLinkElement): bool =
-  let title = link.attr(satTitle)
+  let title = link.asElement.attr(satTitle)
   if title == "":
     return link.relList.containsIgnoreCase(satAlternate) or
       not link.enabled.get(true)
   if link.enabled.isSome:
     return not link.enabled.get
-  return link.document.sheetTitle != title
+  return link.asNode.document.sheetTitle != title
 
-proc setRelList(link: HTMLLinkElement; s: DOMString) {.jsfset: "relList".} =
-  link.attr(satRel, s)
+jsClassDef(HTMLLinkElement):
+  jsextends SheetElementDef
 
-# <option>
-proc newOption(ctx: JSContext; _: JSValueConst; argc: cint;
-    argv: JSValueConstArray): JSValue {.cdecl.} =
-  let document = ctx.getDocument()
-  let this = HTMLOptionElement(document.newHTMLElement(ttOption))
-  if argc >= 1 and not JS_IsUndefined(argv[0]):
-    var text: DOMString
-    ?ctx.fromJS(argv[0], text)
-    if text.len > 0:
-      this.insert(document.newText(text), nil, ctx)
-  if argc >= 2 and not JS_IsUndefined(argv[1]):
-    var value: DOMString
-    ?ctx.fromJS(argv[1], value)
-    this.attr(satValue, value)
-  if argc >= 3:
-    var defaultSelected: bool
-    ?ctx.fromJS(argv[2], defaultSelected)
-    if defaultSelected:
-      this.attr(satSelected, "")
-  if argc >= 4:
-    ?ctx.fromJS(argv[3], this.selected)
-  ctx.toJS(this)
+  proc getRelList(this: HTMLLinkElement): DOMTokenList {.jsfget: "relList".} =
+    this.asElement.getDOMTokenList(this.relList, satRel)
 
-proc text(option: HTMLOptionElement): string {.jsfget.} =
-  var s = ""
-  for child in option.descendants:
-    let parent = child.parentElement
-    if child of Text and (parent.tagTypeNoNS != ttScript or
-        parent.namespaceURI notin [satNamespaceHTML, satNamespaceSVG]):
-      s &= Text(child).data.s
-  return s.stripAndCollapse()
-
-proc value*(option: HTMLOptionElement): string {.jsfget.} =
-  if option.attrb(satValue):
-    return option.attr(satValue)
-  return option.text
-
-proc setValue(option: HTMLOptionElement; ds: DOMString) {.jsfset: "value".} =
-  option.attr(satValue, ds)
-
-proc select*(option: HTMLOptionElement): HTMLSelectElement =
-  for anc in option.ancestors:
-    if anc of HTMLSelectElement:
-      return HTMLSelectElement(anc)
-  return nil
-
-proc setSelected*(option: HTMLOptionElement; selected: bool)
-    {.jsfset: "selected".} =
-  option.invalidate(dtChecked)
-  option.selected = selected
-  let select = option.select
-  if select != nil and not select.attrb(satMultiple):
-    var firstOption: HTMLOptionElement = nil
-    var prevSelected: HTMLOptionElement = nil
-    for option in select.options:
-      if firstOption == nil:
-        firstOption = option
-      if option.selected:
-        if prevSelected != nil:
-          prevSelected.selected = false
-          prevSelected.invalidate(dtChecked)
-        prevSelected = option
-    if select.attrul(satSize).get(1) == 1 and
-        prevSelected == nil and firstOption != nil:
-      firstOption.selected = true
-      firstOption.invalidate(dtChecked)
-
-# <output>
-proc getType(this: HTMLOutputElement): string {.jsfget: "type".} =
-  return "output"
-
-proc defaultValue(this: HTMLOutputElement): string {.jsfget.} =
-  if this.dirty:
-    return this.internalValue
-  return this.textContent
-
-proc setDefaultValue(ctx: JSContext; this: HTMLOutputElement; ds: DOMString)
-    {.jsfset: "defaultValue".} =
-  if this.dirty:
-    this.dirty = true
-    this.internalValue = $ds
-  else:
-    this.replaceAll(ds, ctx)
-
-proc value(this: HTMLOutputElement): string {.jsfget.} =
-  return this.textContent
-
-proc setValue(ctx: JSContext; this: HTMLOutputElement; ds: DOMString) {.
-    jsfset: "value".} =
-  if not this.dirty:
-    this.dirty = true
-    this.internalValue = this.textContent
-  this.replaceAll(ds, ctx)
+  proc setRelList(ctx: JSContext; this: HTMLLinkElement; s: DOMString) {.
+      jsfset: "relList".} =
+    this.asElement.setAttr(ctx, satRel, s)
 
 # <progress>
-proc position(this: HTMLProgressElement): float64 {.jsfget.} =
-  return this.getProgressPosition()
+jsClassRaw(HTMLProgressElementDef, "HTMLProgressElement"):
+  jsextends HTMLElementDef
 
-# <select>
-proc displaySize(select: HTMLSelectElement): uint32 =
-  return select.attrul(satSize).get(1)
-
-proc setSelectedness(select: HTMLSelectElement) =
-  var firstOption: HTMLOptionElement = nil
-  var prevSelected: HTMLOptionElement = nil
-  if not select.attrb(satMultiple):
-    let displaySize = select.displaySize
-    for option in select.options:
-      if firstOption == nil:
-        firstOption = option
-      if option.selected:
-        if prevSelected != nil:
-          prevSelected.selected = false
-          prevSelected.invalidate(dtChecked)
-        prevSelected = option
-    if select.displaySize == 1 and prevSelected == nil and firstOption != nil:
-      firstOption.selected = true
-
-proc jsType(this: HTMLSelectElement): string {.jsfget: "type".} =
-  if this.attrb(satMultiple):
-    return "select-multiple"
-  return "select-one"
-
-proc names(ctx: JSContext; this: HTMLOptionsCollection): JSPropertyEnumList
-    {.jspropnames.} =
-  return ctx.names(HTMLCollection(this))
-
-proc getter(ctx: JSContext; this: HTMLOptionsCollection; atom: JSAtom): JSValue
-    {.jsgetownprop.} =
-  return ctx.getter(HTMLCollection(this), atom)
-
-proc add(ctx: JSContext; this: HTMLOptionsCollection; element: Element;
-    before: JSValueConst = JS_NULL): JSValue {.jsfunc.} =
-  if element.tagType notin {ttOption, ttOptgroup}:
-    return JS_ThrowTypeError(ctx, "expected option or optgroup element")
-  var beforeEl: HTMLElement = nil
-  var beforeIdx = -1
-  if not JS_IsNull(before) and ctx.fromJS(before, beforeEl).isErr and
-      ctx.fromJS(before, beforeIdx).isErr:
-    return JS_EXCEPTION
-  for it in this.root.ancestors:
-    if element == it:
-      return ctx.insertThrow("can't add ancestor of select")
-  if beforeEl != nil and this.root notin beforeEl:
-    return ctx.insertThrow(nil)
-  if element != beforeEl:
-    if beforeEl == nil:
-      let it = this.item(uint32(beforeIdx))
-      if it of HTMLElement:
-        beforeEl = HTMLElement(it)
-    let parent = if beforeEl != nil: beforeEl.parentNode else: this.root
-    return ctx.insertBeforeUndefined(parent, element, option(Node(beforeEl)))
-  return JS_UNDEFINED
-
-proc remove(this: HTMLOptionsCollection; i: int32) {.jsfunc.} =
-  let element = this.item(uint32(i))
-  if element != nil:
-    element.remove()
-
-proc length(this: HTMLOptionsCollection): uint32 {.jsfget.} =
-  this.getLength()
-
-proc setLength(this: HTMLOptionsCollection; n: uint32) {.jsfset: "length".} =
-  let len = this.getLength()
-  if n > len:
-    if n <= 100_000: # LOL
-      let parent = this.root
-      let document = parent.document
-      for i in 0 ..< n - len:
-        parent.append(document.newHTMLElement(ttOption), nil)
-  else:
-    for i in 0 ..< len - n:
-      let it = this.item(uint32(i))
-      it.remove()
-
-proc options(this: HTMLSelectElement): HTMLOptionsCollection {.jsfget.} =
-  if this.cachedOptions == nil:
-    this.cachedOptions = newCollection[HTMLOptionsCollection](
-      root = this,
-      match = proc(this: Collection; node: Node): bool =
-        node.isOptionOf(this.root),
-      islive = true,
-      childonly = false
-    )
-  this.cachedOptions
-
-proc setter(ctx: JSContext; this: HTMLOptionsCollection; atom: JSAtom;
-    value: Option[HTMLOptionElement]): JSValue {.jssetprop.} =
-  var u: uint32
-  case ctx.fromIdx(atom, u)
-  of fiIdx: discard
-  of fiStr: return JS_UNINITIALIZED
-  of fiErr: return JS_EXCEPTION
-  let element = this.item(u)
-  let value = value.get(nil)
-  if value == nil:
-    if element != nil:
-      element.remove()
-    return JS_UNDEFINED
-  let parent = this.root
-  if element != nil:
-    return ctx.replaceChildWithThrow(parent, element, value)
-  let len = this.getLength()
-  let document = parent.document
-  for i in len ..< u:
-    let res = parent.insertBefore(document.newHTMLElement(ttOption), nil,
-      ctx)
-    if res.isErr:
-      return ctx.insertThrow(res.error)
-  return ctx.insertBeforeUndefined(parent, value, none(Node))
-
-proc length(ctx: JSContext; this: HTMLSelectElement): uint32 {.jsfget.} =
-  let options = this.options()
-  options.getLength()
-
-proc setLength(ctx: JSContext; this: HTMLSelectElement; n: uint32) {.
-    jsfset: "length".} =
-  let options = this.options()
-  options.setLength(n)
-
-proc getter(ctx: JSContext; this: HTMLSelectElement; u: JSAtom): JSValue
-    {.jsgetownprop.} =
-  let options = this.options()
-  return ctx.getter(options, u)
-
-proc item(this: HTMLSelectElement; u: uint32): Element {.jsfunc.} =
-  let options = this.options()
-  options.item(u)
-
-proc namedItem(ctx: JSContext; this: HTMLSelectElement; atom: CAtomTraced):
-    Element {.jsfunc.} =
-  let options = this.options()
-  options.namedItem(atom)
-
-proc selectedOptions(ctx: JSContext; this: HTMLSelectElement): JSValue
-    {.jsfget.} =
-  return ctx.getWeakCollection(this, wwmSelectedOptions)
-
-proc selectedIndex*(this: HTMLSelectElement): int {.jsfget.} =
-  var i = 0
-  for it in this.options:
-    if it.selected:
-      return i
-    inc i
-  return -1
-
-proc selectedIndex(this: HTMLOptionsCollection): int {.jsfget.} =
-  return HTMLSelectElement(this.root).selectedIndex
-
-proc setSelectedIndex*(this: HTMLSelectElement; n: int)
-    {.jsfset: "selectedIndex".} =
-  var i = 0
-  for it in this.options:
-    if i == n:
-      it.selected = true
-      it.dirty = true
-    else:
-      it.selected = false
-    it.invalidate(dtChecked)
-    inc i
-  this.document.invalidateCollections()
-
-proc value(this: HTMLSelectElement): string {.jsfget.} =
-  for it in this.options:
-    if it.selected:
-      return it.value
-  return ""
-
-proc setValue(this: HTMLSelectElement; value: DOMString) {.jsfset: "value".} =
-  var found = false
-  for it in this.options:
-    if not found and it.value == value.toOpenArray():
-      found = true
-      it.selected = true
-      it.dirty = true
-    else:
-      it.selected = false
-    it.invalidate(dtChecked)
-  this.document.invalidateCollections()
-
-proc showPicker(ctx: JSContext; this: HTMLSelectElement): JSValue {.jsfunc.} =
-  # Per spec, we should do something if it's being rendered and on
-  # transient user activation.
-  # If this is ever implemented, then the "is rendered" check must
-  # be app mode only.
-  return JS_ThrowDOMException(ctx, "NotAllowedError", "not allowed")
-
-proc add(ctx: JSContext; this: HTMLSelectElement; element: Element;
-    before: JSValueConst = JS_NULL): JSValue {.jsfunc.} =
-  let options = this.options()
-  return ctx.add(options, element, before)
-
-proc remove(ctx: JSContext; this: HTMLSelectElement;
-    idx: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
-  if idx.len > 0:
-    var i: int32
-    ?ctx.fromJS(idx[0], i)
-    let options = this.options()
-    options.remove(i)
-  else:
-    this.remove()
-  ok()
+  proc position(this: Element): float64 {.jsfget.} =
+    return this.getProgressPosition()
 
 # <style>
 proc updateSheetFinish(window: Window; this: SheetElement; res: LoadSheetResult;
     env: ParseSheetEnv; i: int) =
   this.updateSheet(res.head, res.tail)
-  if this.isConnected():
-    let title = this.attr(satTitle)
-    let document = this.document
+  if this.asNode.isConnected():
+    let title = this.asElement.attr(satTitle)
+    let document = this.asNode.document
     for sheet in this.sheets:
       sheet.disabled = title != "" and title != document.sheetTitle
 
 proc updateSheet*(this: HTMLStyleElement) =
-  let document = this.document
+  let document = this.asNode.document
   let window = document.window
   if window != nil:
-    window.parseStylesheet(this, this.textContent, document.baseURL,
-      DefaultCharset, CAtomNullTraced, updateSheetFinish, nil, 0)
+    window.parseStylesheet(this.asSheetElement, this.asNode.textContent,
+      document.baseURL, DefaultCharset, CAtomNull, updateSheetFinish,
+      nil, 0)
+
+jsClassPublicDef(HTMLStyleElement):
+  jsextends SheetElementDef
 
 # <script>
-proc finalize(element: HTMLScriptElement) {.jsfin.} =
-  if element.scriptResult != nil and element.scriptResult.t == srtScript:
-    let script = element.scriptResult.script
-    if script.rt != nil and not JS_IsUninitialized(script.record):
-      script.free()
-
-proc mark(rt: JSRuntime; element: HTMLScriptElement; markFunc: JS_MarkFunc)
-    {.jsmark.} =
-  if element.scriptResult != nil and element.scriptResult.t == srtScript:
-    let script = element.scriptResult.script
-    if script.rt != nil and not JS_IsUninitialized(script.record):
-      JS_MarkValue(rt, script.record, markFunc)
-
 proc markAsReady(element: HTMLScriptElement; res: ScriptResult) =
   element.scriptResult = res
   if element.onReady != nil:
-    element.onReady(element)
+    element[].onReady(element)
     element.onReady = nil
   element.delayingTheLoadEvent = false
 
@@ -7688,7 +7163,7 @@ proc scriptOnReadyNoParser(element: HTMLScriptElement) =
       let next = prepdoc.scriptsToExecInOrder.next
       prepdoc.scriptsToExecInOrder = next
       if next == nil:
-        prepdoc.scriptsToExecInOrderTail = nil
+        prepdoc.scriptsToExecInOrderTail = HTMLScriptElement(nil)
 
 proc scriptOnReadyAsync(element: HTMLScriptElement) =
   let prepdoc = element.preparationTimeDocument
@@ -7705,10 +7180,10 @@ proc scriptOnReadyAsync(element: HTMLScriptElement) =
 
 proc fetchClassicScript(element: HTMLScriptElement; url: URL;
     cors: CORSAttribute; onComplete: OnCompleteProc): Response =
-  if not element.scriptingEnabled:
+  if not element.asElement.scriptingEnabled:
     element.markAsReady(ScriptResult(t: srtNull))
-    return nil
-  let window = element.document.window
+    return Response(nil)
+  let window = element.asNode.document.window
   let request = createPotentialCORSRequest(url, rdScript, cors)
   request.client = window.settings
   return window.loader.doRequest(request)
@@ -7716,8 +7191,8 @@ proc fetchClassicScript(element: HTMLScriptElement; url: URL;
 #TODO settings object
 proc fetchExternalModuleGraph(element: HTMLScriptElement; url: URL;
     options: ScriptOptions; onComplete: OnCompleteProc) =
-  let window = element.document.window
-  if not element.scriptingEnabled:
+  let window = element.asNode.document.window
+  if not element.asElement.scriptingEnabled:
     element.onComplete(ScriptResult(t: srtNull))
     return
   window.importMapsAllowed = false
@@ -7736,9 +7211,9 @@ proc fetchExternalModuleGraph(element: HTMLScriptElement; url: URL;
 
 proc fetchInlineModuleGraph(element: HTMLScriptElement; sourceText: string;
     url: URL; options: ScriptOptions; onComplete: OnCompleteProc) =
-  let window = element.document.window
+  let window = element.asNode.document.window
   let ctx = window.jsctx
-  let res = ctx.newJSModuleScript(sourceText, url, options)
+  let res = ctx.newJSModuleScript(sourceText, url, options, window.settings)
   if JS_IsException(res.script.record):
     window.logException(res.script.baseURL)
     element.onComplete(ScriptResult(t: srtNull))
@@ -7747,7 +7222,7 @@ proc fetchInlineModuleGraph(element: HTMLScriptElement; sourceText: string;
 
 proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
     destination: RequestDestination; onComplete: OnCompleteProc) =
-  let window = element.document.window
+  let window = element.asNode.document.window
   let ctx = window.jsctx
   let record = script.record
   if JS_ResolveModule(ctx, record) < 0:
@@ -7756,14 +7231,13 @@ proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
     return
   ctx.setImportMeta(record, true)
   script.record = JS_UNINITIALIZED
-  script.rt = nil
   let res = JS_EvalFunction(ctx, record) # consumes record
   if JS_IsException(res):
     window.logException(script.baseURL)
   JS_FreeValue(ctx, res)
 
 type
-  FetchModuleEnv {.final.} = ref object of BlobOpaque
+  FetchModuleEnv* {.final.} = ref object of BlobOpaque
     window: Window
     element: HTMLScriptElement
     settings: EnvironmentSettings
@@ -7772,6 +7246,11 @@ type
     referrerPolicy: Opt[ReferrerPolicy]
     onComplete: OnCompleteProc
     options: ScriptOptions
+
+proc mark*(rt: JSRuntime; env: FetchModuleEnv; markFunc: JS_MarkFunc) =
+  rt.markObj(env.url, markFunc)
+  rt.markObj(env.window, markFunc)
+  rt.markObj(env.element, markFunc)
 
 proc onFinishFetchModule(response: Response; success: bool) =
   let env = FetchModuleEnv(response.opaque)
@@ -7788,10 +7267,9 @@ proc onFinishFetchModule(response: Response; success: bool) =
     let res = ScriptResult(t: srtNull)
     settings.moduleMap.put(url, moduleType, res)
     element.onComplete(res)
-    return
-  if contentType.isJavaScriptType():
+  elif contentType.isJavaScriptType():
     let source = blob.toOpenArray().toValidUTF8()
-    let res = ctx.newJSModuleScript(source, url, env.options)
+    let res = ctx.newJSModuleScript(source, url, env.options, settings)
     #TODO can't we just return null from newJSModuleScript?
     if JS_IsException(res.script.record):
       window.logException(res.script.baseURL)
@@ -7808,20 +7286,14 @@ proc onFinishFetchModule(response: Response; success: bool) =
 
 proc fetchSingleModuleResponse(opaque: RootRef; response: Response) =
   let env = FetchModuleEnv(opaque)
-  let settings = env.settings
-  let url = env.url
-  let moduleType = env.moduleType
-  let element = env.element
-  let onComplete = env.onComplete
-  let window = env.window
   if response == nil:
     let res = ScriptResult(t: srtNull)
-    settings.moduleMap.put(url, moduleType, res)
-    element.onComplete(res)
-    return
-  env.referrerPolicy = response.getReferrerPolicy()
-  response.onFinish = onFinishFetchModule
-  window.loader.blob(response, env)
+    env.settings.moduleMap.put(env.url, env.moduleType, res)
+    env.onComplete(env.element, res)
+  else:
+    env.referrerPolicy = response.getReferrerPolicy()
+    response.onFinish = onFinishFetchModule
+    env.window.loader.blob(response, env)
 
 #TODO settings object
 proc fetchSingleModule(element: HTMLScriptElement; url: URL;
@@ -7829,7 +7301,7 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
     referrer: URL; isTopLevel: bool; onComplete: OnCompleteProc) =
   let moduleType = mtJavascript
   #TODO moduleRequest
-  let window = element.document.window
+  let window = element.asNode.document.window
   let settings = window.settings
   let res = settings.moduleMap.get(url, moduleType)
   if res != nil:
@@ -7865,40 +7337,40 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
   window.fetch(request, fetchSingleModuleResponse, opaque)
 
 proc execute*(element: HTMLScriptElement) =
-  let document = element.document
-  let window = document.window
+  let document = element.asNode.document
+  let window = document.window #TODO this is wrong
   if document != element.preparationTimeDocument or window == nil:
     return
   let i = document.renderBlockingElements.find(element)
-  if i != -1:
+  if i >= 0:
     document.renderBlockingElements.delete(i)
   #TODO this should work eventually (when module & importmap are implemented)
   #assert element.scriptResult != nil
   if element.scriptResult == nil:
     return
   if element.scriptResult.t == srtNull:
-    window.fireEvent(satError, element, bubbles = false,
+    window.fireEvent(satError, element.asEventTarget, bubbles = false,
       cancelable = false, trusted = true)
     return
-  let needsInc = element.external or element.ctype == stModule
+  let needsInc = element.external or element.scriptType == stModule
   if needsInc:
     inc document.ignoreDestructiveWrites
-  case element.ctype
+  case element.scriptType
   of stClassic:
     let oldCurrentScript = document.currentScript
-    document.currentScript = if not (element.rootNode of ShadowRoot):
+    document.currentScript = if not (element.asNode.rootNode of ShadowRoot):
       element
     else:
-      nil
-    if window.jsctx != nil:
-      let script = element.scriptResult.script
+      HTMLScriptElement(nil)
+    let script = element.scriptResult.script
+    if JS_IsException(script.record):
+      window.logException(script.baseURL)
+    else:
       let ctx = window.jsctx
-      if JS_IsException(script.record):
-        window.logException(script.baseURL)
-      else:
+      if window.settings.scripting != smFalse:
+        element.prepare(ctx)
         let record = script.record
         script.record = JS_UNINITIALIZED
-        script.rt = nil
         let ret = JS_EvalFunction(ctx, record) # consumes record
         if JS_IsException(ret):
           window.logException(script.baseURL)
@@ -7908,106 +7380,106 @@ proc execute*(element: HTMLScriptElement) =
   if needsInc:
     dec document.ignoreDestructiveWrites
   if element.external:
-    window.fireEvent(satLoad, element, bubbles = false, cancelable = false,
-      trusted = true)
+    window.fireEvent(satLoad, element.asEventTarget, bubbles = false,
+      cancelable = false, trusted = true)
 
 # https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
-proc prepare*(element: HTMLScriptElement) =
+proc prepare*(element: HTMLScriptElement; ctx: JSContext) =
   if element.alreadyStarted:
     return
   let parserDocument = element.parserDocument
-  element.parserDocument = nil
-  if parserDocument != nil and not element.attrb(satAsync):
+  element.parserDocument = Document(nil)
+  if parserDocument != nil and not element.asElement.attrb(satAsync):
     element.forceAsync = true
-  let window = element.document.window
-  let sourceText = element.childTextContent
-  if not element.attrb(satSrc) and sourceText == "" or
-      not element.isConnected or window == nil:
+  let window = element.asNode.document.window
+  let sourceText = element.asParentNode.childTextContent
+  if not element.asElement.attrb(satSrc) and sourceText == "" or
+      not element.asNode.isConnected or window == nil:
     return
-  let t = element.attr(satType)
+  let t = element.asElement.attr(satType)
   let typeString = if t != "":
     t.strip(chars = AsciiWhitespace)
-  elif (let l = element.attr(satLanguage); l != ""):
+  elif (let l = element.asElement.attr(satLanguage); l != ""):
     "text/" & l
   else:
     "text/javascript"
   if typeString.isJavaScriptType():
-    element.ctype = stClassic
+    element.scriptType = stClassic
   elif typeString.equalsIgnoreCase("module"):
-    element.ctype = stModule
+    element.scriptType = stModule
   elif typeString.equalsIgnoreCase("importmap"):
-    element.ctype = stImportMap
+    element.scriptType = stImportMap
   else:
     return
   if parserDocument != nil:
     element.parserDocument = parserDocument
     element.forceAsync = false
   element.alreadyStarted = true
-  element.preparationTimeDocument = element.document
-  if parserDocument != nil and parserDocument != element.document or
-      not element.scriptingEnabled or
-      element.attrb(satNomodule) and element.ctype == stClassic:
+  let document = element.asNode.document
+  element.preparationTimeDocument = document
+  if parserDocument != nil and parserDocument != document or
+      not element.asElement.scriptingEnabled or
+      element.asElement.attrb(satNomodule) and element.scriptType == stClassic:
     return
   #TODO content security policy
-  if element.ctype == stClassic and element.attrb(satEvent) and
-      element.attrb(satFor):
-    let f = element.attr(satFor).strip(chars = AsciiWhitespace)
-    let event = element.attr(satEvent).strip(chars = AsciiWhitespace)
+  if element.scriptType == stClassic and element.asElement.attrb(satEvent) and
+      element.asElement.attrb(satFor):
+    let f = element.asElement.attr(satFor).strip(chars = AsciiWhitespace)
+    let event = element.asElement.attr(satEvent).strip(chars = AsciiWhitespace)
     if not f.equalsIgnoreCase("window") or
         not event.equalsIgnoreCase("onload") and
         not event.equalsIgnoreCase("onload()"):
       return
-  let encoding = element.getCharset()
-  let classicCORS = element.crossOrigin
+  let encoding = element.asElement.getCharset()
+  let classicCORS = element.asHTMLElement.crossOrigin
   let parserMetadata = if element.parserDocument != nil:
     pmParserInserted
   else:
     pmNotParserInserted
   var options = ScriptOptions(
     nonce: element.internalNonce,
-    integrity: element.attr(satIntegrity),
+    integrity: element.asElement.attr(satIntegrity),
     parserMetadata: parserMetadata,
-    referrerPolicy: element.referrerPolicy
+    referrerPolicy: element.asHTMLElement.referrerPolicy
   )
-  #TODO settings object
-  var response: Response = nil
-  if element.attrb(satSrc):
-    let src = element.attr(satSrc)
-    let url = element.document.parseURL0(src)
-    element.external = src != "" and element.ctype != stImportMap
-    if element.ctype == stImportMap or url == nil:
-      window.fireEvent(satError, element, bubbles = false,
+  let settings = window.settings #TODO pass it as param instead
+  var response: Response
+  if element.asElement.attrb(satSrc):
+    let src = element.asElement.attr(satSrc)
+    let url = document.parseURL0(src)
+    element.external = src != "" and element.scriptType != stImportMap
+    if element.scriptType == stImportMap or url == nil:
+      window.fireEvent(satError, element.asEventTarget, bubbles = false,
         cancelable = false, trusted = true)
       return
-    if element.renderBlocking:
-      element.blockRendering()
+    if element.asElement.isRenderBlocking():
+      element.asElement.blockRendering()
     element.delayingTheLoadEvent = true
-    if element in element.document.renderBlockingElements:
+    if element.asElement in document.renderBlockingElements:
       options.renderBlocking = true
-    if element.ctype == stClassic:
+    if element.scriptType == stClassic:
       response = element.fetchClassicScript(url, classicCORS, markAsReady)
     else: # stModule
       element.fetchExternalModuleGraph(url, options, markAsReady)
   else:
-    let baseURL = element.document.baseURL
-    case element.ctype
+    let baseURL = document.baseURL
+    case element.scriptType
     of stClassic:
-      let ctx = element.document.window.jsctx
-      let script = ctx.newClassicScript(sourceText, baseURL, options)
+      let script = ctx.newClassicScript(sourceText, baseURL, options, settings)
       element.markAsReady(script)
     of stModule:
       element.delayingTheLoadEvent = true
-      if element.renderBlocking:
-        element.blockRendering()
+      if element.asElement.isRenderBlocking():
+        element.asElement.blockRendering()
         options.renderBlocking = true
       element.fetchInlineModuleGraph(sourceText, baseURL, options, markAsReady)
     of stImportMap:
       #TODO
       element.markAsReady(ScriptResult(t: srtNull))
-  if element.ctype == stClassic and element.attrb(satSrc) or
-      element.ctype == stModule:
+  if element.scriptType == stClassic and element.asElement.attrb(satSrc) or
+      element.scriptType == stModule:
     let prepdoc = element.preparationTimeDocument
-    if element.attrb(satAsync) or element.forceAsync:
+    if element.asElement.attrb(satAsync) or element.forceAsync:
       element.next = prepdoc.scriptsToExecSoon
       prepdoc.scriptsToExecSoon = element
       element.onReady = scriptOnReadyAsync
@@ -8019,7 +7491,7 @@ proc prepare*(element: HTMLScriptElement) =
         prepdoc.scriptsToExecInOrder = element
       prepdoc.scriptsToExecInOrderTail = element
       element.onReady = scriptOnReadyNoParser
-    elif element.ctype == stModule or element.attrb(satDefer):
+    elif element.scriptType == stModule or element.asElement.attrb(satDefer):
       let tail = element.parserDocument.scriptsToExecOnLoadTail
       if tail != nil:
         tail.next = element
@@ -8029,7 +7501,7 @@ proc prepare*(element: HTMLScriptElement) =
       element.onReady = scriptOnReadyRunInParser
     else:
       element.parserDocument.parserBlockingScript = element
-      element.blockRendering()
+      element.asElement.blockRendering()
       element.onReady = scriptOnReadyRunInParser
     if response != nil:
       if response.stream == nil:
@@ -8038,8 +7510,8 @@ proc prepare*(element: HTMLScriptElement) =
         window.loader.resume(response)
         let source = response.stream.readAll().decodeAll(encoding)
         response.stream.sclose()
-        let script = window.jsctx.newClassicScript(source, response.url,
-          options, false)
+        let script = ctx.newClassicScript(source, response.url, options,
+          settings, mutedErrors = false)
         element.markAsReady(script)
   else:
     #TODO if stClassic, parserDocument != nil, parserDocument has a style sheet
@@ -8047,235 +7519,447 @@ proc prepare*(element: HTMLScriptElement) =
     # parser with a script level <= 1
     element.execute()
 
+jsClassPublicDef(HTMLScriptElement):
+  jsextends HTMLElementDef
+
+  proc finalize(rt: JSRuntime; element: HTMLScriptElement) {.jsfin.} =
+    if element.scriptResult != nil and element.scriptResult.t == srtScript:
+      let script = element.scriptResult.script
+      if not JS_IsUninitialized(script.record):
+        script.free()
+
+  proc mark(rt: JSRuntime; element: HTMLScriptElement; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    if element.scriptResult != nil:
+      rt.mark(element.scriptResult, markFunc)
+
+  proc text(this: HTMLScriptElement): string {.jsfget.} =
+    this.asParentNode.childTextContent
+
+  proc setText(ctx: JSContext; this: HTMLScriptElement; ds: DOMString)
+      {.jsfset.} =
+    this.asParentNode.replaceAll(ctx, ds)
+
 # <table>
-proc getTableChild(this: HTMLTableElement; tagType: TagType): Element {.
-    jsmfget("caption", ttCaption), jsmfget("tHead", ttThead),
-    jsmfget("tFoot", ttTfoot).} =
-  this.findFirstChildOf(tagType)
-
-proc setTableChild(ctx: JSContext; this: HTMLTableElement; tagType: TagType;
-    sectVal: JSValueConst): JSValue {.jsmfset("caption", ttCaption),
-    jsmfset("tHead", ttThead), jsmfset("tFoot", ttTfoot).} =
-  var sect: HTMLElement
-  if not JS_IsNull(sectVal):
-    ?ctx.fromJS(sectVal, sect)
-  if sect != nil and sect.tagType != tagType:
-    if tagType != ttCaption and sect of HTMLTableSectionElement:
-      return ctx.insertThrow("wrong element type")
-    return JS_ThrowTypeError(ctx, "%s tag expected", cstring($tagType))
-  let old = this.findFirstChildOf(tagType)
-  if old != nil:
-    old.remove()
-  if sect == nil:
-    return JS_UNDEFINED
-  return ctx.insertBeforeUndefined(this, sect, option(this.firstChild))
-
-proc tBodies(ctx: JSContext; this: HTMLTableElement): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(this, wwmTBodies)
-
-proc rows(this: HTMLTableElement): HTMLCollection {.jsfget.} =
-  if this.cachedRows == nil:
-    this.cachedRows = newHTMLCollection(
-      this,
-      match = proc(this: Collection; node: Node): bool =
-        if Node(node.parentNode) == this.root or
-            Node(node.parentNode.parentNode) == this.root:
-          return this.isRow(node)
-        false,
-      childonly = false
-    )
-  this.cachedRows
-
-proc createTableChild(this: HTMLTableElement; tagType: TagType): Element {.
-    jsmfunc("createCaption", ttCaption), jsmfunc("createTHead", ttThead),
-    jsmfunc("createTBody", ttTbody), jsmfunc("createTFoot", ttTfoot).} =
-  let tagType = cast[TagType](tagType)
-  let before = case tagType
-  of ttCaption: this.firstChild
-  of ttThead: this.findFirstChildNotOf({ttCaption, ttColgroup})
-  of ttTbody: this.findLastChildOf(ttTbody)
-  else: nil # tfoot
-  var element = this.findFirstChildOf(tagType)
-  if element == nil:
-    element = this.document.newHTMLElement(tagType)
-    this.insert(element, before, nil)
-  return element
-
-proc deleteTableChild(this: HTMLTableElement; tag: TagType) {.
-    jsmfunc("deleteCaption", ttCaption), jsmfunc("deleteTHead", ttThead),
-    jsmfunc("deleteTFoot", ttTfoot).} =
-  let element = this.findFirstChildOf(cast[TagType](tag))
-  if element != nil:
-    element.remove()
-
-proc insertRow(ctx: JSContext; this: HTMLTableElement; index: int32 = -1):
-    Opt[HTMLElement] {.jsfunc.} =
-  let rows = this.rows()
-  let nrows = rows.getLength()
-  if index < -1 or index > int64(nrows):
-    JS_ThrowDOMException(ctx, "IndexSizeError", "index out of bounds")
-    return err()
-  let tr = this.document.newHTMLElement(ttTr)
-  if nrows == 0:
-    this.createTableChild(ttTbody).append(tr, ctx)
-  elif index == -1 or uint32(index) == nrows:
-    let it = rows.item(nrows - 1)
-    it.parentNode.append(tr, ctx)
-  else:
-    let it = rows.item(uint32(index))
-    it.parentNode.insert(tr, it, ctx)
-  ok(tr)
-
 proc deleteRow(ctx: JSContext; rows: HTMLCollection; index: int32): Opt[void] =
-  let nrows = rows.getLength()
+  let nrows = rows.length
   if index < -1 or index >= int64(nrows):
     JS_ThrowDOMException(ctx, "IndexSizeError", "index out of bounds")
     return err()
   if index == -1:
     let it = rows.item(uint32(nrows - 1))
-    it.remove()
+    it.asNode.removeImpl(ctx)
   elif nrows > 0:
     let it = rows.item(uint32(index))
-    it.remove()
+    it.asNode.removeImpl(ctx)
   ok()
 
-proc deleteRow(ctx: JSContext; this: HTMLTableElement; index: int32 = -1):
-    Opt[void] {.jsfunc.} =
-  let rows = this.rows()
-  return ctx.deleteRow(rows, index)
+jsClassDef(HTMLTableElement):
+  jsextends HTMLElementDef
+
+  proc getTableChild(this: HTMLTableElement; tagType: TagType): Element {.
+      jsmfget("caption", ttCaption), jsmfget("tHead", ttThead),
+      jsmfget("tFoot", ttTfoot).} =
+    this.asParentNode.findFirstChildOf(tagType)
+
+  proc setTableChild(ctx: JSContext; this: HTMLTableElement; tagType: TagType;
+      sectVal: JSValueConst): JSValue {.jsmfset("caption", ttCaption),
+      jsmfset("tHead", ttThead), jsmfset("tFoot", ttTfoot).} =
+    var sect: HTMLElement
+    if not JS_IsNull(sectVal):
+      ?ctx.fromJS(sectVal, sect)
+    if sect != nil and sect.tagType != tagType:
+      if tagType != ttCaption and sect of HTMLTableSectionElement:
+        return ctx.insertThrow("wrong element type")
+      return JS_ThrowTypeError(ctx, "%s tag expected", cstring($tagType))
+    let old = this.asParentNode.findFirstChildOf(tagType)
+    if old != nil:
+      ctx.remove(old)
+    if sect == nil:
+      return JS_UNDEFINED
+    return ctx.insertBeforeUndefined(this.asNode, sect.asNode,
+      jsNull(this.asParentNode.firstChild))
+
+  proc tBodies(this: HTMLTableElement): HTMLCollection {.jsnfget.} =
+    this.asParentNode.getChildrenOf(cnTBodies, cmChildren, ttTbody)
+
+  proc rows(this: HTMLTableElement): HTMLCollection {.jsnfget.} =
+    this.asParentNode.getHTMLCollection(isRowOf, cmSubtree, cnRows)
+
+  proc createTableChild(ctx: JSContext; this: HTMLTableElement;
+      tagType: TagType): Element {.jsmfunc("createCaption", ttCaption),
+      jsmfunc("createTHead", ttThead), jsmfunc("createTBody", ttTbody),
+      jsmfunc("createTFoot", ttTfoot).} =
+    let before = case tagType
+    of ttCaption: this.asParentNode.firstChild
+    of ttThead:
+      this.asParentNode.findFirstChildNotOf({ttCaption, ttColgroup}).asNode
+    of ttTbody: this.asParentNode.findLastChildOf(ttTbody).asNode
+    else: Node(nil) # tfoot
+    var element = this.asParentNode.findFirstChildOf(tagType)
+    if element == nil:
+      element = this.asNode.document.newHTMLElement(tagType).asElement
+      if element != nil:
+        this.asParentNode.insert(ctx, element.asNode, before)
+    return element
+
+  proc deleteTableChild(ctx: JSContext; this: HTMLTableElement; tag: TagType)
+      {.jsmfunc("deleteCaption", ttCaption), jsmfunc("deleteTHead", ttThead),
+        jsmfunc("deleteTFoot", ttTfoot).} =
+    let element = this.asParentNode.findFirstChildOf(tag)
+    if element != nil:
+      ctx.remove(element)
+
+  proc insertRow(ctx: JSContext; this: HTMLTableElement; index: int32 = -1):
+      Opt[HTMLElement] {.jsfunc.} =
+    let rows = this.rows()
+    if rows == nil:
+      JS_ThrowOutOfMemory(ctx)
+      return err()
+    let nrows = rows.asCollection.getLength()
+    if index < -1 or index > int64(nrows):
+      JS_ThrowDOMException(ctx, "IndexSizeError", "index out of bounds")
+      return err()
+    let tr = this.asNode.document.newHTMLElement(ttTr)
+    if nrows == 0:
+      let tbody = ctx.createTableChild(this, ttTbody)
+      if tbody != nil:
+        tbody.asParentNode.append(ctx, tr.asNode)
+    elif index == -1 or uint32(index) == nrows:
+      let it = rows.item(nrows - 1)
+      it.parentNode.append(ctx, tr.asNode)
+    else:
+      let it = rows.item(uint32(index))
+      it.parentNode.insert(ctx, tr.asNode, it.asNode)
+    ok(tr)
+
+  proc deleteRow(ctx: JSContext; this: HTMLTableElement; index: int32 = -1):
+      Opt[void] {.jsfunc.} =
+    let rows = this.rows()
+    if rows == nil:
+      JS_ThrowOutOfMemory(ctx)
+      return err()
+    return ctx.deleteRow(rows, index)
 
 # <tbody>
-proc rows(this: HTMLTableSectionElement): HTMLCollection {.jsfget.} =
-  if this.cachedRows == nil:
-    this.cachedRows = newHTMLCollection(
-      this,
-      match = isRow,
-      childonly = true
-    )
-  this.cachedRows
+jsClassDef(HTMLTableSectionElement):
+  jsextends HTMLElementDef
 
-proc insertRow(ctx: JSContext; this: HTMLTableSectionElement;
-    index: int32 = -1): Opt[HTMLElement] {.jsfunc.} =
-  let rows = this.rows()
-  let nrows = rows.getLength()
-  if index < -1 or index > int64(nrows):
-    JS_ThrowDOMException(ctx, "index out of bounds", "IndexSizeError")
-    return err()
-  let tr = this.document.newHTMLElement(ttTr)
-  if index == -1 or index == int64(nrows):
-    this.append(tr, ctx)
-  else:
-    let it = rows.item(uint32(index))
-    this.insert(tr, it, ctx)
-  ok(tr)
+  proc rows(this: HTMLTableSectionElement): HTMLCollection {.jsnfget.} =
+    this.asParentNode.getChildrenOf(cnRows, cmChildren, ttTr)
 
-proc deleteRow(ctx: JSContext; this: HTMLTableSectionElement;
-    index: int32 = -1): Opt[void] {.jsfunc.} =
-  let rows = this.rows()
-  return ctx.deleteRow(rows, index)
+  proc insertRow(ctx: JSContext; this: HTMLTableSectionElement;
+      index: int32 = -1): Opt[HTMLElement] {.jsfunc.} =
+    let rows = this.rows()
+    let nrows = rows.asCollection.getLength()
+    if index < -1 or index > int64(nrows):
+      JS_ThrowDOMException(ctx, "index out of bounds", "IndexSizeError")
+      return err()
+    let tr = this.asNode.document.newHTMLElement(ttTr)
+    let before = if index == -1 or index == int64(nrows):
+      Node(nil)
+    else:
+      rows.item(uint32(index)).asNode
+    this.asParentNode.insert(ctx, tr.asNode, before)
+    ok(tr)
+
+  proc deleteRow(ctx: JSContext; this: HTMLTableSectionElement;
+      index: int32 = -1): Opt[void] {.jsfunc.} =
+    let rows = this.rows()
+    if rows == nil:
+      JS_ThrowOutOfMemory(ctx)
+      return err()
+    return ctx.deleteRow(rows, index)
 
 # <tr>
-proc cells(ctx: JSContext; this: HTMLTableRowElement): JSValue {.jsfget.} =
-  return ctx.getWeakCollection(this, wwmCells)
+jsClassDef(HTMLTableRowElement):
+  jsextends HTMLElementDef
 
-proc rowIndex(this: HTMLTableRowElement): int {.jsfget.} =
-  let table = HTMLTableElement(this.findAncestor(ttTable))
-  if table == nil:
+  proc cells(this: HTMLTableRowElement): HTMLCollection {.jsnfget.} =
+    this.asParentNode.getChildrenOf(cnCells, cmChildren, ttTd, ttTh)
+
+  proc rowIndex(this: HTMLTableRowElement): int {.jsfget.} =
+    let table = this.asNode.findAncestor(ttTable) as HTMLTableElement
+    if table == nil:
+      return -1
+    let rows = table.rows()
+    rows.asCollection.findNode(this.asNode)
+
+  proc sectionRowIndex(this: HTMLTableRowElement): int {.jsfget.} =
+    let parent = this.asNode.parentElement
+    if parent.tagType == ttTable:
+      return this.rowIndex()
+    if (let parent = parent as HTMLTableSectionElement; parent != nil):
+      let rows = parent.rows()
+      return rows.asCollection.findNode(this.asNode)
     return -1
-  let rows = table.rows()
-  rows.findNode(this)
 
-proc sectionRowIndex(this: HTMLTableRowElement): int {.jsfget.} =
-  let parent = this.parentElement
-  if parent.tagType == ttTable:
-    return this.rowIndex()
-  if parent of HTMLTableSectionElement:
-    let parent = HTMLTableSectionElement(parent)
-    let rows = parent.rows()
-    return rows.findNode(this)
-  return -1
+# <template>
+jsClassPublicDef(HTMLTemplateElement):
+  jsextends HTMLElementDef
 
-# <textarea>
-proc value*(this: HTMLTextAreaElement): string {.jsfget.} =
-  if this.dirty:
-    return this.internalValue
-  return this.childTextContent
-
-proc setValue*(this: HTMLTextAreaElement; s: sink string) =
-  this.dirty = true
-  this.internalValue = s
-  this.invalidate()
-
-proc setValue(this: HTMLTextAreaElement; ds: DOMString) {.jsfset: "value".} =
-  this.setValue($ds)
-
-proc defaultValue(this: HTMLTextAreaElement): string {.jsfget.} =
-  this.textContent
-
-proc setDefaultValue(ctx: JSContext; this: HTMLTextAreaElement; ds: DOMString)
-    {.jsfset: "defaultValue".} =
-  this.replaceAll(ds, ctx)
+  jsget HTMLTemplateElement, content
 
 # <title>
-proc text(this: HTMLTitleElement): string {.jsfget.} =
-  return this.textContent
+jsClassRaw(HTMLTitleElementDef, "HTMLTitleElement"):
+  jsextends HTMLElementDef
 
-proc setText(ctx: JSContext; this: HTMLTitleElement; ds: DOMString) {.
-    jsfset: "text".} =
-  this.replaceAll(ds, ctx)
+  proc titleText(this: HTMLElement): string {.jsfget: "text".} =
+    this.asParentNode.childTextContent
 
-# <video>
-proc getSrc*(this: HTMLElement): tuple[src, contentType: string] =
-  let src = this.attr(satSrc)
-  if src != "":
-    return (src, "")
-  for el in this.elementDescendants(ttSource):
-    let src = el.attr(satSrc)
-    if src != "":
-      return (src, el.attr(satType))
-  return ("", "")
+  proc setTitleText(ctx: JSContext; this: HTMLElement; ds: DOMString) {.
+      jsfset: "text".} =
+    this.asParentNode.replaceAll(ctx, ds)
 
-proc addElementReflection(ctx: JSContext; class: JSClassID): Opt[void] =
-  let proto = JS_GetClassProto(ctx, class)
-  for i in ReflectAllStartIndex ..< int16(ReflectMap.len):
-    let name = $ReflectMap[i].funcname
-    if ctx.addReflectFunction(proto, cstring(name), jsReflectGet, jsReflectSet,
-        cint(i)).isErr:
+# misc
+htmlClassDef(HTMLVideoElement)
+htmlClassDef(HTMLAudioElement)
+htmlClassDef(HTMLIFrameElement)
+htmlClassDef(HTMLFrameElement)
+htmlClassDef(HTMLHeadElement)
+htmlClassDef(HTMLObjectElement)
+htmlClassDef(HTMLSlotElement)
+
+template htmlClassRaw(name: untyped) =
+  jsClassRaw(`name Def`, astToStr(name)):
+    jsextends HTMLElementDef
+
+htmlClassRaw(HTMLSpanElement)
+htmlClassRaw(HTMLHeadingElement)
+htmlClassRaw(HTMLBRElement)
+htmlClassRaw(HTMLHtmlElement)
+htmlClassRaw(HTMLModElement)
+htmlClassRaw(HTMLParagraphElement)
+htmlClassRaw(HTMLParamElement)
+htmlClassRaw(HTMLDivElement)
+htmlClassRaw(HTMLDListElement)
+htmlClassRaw(HTMLFontElement)
+htmlClassRaw(HTMLBodyElement)
+htmlClassRaw(HTMLHRElement)
+htmlClassRaw(HTMLUnknownElement)
+htmlClassRaw(HTMLPreElement)
+htmlClassRaw(HTMLTableColElement)
+htmlClassRaw(HTMLTableCellElement)
+htmlClassRaw(HTMLDataListElement)
+htmlClassRaw(HTMLMeterElement)
+htmlClassRaw(HTMLFieldSetElement)
+htmlClassRaw(HTMLLegendElement)
+htmlClassRaw(HTMLSelectedContentElement)
+htmlClassRaw(HTMLOptGroupElement)
+htmlClassRaw(HTMLMenuElement)
+htmlClassRaw(HTMLUListElement)
+htmlClassRaw(HTMLOListElement)
+htmlClassRaw(HTMLLIElement)
+htmlClassRaw(HTMLTableCaptionElement)
+htmlClassRaw(HTMLMetaElement)
+htmlClassRaw(HTMLTimeElement)
+htmlClassRaw(HTMLQuoteElement)
+htmlClassRaw(HTMLDialogElement)
+htmlClassRaw(HTMLDataElement)
+htmlClassRaw(HTMLTrackElement)
+htmlClassRaw(HTMLPictureElement)
+htmlClassRaw(HTMLSourceElement)
+htmlClassRaw(HTMLMapElement)
+htmlClassRaw(HTMLDetailsElement)
+htmlClassRaw(HTMLEmbedElement)
+
+jsClassDef(SVGElement):
+  jsextends ElementDef
+
+jsClassPublicDef(SVGSVGElement):
+  jsextends SVGElementDef
+
+# this is here so that we have access to all class ids
+proc newHTMLElementInternal(tagType: TagType; document: Document):
+    HTMLElement =
+  case tagType
+  of ttTemplate:
+    let content = newDocumentFragment(document)
+    if content == nil:
+      return HTMLElement(nil)
+    let templ = jsNew HTMLTemplateElementObj(content: content)
+    if templ != nil:
+      templ.content.host = templ.asElement
+    return templ.asHTMLElement
+  of ttCanvas:
+    let imageId = if document.window != nil:
+      document.window.getImageId()
+    else:
+      -1
+    let bitmap = if document.scriptingEnabled:
+      NetworkBitmap(
+        contentType: "image/x-cha-canvas",
+        imageId: imageId,
+        cacheId: -1,
+        width: 300,
+        height: 150
+      )
+    else:
+      nil
+    return (jsNew HTMLCanvasElementObj(bitmap: bitmap)).asHTMLElement
+  of ttA: return (jsNew HTMLAnchorElementObj()).asHTMLElement
+  of ttLink: return (jsNew HTMLLinkElementObj()).asHTMLElement
+  of ttStyle: return (jsNew HTMLStyleElementObj()).asHTMLElement
+  of ttScript:
+    return (jsNew HTMLScriptElementObj(forceAsync: true)).asHTMLElement
+  of ttBase: return (jsNew HTMLBaseElementObj()).asHTMLElement
+  of ttImg: return (jsNew HTMLImageElementObj()).asHTMLElement
+  of ttVideo: return (jsNew HTMLVideoElementObj()).asHTMLElement
+  of ttAudio: return (jsNew HTMLAudioElementObj()).asHTMLElement
+  of ttTable: return (jsNew HTMLTableElementObj()).asHTMLElement
+  of ttTr: return (jsNew HTMLTableRowElementObj()).asHTMLElement
+  of ttTbody, ttThead, ttTfoot:
+    return (jsNew HTMLTableSectionElementObj()).asHTMLElement
+  of ttIframe: return (jsNew HTMLIFrameElementObj()).asHTMLElement
+  of ttFrame: return (jsNew HTMLFrameElementObj()).asHTMLElement
+  of ttObject: return (jsNew HTMLObjectElementObj()).asHTMLElement
+  of ttSlot: return (jsNew HTMLSlotElementObj()).asHTMLElement
+  of ttHead: return (jsNew HTMLHeadElementObj()).asHTMLElement
+  of ttForm, ttInput, ttSelect, ttOption, ttButton, ttTextarea, ttOutput,
+      ttLabel, ttArea:
+    return newHTMLElementForm(tagType)
+  else: discard
+  # These interfaces only have reflectors, which we can implement without a
+  # Nim type.
+  #TODO probably we could do this for a lot more by taking HTMLElement as
+  # `this'; then, fromJSThis will still work as expected as we are passing
+  # the class id there.
+  let classid = case tagType
+  of ttOptgroup: HTMLOptGroupElementDef.id
+  of ttH1, ttH2, ttH3, ttH4, ttH5, ttH6: HTMLHeadingElementDef.id
+  of ttBr: HTMLBRElementDef.id
+  of ttSpan: HTMLSpanElementDef.id
+  of ttOl: HTMLOListElementDef.id
+  of ttUl: HTMLUListElementDef.id
+  of ttMenu: HTMLMenuElementDef.id
+  of ttLi: HTMLLIElementDef.id
+  of ttCaption: HTMLTableCaptionElementDef.id
+  of ttMeta: HTMLMetaElementDef.id
+  of ttQ, ttBlockquote: HTMLQuoteElementDef.id
+  of ttTime: HTMLTimeElementDef.id
+  of ttData: HTMLDataElementDef.id
+  of ttIns, ttDel: HTMLModElementDef.id
+  of ttHtml: HTMLHtmlElementDef.id
+  of ttP: HTMLParagraphElementDef.id
+  of ttParam: HTMLParamElementDef.id
+  of ttProgress: HTMLProgressElementDef.id
+  of ttDiv: HTMLDivElementDef.id
+  of ttDl: HTMLDListElementDef.id
+  of ttFont: HTMLFontElementDef.id
+  of ttBody: HTMLBodyElementDef.id
+  of ttHr: HTMLHRElementDef.id
+  of ttTrack: HTMLTrackElementDef.id
+  of ttPre: HTMLPreElementDef.id
+  of ttCol, ttColgroup: HTMLTableColElementDef.id
+  of ttTd, ttTh: HTMLTableCellElementDef.id
+  of ttDatalist: HTMLDataListElementDef.id
+  of ttMeter: HTMLMeterElementDef.id
+  of ttFieldset: HTMLFieldSetElementDef.id
+  of ttLegend: HTMLLegendElementDef.id
+  of ttSelectedcontent: HTMLSelectedContentElementDef.id
+  of ttDialog: HTMLDialogElementDef.id
+  of ttPicture: HTMLPictureElementDef.id
+  of ttSource: HTMLSourceElementDef.id
+  of ttTitle: HTMLTitleElementDef.id
+  of ttMap: HTMLMapElementDef.id
+  of ttDetails: HTMLDetailsElementDef.id
+  of ttEmbed: HTMLEmbedElementDef.id
+  of ttArticle, ttSection, ttNav, ttAside, ttHgroup, ttHeader, ttFooter,
+      ttAddress, ttDt, ttDd, ttFigure, ttFigcaption, ttMain, ttSearch, ttEm,
+      ttStrong, ttSmall, ttS, ttCite, ttDfn, ttAbbr, ttRuby, ttRt, ttRp,
+      ttCode, ttVar, ttSamp, ttKbd, ttSub, ttSup, ttI, ttB, ttU, ttMark,
+      ttBdi, ttBdo, ttWbr, ttSummary, ttNoscript:
+    HTMLElementDef.id
+  else:
+    HTMLUnknownElementDef.id
+  var p: HTMLElement
+  jsNew0(cast[ptr pointer](addr p), classid, csize_t(sizeof(HTMLElementObj)))
+  move(p)
+
+#TODO custom elements
+proc newElement(document: Document;
+    localName, namespaceURI, tagName: sink CAtom): Element =
+  let tagType = localName.toTagType()
+  let element = if namespaceURI == satNamespaceHTML:
+    newHTMLElementInternal(tagType, document).asElement
+  elif namespaceURI == satNamespaceSVG:
+    if tagType == ttSvg:
+      (jsNew SVGSVGElementObj()).asElement
+    else:
+      (jsNew SVGElementObj()).asElement
+  else:
+    jsNew ElementObj()
+  element.id = satUempty.view()
+  element.localName = localName
+  element.namespaceURI = namespaceURI
+  element.tagName = tagName
+  element.internalNext = document.asNode
+  if document.quirksMode == qmQuirks:
+    element.flags.incl(efQuirks)
+  element.custom = if localName.isValidCustomElementName():
+    cesUndefined
+  else:
+    cesUncustomized
+  element
+
+proc addHTMLElementReflection(ctx: JSContext): Opt[void] =
+  if ctx.getOpaque() == nil:
+    return ok()
+  let proto = JS_GetClassProto(ctx, HTMLElementDef.id)
+  for i in SuperGlobalAttrs:
+    if ctx.addReflectFunction(proto, cstring($ReflectMap[i].attrname),
+        jsReflectGet, jsReflectSet, cint(i)).isErr:
+      JS_FreeValue(ctx, proto)
+      return err()
+  for (name, eventType) in ScriptEventMap:
+    if ctx.definePropertyGetSetCE(proto, cstring($name), jsReflectEventGet,
+        jsReflectEventSet, cint(eventType)).isErr:
       JS_FreeValue(ctx, proto)
       return err()
   JS_FreeValue(ctx, proto)
   ok()
 
-proc addAttributeReflection(ctx: JSContext; class: JSClassID;
-    attrs: openArray[int16]; base: JSClassID): Opt[void] =
+proc reflectAttributes*(ctx: JSContext; class: JSClassID;
+    attrs: varargs[ReflectedAttr]): Opt[void] =
   let proto = JS_GetClassProto(ctx, class)
-  let diff = (uint16(class) - uint16(base)) shl 9
+  let diff = (uint16(class) - uint16(HTMLElementDef.id)) shl 9
   for i in attrs:
-    if ctx.addReflectFunction(proto, cstring($ReflectMap[i].funcname),
-        jsReflectGet, jsReflectSet, cint(diff or uint16(i))).isErr:
+    let name = ReflectMap[i].attrname
+    let nameStr = $name
+    let nameCStr = case name
+    of satFor: cstring"htmlFor"
+    of satValuetype: cstring"valueType"
+    of satNovalidate: cstring"noValidate"
+    of satSelected: cstring"defaultSelected"
+    of satHttpEquiv: cstring"httpEquiv"
+    of satDatetime: cstring"dateTime"
+    of satCrossorigin: cstring"crossOrigin"
+    of satReferrerpolicy: cstring"referrerPolicy"
+    of satFormmethod: cstring"formMethod"
+    of satIsmap: cstring"isMap"
+    of satUsemap: cstring"useMap"
+    else: cstring(nameStr)
+    if ctx.addReflectFunction(proto, nameCStr, jsReflectGet, jsReflectSet,
+        cint(diff or uint16(i))).isErr:
       JS_FreeValue(ctx, proto)
       return err()
   JS_FreeValue(ctx, proto)
   ok()
 
-proc addConstructorAlias(ctx: JSContext; fun: JSCFunction; class: JSClassID;
-    name: string): Opt[void] =
-  let val = JS_NewCFunction2(ctx, fun, name, 0, JS_CFUNC_constructor, 0)
+proc addConstructorAlias*(ctx: JSContext; fun: JSCFunction; class: JSClassID;
+    name: cstring): Opt[void] =
+  let val = JS_NewCFunction2(ctx, fun, cstringConst(name), 0,
+    JS_CFUNC_constructor, 0)
   if JS_IsException(val):
     return err()
-  discard JS_SetConstructorBit(ctx, val, true)
   let proto = JS_GetClassProto(ctx, class)
-  if ctx.defineProperty(val, "prototype", proto) == dprException:
+  if ctx.defineProperty(val, "prototype", proto).isErr:
     JS_FreeValue(ctx, val)
     return err()
-  let global = JS_GetGlobalObject(ctx)
-  let res = ctx.definePropertyCW(global, name, val)
-  JS_FreeValue(ctx, global)
-  if res == dprException:
-    return err()
+  ?ctx.definePropertyCW(ctx.getOpaque().global, name, val)
   ok()
 
-proc addHyperlinkUtils(ctx: JSContext; class: JSClassID): Opt[void] =
+proc addHyperlinkUtils*(ctx: JSContext; class: JSClassID): Opt[void] =
   const atoms = [
     satHref, satOrigin, satProtocol, satUsername, satPassword, satHost,
     satHostname, satPort, satPathname, satSearch, satHash
@@ -8283,234 +7967,169 @@ proc addHyperlinkUtils(ctx: JSContext; class: JSClassID): Opt[void] =
   let proto = JS_GetClassProto(ctx, class)
   for atom in atoms:
     if ctx.definePropertyGetSetCE(proto, cstring($atom), hyperlinkGet,
-        hyperlinkSet, cint(atom)) == dprException:
+        hyperlinkSet, cint(atom)).isErr:
       JS_FreeValue(ctx, proto)
       return err()
   JS_FreeValue(ctx, proto)
   ok()
 
-proc registerElements(ctx: JSContext; nodeCID: JSClassID): Opt[void] =
-  let elementCID = ctx.registerType(Element, parent = nodeCID)
-  if elementCID == JS_INVALID_CLASS_ID:
-    return err()
-  let htmlElementCID = ctx.registerType(HTMLElement, parent = elementCID)
-  if htmlElementCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.addElementReflection(htmlElementCID)
-  template register(t: typed; tags: openArray[TagType]) =
-    let class = ctx.registerType(t, parent = htmlElementCID)
-    if class == JS_INVALID_CLASS_ID:
-      return err()
-    const attrs = TagReflectMap[tags[0]]
-    when attrs.len > 0:
-      ?ctx.addAttributeReflection(class, attrs, htmlElementCID)
-  template register2(t: typed; tag: TagType): JSClassID =
-    let class = ctx.registerType(t, parent = htmlElementCID)
-    if class == JS_INVALID_CLASS_ID:
-      return err()
-    const attrs = TagReflectMap[tag]
-    when attrs.len > 0:
-      ?ctx.addAttributeReflection(class, attrs, htmlElementCID)
-    class
-  template register(t: typed; tag: TagType) =
-    register(t, [tag])
-  register(HTMLInputElement, ttInput)
-  let anchorCID = register2(HTMLAnchorElement, ttA)
-  register(HTMLSelectElement, ttSelect)
-  register(HTMLSpanElement, ttSpan)
-  register(HTMLOptGroupElement, ttOptgroup)
-  let optionCID = register2(HTMLOptionElement, ttOption)
-  register(HTMLHeadingElement, [ttH1, ttH2, ttH3, ttH4, ttH5, ttH6])
-  register(HTMLBRElement, ttBr)
-  register(HTMLMenuElement, ttMenu)
-  register(HTMLUListElement, ttUl)
-  register(HTMLOListElement, ttOl)
-  register(HTMLLIElement, ttLi)
-  register(HTMLStyleElement, ttStyle)
-  register(HTMLLinkElement, ttLink)
-  register(HTMLFormElement, ttForm)
-  register(HTMLTemplateElement, ttTemplate)
-  register(HTMLUnknownElement, ttUnknown)
-  register(HTMLScriptElement, ttScript)
-  register(HTMLBaseElement, ttBase)
-  let areaCID = register2(HTMLAreaElement, ttArea)
-  register(HTMLButtonElement, ttButton)
-  register(HTMLTextAreaElement, ttTextarea)
-  register(HTMLLabelElement, ttLabel)
-  register(HTMLCanvasElement, ttCanvas)
-  let imageCID = register2(HTMLImageElement, ttImg)
-  register(HTMLVideoElement, ttVideo)
-  let audioCID = register2(HTMLAudioElement, ttAudio)
-  register(HTMLIFrameElement, ttIframe)
-  register(HTMLTableElement, ttTable)
-  register(HTMLTableCaptionElement, ttCaption)
-  register(HTMLTableRowElement, ttTr)
-  register(HTMLTableSectionElement, [ttTbody, ttThead, ttTfoot])
-  register(HTMLMetaElement, ttMeta)
-  register(HTMLDetailsElement, ttDetails)
-  register(HTMLFrameElement, ttFrame)
-  register(HTMLTimeElement, ttTime)
-  register(HTMLQuoteElement, [ttBlockquote, ttQ])
-  register(HTMLDataElement, ttData)
-  register(HTMLHeadElement, ttHead)
-  register(HTMLTitleElement, ttTitle)
-  register(HTMLObjectElement, ttObject)
-  register(HTMLSourceElement, ttSource)
-  register(HTMLModElement, [ttIns, ttDel])
-  register(HTMLProgressElement, ttProgress)
-  register(HTMLSlotElement, ttSlot)
-  register(HTMLOutputElement, ttOutput)
-  register(HTMLHtmlElement, ttHtml)
-  register(HTMLParagraphElement, ttP)
-  register(HTMLDivElement, ttDiv)
-  register(HTMLDListElement, ttDl)
-  register(HTMLFontElement, ttFont)
-  register(HTMLBodyElement, ttBody)
-  register(HTMLHRElement, ttHr)
-  register(HTMLPreElement, ttPre)
-  register(HTMLPictureElement, ttPicture)
-  register(HTMLEmbedElement, ttEmbed)
-  register(HTMLTrackElement, ttTrack)
-  register(HTMLMapElement, ttMap)
-  register(HTMLTableColElement, [ttCol, ttColgroup])
-  register(HTMLTableCellElement, [ttTd, ttTh])
-  register(HTMLDataListElement, ttDatalist)
-  register(HTMLMeterElement, ttMeter)
-  register(HTMLFieldSetElement, ttFieldset)
-  register(HTMLLegendElement, ttLegend)
-  register(HTMLSelectedContentElement, ttSelectedcontent)
-  register(HTMLDialogElement, ttDialog)
-  # 65/127 (warning: the 128th interface won't fit in the top 7 bits of
+proc registerElements(ctx: JSContext): Opt[void] =
+  ?ctx.registerClass(ElementDef)
+  ?ctx.registerFakeClass(AttrDummyElementDef)
+  ?ctx.registerClass(HTMLElementDef)
+  ?ctx.addHTMLElementReflection()
+  ?ctx.registerFakeClass(SheetElementDef)
+  ?ctx.registerClass(HTMLAnchorElementDef)
+  ?ctx.registerClass(HTMLSpanElementDef)
+  ?ctx.registerClass(HTMLOptGroupElementDef)
+  ?ctx.registerClass(HTMLHeadingElementDef)
+  ?ctx.registerClass(HTMLBRElementDef)
+  ?ctx.registerClass(HTMLMenuElementDef)
+  ?ctx.registerClass(HTMLUListElementDef)
+  ?ctx.registerClass(HTMLOListElementDef)
+  ?ctx.registerClass(HTMLLIElementDef)
+  ?ctx.registerClass(HTMLStyleElementDef)
+  ?ctx.registerClass(HTMLLinkElementDef)
+  ?ctx.registerClass(HTMLTemplateElementDef)
+  ?ctx.registerClass(HTMLUnknownElementDef)
+  ?ctx.registerClass(HTMLScriptElementDef)
+  ?ctx.registerClass(HTMLBaseElementDef)
+  ?ctx.registerClass(HTMLCanvasElementDef)
+  ?ctx.registerClass(HTMLImageElementDef)
+  ?ctx.registerClass(HTMLVideoElementDef)
+  ?ctx.registerClass(HTMLAudioElementDef)
+  ?ctx.registerClass(HTMLIFrameElementDef)
+  ?ctx.registerClass(HTMLTableElementDef)
+  ?ctx.registerClass(HTMLTableCaptionElementDef)
+  ?ctx.registerClass(HTMLTableRowElementDef)
+  ?ctx.registerClass(HTMLTableSectionElementDef)
+  ?ctx.registerClass(HTMLMetaElementDef)
+  ?ctx.registerClass(HTMLDetailsElementDef)
+  ?ctx.registerClass(HTMLFrameElementDef)
+  ?ctx.registerClass(HTMLTimeElementDef)
+  ?ctx.registerClass(HTMLQuoteElementDef)
+  ?ctx.registerClass(HTMLDataElementDef)
+  ?ctx.registerClass(HTMLHeadElementDef)
+  ?ctx.registerClass(HTMLTitleElementDef)
+  ?ctx.registerClass(HTMLObjectElementDef)
+  ?ctx.registerClass(HTMLSourceElementDef)
+  ?ctx.registerClass(HTMLModElementDef)
+  ?ctx.registerClass(HTMLProgressElementDef)
+  ?ctx.registerClass(HTMLSlotElementDef)
+  ?ctx.registerClass(HTMLHtmlElementDef)
+  ?ctx.registerClass(HTMLParagraphElementDef)
+  ?ctx.registerClass(HTMLParamElementDef)
+  ?ctx.registerClass(HTMLDivElementDef)
+  ?ctx.registerClass(HTMLDListElementDef)
+  ?ctx.registerClass(HTMLFontElementDef)
+  ?ctx.registerClass(HTMLBodyElementDef)
+  ?ctx.registerClass(HTMLHRElementDef)
+  ?ctx.registerClass(HTMLPreElementDef)
+  ?ctx.registerClass(HTMLPictureElementDef)
+  ?ctx.registerClass(HTMLEmbedElementDef)
+  ?ctx.registerClass(HTMLTrackElementDef)
+  ?ctx.registerClass(HTMLMapElementDef)
+  ?ctx.registerClass(HTMLTableColElementDef)
+  ?ctx.registerClass(HTMLTableCellElementDef)
+  ?ctx.registerClass(HTMLDataListElementDef)
+  ?ctx.registerClass(HTMLMeterElementDef)
+  ?ctx.registerClass(HTMLFieldSetElementDef)
+  ?ctx.registerClass(HTMLLegendElementDef)
+  ?ctx.registerClass(HTMLSelectedContentElementDef)
+  ?ctx.registerClass(HTMLDialogElementDef)
+  # 69/127 (warning: the 128th interface won't fit in the top 7 bits of
   # the getter/setter magic)
-  let svgElementCID = ctx.registerType(SVGElement, parent = elementCID)
-  if svgElementCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(SVGSVGElement, parent = svgElementCID)
-  ?ctx.addConstructorAlias(newAudio, audioCID, "Audio")
-  ?ctx.addConstructorAlias(newImage, imageCID, "Image")
-  ?ctx.addConstructorAlias(newOption, optionCID, "Option")
-  ?ctx.addHyperlinkUtils(anchorCID)
-  ctx.addHyperlinkUtils(areaCID)
+  ?ctx.registerClass(SVGElementDef)
+  ?ctx.registerClass(SVGSVGElementDef)
+  if ctx.getOpaque() != nil:
+    ?ctx.addConstructorAlias(newAudio, HTMLAudioElementDef.id, "Audio")
+    ?ctx.addConstructorAlias(newImage, HTMLImageElementDef.id, "Image")
+    ?ctx.addHyperlinkUtils(HTMLAnchorElementDef.id)
+    ?ctx.reflectAttributes(HTMLAnchorElementDef.id, raTarget, raName, raRel,
+      raType)
+    ?ctx.reflectAttributes(HTMLOptGroupElementDef.id, raDisabled)
+    ?ctx.reflectAttributes(HTMLOListElementDef.id, raReversed, raType)
+    ?ctx.reflectAttributes(HTMLLIElementDef.id, raValueLong)
+    ?ctx.reflectAttributes(HTMLLinkElementDef.id, raTarget, raRel, raType,
+      raDisabled, raHref)
+    ?ctx.reflectAttributes(HTMLScriptElementDef.id, raType, raCrossorigin,
+      raReferrerpolicy, raSrc)
+    ?ctx.reflectAttributes(HTMLBaseElementDef.id, raTarget)
+    ?ctx.reflectAttributes(HTMLCanvasElementDef.id, raWidth, raHeight)
+    ?ctx.reflectAttributes(HTMLImageElementDef.id, raName, raAlt, raSrcset,
+      raSizes, raCrossorigin, raReferrerpolicy, raUsemap, raIsmap, raSrc)
+    ?ctx.reflectAttributes(HTMLIFrameElementDef.id, raName, raSrc)
+    ?ctx.reflectAttributes(HTMLMetaElementDef.id, raName, raHttpequiv,
+      raContent, raMedia)
+    ?ctx.reflectAttributes(HTMLDetailsElementDef.id, raName, raOpen)
+    ?ctx.reflectAttributes(HTMLFrameElementDef.id, raName, raSrc)
+    ?ctx.reflectAttributes(HTMLTimeElementDef.id, raDatetime)
+    ?ctx.reflectAttributes(HTMLQuoteElementDef.id, raCite)
+    ?ctx.reflectAttributes(HTMLDataElementDef.id, raValueStr)
+    ?ctx.reflectAttributes(HTMLObjectElementDef.id, raName, raType, raData)
+    ?ctx.reflectAttributes(HTMLSourceElementDef.id, raMedia, raType, raWidth,
+      raHeight, raSrc, raSrcset, raSizes)
+    ?ctx.reflectAttributes(HTMLModElementDef.id, raDatetime, raCite)
+    ?ctx.reflectAttributes(HTMLProgressElementDef.id, raValueDoubleGz, raMax)
+    ?ctx.reflectAttributes(HTMLSlotElementDef.id, raName)
+    ?ctx.reflectAttributes(HTMLParamElementDef.id, raName, raValueStr, raType,
+      raValuetype)
+    ?ctx.reflectAttributes(HTMLFontElementDef.id, raColor, raFace, raSizeStr)
+    ?ctx.reflectAttributes(HTMLFieldSetElementDef.id, raName, raDisabled)
+    ?ctx.reflectAttributes(HTMLDialogElementDef.id, raOpen)
+  ok()
 
-proc addDOMModule*(ctx: JSContext; eventTargetCID: JSClassID): Opt[void] =
-  let nodeCID = ctx.registerType(Node, parent = eventTargetCID)
-  if nodeCID == JS_INVALID_CLASS_ID:
-    return err()
-  if ctx.defineConsts(nodeCID, NodeType) == dprException:
-    return err()
-  let nodeListCID = ctx.registerType(NodeList, iterable = jitValue)
-  if nodeListCID == JS_INVALID_CLASS_ID:
-    return err()
-  let htmlCollectionCID = ctx.registerType(HTMLCollection, iterable = jitIndexed)
-  if htmlCollectionCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(HTMLAllCollection)
-  ?ctx.registerType(HTMLFormControlsCollection, parent = htmlCollectionCID)
-  ?ctx.registerType(HTMLOptionsCollection, parent = htmlCollectionCID)
-  ?ctx.registerType(RadioNodeList, parent = nodeListCID)
-  ?ctx.registerType(NodeIterator)
-  ?ctx.registerType(TreeWalker)
-  ?ctx.registerType(Location)
-  let documentCID = ctx.registerType(Document, parent = nodeCID)
-  if documentCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(XMLDocument, parent = documentCID)
-  ?ctx.registerType(DOMImplementation)
-  ?ctx.registerType(DOMTokenList, iterable = jitValue)
-  ?ctx.registerType(DOMStringMap)
-  let characterDataCID = ctx.registerType(CharacterData, parent = nodeCID)
-  if characterDataCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(Comment, parent = characterDataCID)
-  let documentFragmentCID = ctx.registerType(DocumentFragment, parent = nodeCID)
-  if documentFragmentCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(ProcessingInstruction, parent = characterDataCID)
-  let textCID = ctx.registerType(Text, parent = characterDataCID)
-  if textCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(CDATASection, parent = textCID)
-  ?ctx.registerType(DocumentType, parent = nodeCID)
-  ?ctx.registerType(Attr, parent = nodeCID)
-  ?ctx.registerType(NamedNodeMap)
-  ?ctx.registerType(CSSStyleDeclaration)
-  ?ctx.registerType(CustomElementRegistry)
-  ?ctx.registerType(ShadowRoot, parent = documentFragmentCID)
-  ?ctx.registerElements(nodeCID)
-  let global = JS_GetGlobalObject(ctx)
+proc addDOMModule*(ctx: JSContext): JSCode =
+  ?ctx.registerClass(NodeDef)
+  ?ctx.defineConsts(NodeDef.id, NodeType)
+  ?ctx.registerFakeClass(ParentNodeDef)
+  ?ctx.registerFakeClass(RootNodeDef)
+  ?ctx.registerFakeClass(ElementAccessorDef)
+  ?ctx.registerFakeClass(CollectionLikeDef)
+  ?ctx.registerFakeClass(CollectionDef)
+  ?ctx.registerClass(NodeListDef)
+  ?ctx.registerClass(HTMLCollectionDef)
+  ?ctx.registerClass(HTMLAllCollectionDef)
+  ?ctx.registerFakeClass(NodeIteratorLikeDef)
+  ?ctx.registerClass(NodeIteratorDef)
+  ?ctx.registerClass(TreeWalkerDef)
+  ?ctx.registerClass(DocumentDef)
+  ?ctx.registerClass(XMLDocumentDef)
+  ?ctx.registerClass(DOMImplementationDef)
+  ?ctx.registerClass(DOMTokenListDef)
+  ?ctx.registerClass(DOMStringMapDef)
+  ?ctx.registerClass(CharacterDataDef)
+  ?ctx.registerClass(CommentDef)
+  ?ctx.registerClass(DocumentFragmentDef)
+  ?ctx.registerClass(ProcessingInstructionDef)
+  ?ctx.registerClass(TextDef)
+  ?ctx.registerClass(CDATASectionDef)
+  ?ctx.registerClass(DocumentTypeDef)
+  ?ctx.registerClass(AttrDef)
+  ?ctx.registerClass(NamedNodeMapDef)
+  ?ctx.registerClass(CSSStyleDeclarationDef)
+  ?ctx.registerClass(CustomElementRegistryDef)
+  ?ctx.registerClass(XMLSerializerDef)
+  ?ctx.registerClass(ShadowRootDef)
+  ?ctx.registerElements()
+  let ctxOpaque = ctx.getOpaque()
+  if ctxOpaque == nil:
+    return ok()
+  let global = ctxOpaque.global
   let document = JS_GetPropertyStr(ctx, global, "Document")
-  if ctx.definePropertyCW(global, "HTMLDocument", document) == dprException:
+  if JS_IsException(document):
     return err()
+  ?ctx.definePropertyCW(global, "HTMLDocument", document)
   let nodeFilter = JS_NewObject(ctx)
   if JS_IsException(nodeFilter):
     return err()
   for e in NodeFilterNode:
     let n = ctx.toJS(1u32 shl uint32(e))
-    if ctx.definePropertyE(nodeFilter, $e, n) == dprException:
-      return err()
+    ?ctx.definePropertyE(nodeFilter, $e, n)
   for e in NodeFilterResult:
     let n = ctx.toJS(uint32(e))
-    if ctx.definePropertyE(nodeFilter, $e, n) == dprException:
-      return err()
-  case ctx.definePropertyE(nodeFilter, "SHOW_ALL", ctx.toJS(0xFFFFFFFFu32))
-  of dprException: return err()
-  else: discard
-  if ctx.definePropertyCW(global, "NodeFilter", nodeFilter) == dprException:
-    return err()
-  JS_FreeValue(ctx, global)
-  ok()
-
-# Forward declaration hack
-isDefaultPassiveImpl = proc(target: EventTarget): bool =
-  if not (target of Node):
-    return false
-  let node = Node(target)
-  return target of Window or EventTarget(node.document) == target or
-    EventTarget(node.document.documentElement) == target or
-    EventTarget(node.document.findFirst(ttBody)) == target
-
-getParentImpl = proc(ctx: JSContext; eventTarget: EventTarget; isLoad: bool):
-    EventTarget =
-  if eventTarget of Node:
-    if eventTarget of Document:
-      if isLoad:
-        return nil
-      # if no browsing context, then window will be nil anyway
-      return Document(eventTarget).window
-    if eventTarget of ShadowRoot:
-      let shadow = ShadowRoot(eventTarget)
-      #TODO composed
-      return shadow.host
-    return Node(eventTarget).parentNode
-  return nil
-
-errorImpl = proc(ctx: JSContext; ss: varargs[string]) =
-  ctx.getGlobal().console.error(ss)
-
-getAPIBaseURLImpl = proc(ctx: JSContext): URL =
-  let window = ctx.getWindow()
-  if window == nil or window.document == nil:
-    return nil
-  return window.document.baseURL
-
-getOriginImpl = proc(ctx: JSContext): Origin =
-  ctx.getGlobal().settings.origin
-
-isWindowImpl = proc(target: EventTarget): bool =
-  return target of Window
-
-isHTMLElementImpl = proc(target: EventTarget): bool =
-  return target of HTMLElement
-
-parseColorImpl = proc(target: EventTarget; s: string): Opt[ARGBColor] =
-  return Element(target).parseColor(s)
-
-setEventImpl = proc(ctx: JSContext; event: Event): Event =
-  let window = ctx.getWindow()
-  if window != nil:
-    let res = window.event
-    window.event = event
-    return res
-  nil
+    ?ctx.definePropertyE(nodeFilter, $e, n)
+  ?ctx.definePropertyE(nodeFilter, "SHOW_ALL", ctx.toJS(0xFFFFFFFFu32))
+  ctx.definePropertyCW(global, "NodeFilter", nodeFilter)
 
 {.pop.} # raises: []

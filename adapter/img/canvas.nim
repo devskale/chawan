@@ -9,11 +9,11 @@
 {.push raises: [].}
 
 import std/algorithm
+import std/os
 import std/posix
 
 import io/dynstream
 import io/packetreader
-import types/canvastypes
 import types/color
 import types/path
 
@@ -271,10 +271,9 @@ proc main() =
   enterNetworkSandbox()
   let os = newPosixStream(STDOUT_FILENO)
   let ps = newPosixStream(STDIN_FILENO)
-  if getEnvEmpty("MAPPED_URI_SCHEME") != "img-codec+x-cha-canvas":
-    cgiDie(ceInternalError, "invalid scheme")
-  case getEnvEmpty("MAPPED_URI_PATH")
-  of "decode":
+  if paramCount() != 1:
+    cgiDie(ceInternalError, "usage: canvas [command]")
+  if paramStr(1) == "decode":
     let headers = getEnvEmpty("REQUEST_HEADERS")
     for hdr in headers.split('\n'):
       if hdr.strip() == "Cha-Image-Info-Only: 1":

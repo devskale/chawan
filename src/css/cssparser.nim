@@ -3,7 +3,7 @@
 import std/algorithm
 
 import html/catom
-import monoucha/jstypes
+import js/jstypes
 import types/opt
 import utils/dtoawrap
 import utils/twtstr
@@ -197,6 +197,7 @@ type
     cstAll = "all"
     cstMargin = "margin"
     cstPadding = "padding"
+    cstInset = "inset"
     cstBorderStyle = "border-style"
     cstBorderColor = "border-color"
     cstBorderWidth = "border-width"
@@ -224,6 +225,12 @@ type
     cstPaddingBlockEnd = "padding-block-end"
     cstPaddingInline = "padding-inline"
     cstPaddingBlock = "padding-block"
+    cstInsetInlineStart = "inset-inline-start"
+    cstInsetInlineEnd = "inset-inline-end"
+    cstInsetBlockStart = "inset-block-start"
+    cstInsetBlockEnd = "inset-block-end"
+    cstInsetInline = "inset-inline"
+    cstInsetBlock = "inset-block"
     cstBorderInlineStartStyle = "border-inline-start-style"
     cstBorderInlineEndStyle = "border-inline-end-style"
     cstBorderBlockStartStyle = "border-block-start-style"
@@ -250,6 +257,12 @@ type
     cstBorderBlock = "border-block"
     cstOverflowInline = "overflow-inline"
     cstOverflowBlock = "overflow-block"
+    cstInlineSize = "inline-size"
+    cstBlockSize = "block-size"
+    cstMinInlineSize = "min-inline-size"
+    cstMinBlockSize = "min-block-size"
+    cstMaxInlineSize = "max-inline-size"
+    cstMaxBlockSize = "max-block-size"
 
   CSSPropertyType* = enum
     # primitive/enum properties: stored as byte
@@ -269,6 +282,7 @@ type
     cptFlexWrap = "flex-wrap"
     cptFloat = "float"
     cptFontStyle = "font-style"
+    cptJustifyContent = "justify-content"
     cptListStylePosition = "list-style-position"
     cptListStyleType = "list-style-type"
     cptOverflowX = "overflow-x"
@@ -375,6 +389,7 @@ type
     pcDisabled = "disabled"
     pcHost = "host"
     pcDefined = "defined"
+    pcEmpty = "empty"
     pcFirstNode = "-cha-first-node"
     pcLastNode = "-cha-last-node"
     pcBorderNonzero = "-cha-border-nonzero"
@@ -408,7 +423,7 @@ type
 
   Selector* = ref object # Simple selector
     #TODO namespaces?
-    atom*: CAtomTraced
+    atom*: CAtom
     rel*: SelectorRelation
     pc*: PseudoClass
     case t*: SelectorType
@@ -450,12 +465,7 @@ static:
   #   painful though.
   assert sizeof(PseudoElement) == 1
 
-when defined(gcDestructors):
-  proc `=destroy`*(a: var CSSTokenUnion) =
-    discard
-
-  proc `=copy`*(a: var CSSTokenUnion; b: CSSTokenUnion) =
-    copyMem(addr a, unsafeAddr b, sizeof(a))
+unionHooks(CSSTokenUnion)
 
 # Forward declarations
 proc consumeDeclarations(ctx: var CSSParser; nested: bool;
@@ -840,15 +850,13 @@ proc consumeIdentLikeToken(iq: openArray[char]; n: var int): CSSToken =
 
 proc nextToken(iq: openArray[char]; n: var int): bool =
   var m = n
-  while m + 1 < iq.len and iq[m] == '/' and iq[m + 1] == '*':
+  while iq.startsWith("/*", m):
     m += 2
-    while m < iq.len and not (m + 1 < iq.len and iq[m] == '*' and
-        iq[m + 1] == '/'):
-      inc m
-    if m + 1 < iq.len:
-      inc m
-    if m < iq.len:
-      inc m
+    let i = iq.find("*/", m)
+    if i < 0:
+      m = iq.len
+    else:
+      m = i + 2
   n = m
   return m < iq.len
 
@@ -1116,9 +1124,11 @@ proc addPrelude(ctx: var CSSParser; parentSels: openArray[CSSToken];
     Opt[void] =
   while ctx.has():
     let tt = ctx.peekTokenType()
-    if tt == cttLbrace or semi and tt == cttSemicolon:
+    if tt == cttLbrace:
       ctx.seekToken()
       return ok()
+    if semi and tt == cttSemicolon:
+      return err()
     if tt == cttRbrace and nested:
       return err()
     ctx.addPreludeComponentValue(parentSels, andSeen, toks)
@@ -1185,7 +1195,7 @@ proc consumeDeclaration2(ctx: var CSSParser; name: string):
         hasVar = true
         break
   decl.hasVar = hasVar
-  if lastTokIdx1 != -1 and lastTokIdx2 != -1:
+  if lastTokIdx1 >= 0 and lastTokIdx2 >= 0:
     let lastTok1 = decl.value[lastTokIdx1]
     let lastTok2 = decl.value[lastTokIdx2]
     if lastTok1.t == cttBang and
@@ -1241,11 +1251,7 @@ proc consumeDeclarations(ctx: var CSSParser; nested: bool;
         ctx.seekToken()
       if ctx.has() and ctx.peekTokenType() == cttColon:
         if decl := ctx.consumeDeclaration2(tok.s):
-          # looks ridiculous, but it's the only way to convince refc not
-          # to copy the seq...  TODO remove when moving to ARC
-          var value = move(decl.value)
           result.add(move(decl))
-          result[^1].value = move(value)
       elif nested:
         var prelude: seq[CSSToken] = @[move(tok)]
         if blank:
@@ -1739,7 +1745,7 @@ proc parseAttributeSelector(state: var SelectorParser): Selector =
   if attrToken.t != cttIdent:
     state.skipUntil(cttRbracket)
     fail
-  let attr = attrToken.s.toAtomLowerTrace()
+  let attr = attrToken.s.toAtomLower()
   state.skipBlanks()
   if not state.has(): fail
   let delim = state.consume()
@@ -1798,7 +1804,7 @@ proc parseClassSelector(state: var SelectorParser): Selector =
   if not state.has(): fail
   let tok = state.consume()
   if tok.t != cttIdent: fail
-  Selector(t: stClass, atom: tok.s.toAtomTrace())
+  Selector(t: stClass, atom: tok.s.toAtom())
 
 # returns head
 proc parseCompoundSelector(state: var SelectorParser;
@@ -1813,7 +1819,7 @@ proc parseCompoundSelector(state: var SelectorParser;
     case tok.t
     of cttIdent:
       state.seekToken()
-      sel = Selector(t: stType, atom: tok.s.toAtomLowerTrace())
+      sel = Selector(t: stType, atom: tok.s.toAtomLower())
     of cttColon:
       state.seekToken()
       sel = state.parsePseudoSelector(pseudoElement)
@@ -1821,12 +1827,12 @@ proc parseCompoundSelector(state: var SelectorParser;
       state.seekToken()
       if ctfId notin tok.flags:
         fail
-      sel = Selector(t: stId, atom: tok.s.toAtomTrace())
+      sel = Selector(t: stId, atom: tok.s.toAtom())
     of cttDot:
       state.seekToken()
       sel = state.parseClassSelector()
       if sel != nil:
-        classOut = sel.atom.view()
+        classOut = sel.atom
     of cttStar:
       state.seekToken()
       sel = Selector(t: stUniversal)
@@ -1893,10 +1899,10 @@ proc parseComplexSelector(state: var SelectorParser): ComplexSelector =
     #    cache child when we only have that
     if ct == ctDescendant:
       if class != CAtomNull:
-        prevClass = class
+        prevClass = move(class)
     elif ct == ctChild:
       if prevClass == CAtomNull:
-        prevClass = class
+        prevClass = move(class)
     result[^1].ct = ct
   if result.len == 0 or result[^1].ct != ctNone:
     fail

@@ -106,19 +106,18 @@ efficient code.
 In Nim, you can't have circular dependencies between modules.  This gets
 unwieldy as the HTML/DOM/etc. specs are a huge cyclic OOP mess.
 
-The preferred workaround is global function pointer variables:
+The preferred workaround is using the foreign function interface:
 
 ```nim
 # Forward declaration hack
-var forwardDeclImpl*: proc(window: Window; x, y: int) {.nimcall, raises: [].}
+proc forwardDecl(window: Window; x, y: int) {.importc: "cha_$1".}
 # in the other module:
-forwardDeclImpl = proc(window: Window; x, y: int) =
+proc forwardDecl(window: Window; x, y: int) {.exportc: "cha_$1".} =
   # [...]
 ```
 
-Don't forget to make it `.nimcall`, and to comment "Forward declaration
-hack" above.  (Hopefully we can remove these once Nim supports cyclic module
-dependencies.)
+Don't forget to comment "Forward declaration hack" above.  (Hopefully we
+can remove these once Nim supports cyclic module dependencies.)
 
 ## Features to avoid
 
@@ -128,7 +127,7 @@ non-obvious reasons.
 ### Exceptions
 
 Avoid at all costs.  If a standard library procedure throws, do not use it.
-Also avoid `try...finally` (even without `catch`).
+Also avoid `try...finally` (even without `except`).
 
 For own procs, use Result/Opt instead.  For large objects this may result in
 excessive copying; to avoid inefficient code, either make them `ref` or use
@@ -185,6 +184,31 @@ so don't use it unless you know what you're doing.
 
 `out` parameters crash the 1.6.14 compiler.  Use `var` instead.
 
+### `.cursor`
+
+`.cursor` is broken for custom types on Nim versions up to 2.0.0.
+For storing weak references, use `ptr` instead.
+
+### `.union`
+
+This is C's untagged union, as such it is inherently unsafe (for example,
+its fields may not refer to GC'ed memory).  In most cases you'll want to
+use a `case` object instead.
+
+On the other hand, `.union` is required for some optimizations.  In such
+cases, always add `unionHook` before any other procedures:
+
+```nim
+type MyUnion {.union.} = object
+  # blah...
+
+unionHook(MyUnion)
+```
+
+This is a workaround for a [compiler
+bug](https://github.com/nim-lang/Nim/issues/25236) affecting Nim versions
+up to & including 2.2.8.
+
 ### Copying operations
 
 `substr` and `x[n..m]` copies. Try to use `toOpenArray` instead, which is a
@@ -192,9 +216,9 @@ non-copying slice.  (Obviously, you should use `substr` if you *need* to
 copy.)
 
 Note that `=` usually copies.  If you're copying a large object a lot, you
-may want to set its type to `ref`.  For `seq`/`string` you can also try
-using `move`, but be sure to check the generated code because often times
-it doesn't work in `refc`.
+may want to set its type to `ref`.  Also, the `move` statement is useful
+when copying values out of an object; note that this zeroes out the
+original value, so it's safe to use.
 
 Beware of `pairs` on sequences of objects; it copies.  Use `mypairs` if you
 don't need mutation, `mpairs` if you do:
@@ -209,6 +233,8 @@ proc foo(objs: openArray[SomeObj]) =
   for i, obj in objs.mpairs: # OK, doesn't copy. obj's type is "var SomeObj".
     obj.i = i
 ```
+
+Similarly, the regular `items` on `array`s copies; use `myitems` instead.
 
 ### `func`, `.noSideEffect`
 
@@ -329,8 +355,7 @@ You may find these links useful.
 Of particular interest in the documentation are:
 
 * The [architecture](architecture.md) document.
-* The Monoucha [manual](../lib/monoucha0/doc/manual.md), for JS-related
-  documentation.
+* The [JS guide](jsguide.md), for working with JS-related code.
 
 ### WHATWG
 
@@ -345,8 +370,7 @@ Of particular interest in the documentation are:
   implements this.
 * Fetch: <https://fetch.spec.whatwg.org/>.  Networking stuff.  Also see
   <https://xhr.spec.whatwg.org> for XMLHttpRequest.
-* Web IDL: <https://webidl.spec.whatwg.org/>.  Relevant for Monoucha/JS
-  bindings.
+* Web IDL: <https://webidl.spec.whatwg.org/>.  Relevant for JS bindings.
 
 Note that some of these are updated daily, such as the HTML standard.
 

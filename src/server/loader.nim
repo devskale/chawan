@@ -25,7 +25,6 @@
 import std/algorithm
 import std/os
 import std/posix
-import std/tables
 import std/times
 
 import config/conftypes
@@ -36,14 +35,16 @@ import io/dynstream
 import io/packetreader
 import io/packetwriter
 import io/poll
+import js/jsref
+import js/quickjs
 import server/connectionerror
 import server/headers
 import server/loaderiface
 import server/request
 import types/blob
-import types/formdata
 import types/opt
 import types/url
+import utils/tabutil
 import utils/twtstr
 
 # Try to make it a SmallChunk.
@@ -114,6 +115,15 @@ type
     username: string
     password: string
 
+  PendingRequest = ref object
+    handle: InputHandle
+    body: RequestBody
+    tocache: bool
+    cmd: string
+    env: seq[EnvVar]
+    argv: seq[string]
+    next: PendingRequest
+
   ClientHandle {.final.} = ref object of LoaderHandle
     pid: int
     # List of cached resources.
@@ -125,9 +135,13 @@ type
     authMap: seq[AuthItem]
     # Number of ongoing requests in this client.
     numConnections: int
-    # Requests that will only be sent once n no longer exceeds
+    # Requests that will only be sent once numConnections no longer exceeds
     # maxNetConnections.
-    pending: seq[(InputHandle, RawRequest, URL)]
+    pendingHead: PendingRequest
+    pendingTail: PendingRequest
+
+  ClientMapItem {.final.} = ref object of IntMapItem
+    handle: ClientHandle
 
   DownloadItem = ref object
     escapedPath: string
@@ -146,7 +160,7 @@ type
     pollData: PollData
     tmpfSeq: uint
     # List of existing clients (buffer or pager) that may make requests.
-    clientMap: Table[int, ClientHandle] # pid -> data
+    clientMap: IntMap # pid -> data
     # ID of next output. TODO: find a better allocation scheme
     outputNum: int
     # List of *all* credentials the loader knows of.
@@ -179,7 +193,8 @@ type
 
 # Forward declarations
 proc loadCGI(ctx: var LoaderContext; client: ClientHandle; handle: InputHandle;
-  request: RawRequest; prevURL: URL; config: LoaderClientConfig)
+  body: var RequestBody; config: LoaderClientConfig; cmd: var string;
+  env: var seq[EnvVar]; argv: openArray[string]; tocache, canThrottle: bool)
 proc pushBuffer(ctx: var LoaderContext; handle: InputHandle;
   buffer: LoaderBuffer; ignoreSuspension: bool;
   unregWrite: var seq[OutputHandle])
@@ -310,7 +325,7 @@ proc updateCookies(ctx: var LoaderContext; cookieJar: CookieJar;
   # Persist is ASCII digit 0 if persist, 1 if not.
   const RS = '\x1E' # ASCII record separator
   let persist = if owner.config.cookieMode == cmSave: '1' else: '0'
-  var s = cookieJar.name & RS & $url & RS & persist & RS
+  var s = cookieJar.s & RS & $url & RS & persist & RS
   for i, it in values.mypairs:
     s &= it & [false: '\r', true: '\n'][i == values.high]
   let buffer = newLoaderBuffer(s)
@@ -368,7 +383,7 @@ proc iclose(ctx: var LoaderContext; handle: InputHandle) =
   let client = handle.connectionOwner
   if client != nil:
     if client.numConnections == ctx.config.maxNetConnections and
-        client.pending.len > 0:
+        client.pendingHead != nil:
       ctx.pendingConnections.add(client)
     dec client.numConnections
     handle.connectionOwner = nil
@@ -377,6 +392,7 @@ proc oclose(ctx: var LoaderContext; output: OutputHandle) =
   ctx.unset(output)
   output.stream.sclose()
   output.stream = nil
+  output.parent = nil # break cycle
 
 proc close(ctx: var LoaderContext; handle: InputHandle) =
   ctx.iclose(handle)
@@ -396,8 +412,6 @@ proc close(ctx: var LoaderContext; client: ClientHandle) =
 proc isPrivileged(ctx: LoaderContext; client: ClientHandle): bool =
   return ctx.pagerClient == client
 
-const MaxRewrites = 4
-
 proc canRewriteForCGICompat(ctx: LoaderContext; path: string): bool =
   if path.startsWith("/cgi-bin/") or path.startsWith("/$LIB/"):
     return true
@@ -413,6 +427,15 @@ proc rejectHandle(ctx: var LoaderContext; handle: InputHandle;
   of pbrUnregister:
     ctx.unregWrite.add(handle.output)
     handle.output.dead = true
+
+# use this when the handle is known to not have been registered yet
+proc rejectHandleClose(ctx: var LoaderContext; handle: InputHandle;
+    code: ConnectionError; msg = "") =
+  ctx.rejectHandle(handle, code, msg)
+  # it is possible that the other side is busy and so we cannot send the
+  # entire rejection yet
+  if not handle.registered:
+    ctx.close(handle)
 
 iterator inputHandles(ctx: LoaderContext): InputHandle {.inline.} =
   for it in ctx.handleMap:
@@ -469,13 +492,13 @@ proc unregister(ctx: var LoaderContext; output: OutputHandle) =
 
 proc register(ctx: var LoaderContext; client: ClientHandle) =
   assert not client.registered
-  ctx.clientMap[client.pid] = client
+  ctx.clientMap.put(ClientMapItem(n: client.pid, handle: client))
   ctx.pollData.register(client.stream.fd, cshort(POLLIN))
   client.registered = true
 
 proc unregister(ctx: var LoaderContext; client: ClientHandle) =
   assert client.registered
-  ctx.clientMap.del(client.pid)
+  discard ctx.clientMap.pop(client.pid)
   ctx.pollData.unregister(int(client.stream.fd))
   client.registered = false
 
@@ -884,25 +907,21 @@ proc findAuth(client: ClientHandle; request: RawRequest; url: URL): AuthItem =
       # (otherwise we should return nil, *not* fallback to authMap)
       return AuthItem(
         origin: url.authOrigin,
-        username: url.username,
-        password: url.password
+        username: percentDecode(url.username),
+        password: percentDecode(url.password)
       )
     if client.authMap.len > 0:
       return client.authMap.findItem(url.authOrigin)
   return nil
 
-type EnvVar = tuple
-  name: string
-  value: string
-
 proc setupEnv(env: var seq[EnvVar]; request: RawRequest; contentLen: int;
-    prevURL: URL; config: LoaderClientConfig; auth: AuthItem) =
-  let url = request.url
+    config: LoaderClientConfig) =
   env.add(("REQUEST_METHOD", $request.httpMethod))
   var contentTypeSeen = false
   var contentType = ""
   var cookieSeen = false
   var refererSeen = false
+  var authorizationSeen = false
   var headers = ""
   for it in request.headers:
     headers &= it.name & ": " & it.value & "\r\n"
@@ -915,18 +934,14 @@ proc setupEnv(env: var seq[EnvVar]; request: RawRequest; contentLen: int;
     elif not refererSeen and it.name.equalsIgnoreCase("Referer"):
       env.add(("HTTP_REFERER", it.value))
       refererSeen = true
+    elif not authorizationSeen and it.name.equalsIgnoreCase("Authorization"):
+      env.add(("HTTP_AUTHORIZATION", it.value))
+      authorizationSeen = true
+      if it.value.startsWithIgnoreCase("Basic "):
+        var val: string
+        if val.atob(it.value.toOpenArray("Basic ".len, it.value.high)).isOk:
+          env.add(("REMOTE_USER", val.until(':')))
   env.add(("REQUEST_HEADERS", move(headers)))
-  if prevURL != nil:
-    env.add(("MAPPED_URI_SCHEME", prevURL.scheme))
-    if auth != nil:
-      env.add(("MAPPED_URI_USERNAME", auth.username))
-      env.add(("MAPPED_URI_PASSWORD", auth.password))
-    env.add(("MAPPED_URI_HOST", prevURL.hostname))
-    env.add(("MAPPED_URI_PORT", prevURL.port))
-    env.add(("MAPPED_URI_PATH", prevURL.pathname))
-    env.add(("MAPPED_URI_QUERY", prevURL.search.substr(1)))
-  if url.search != "":
-    env.add(("QUERY_STRING", url.search.substr(1)))
   if request.httpMethod == hmPost:
     if request.body.t == rbtMultipart:
       env.add(("CONTENT_TYPE", request.body.multipart.getContentType()))
@@ -969,15 +984,15 @@ proc writeBody(ctx: var LoaderContext; ostream, istream2: PosixStream;
   of rbtNone:
     discard
 
-proc setupCmd(ctx: LoaderContext; request: RawRequest; cmd: var string;
+proc setupCmd(ctx: LoaderContext; path: string; cmd: var string;
     env: var seq[EnvVar]): ConnectionError =
-  var path = percentDecode(request.url.pathname)
+  var path = path #TODO I don't like this copy
   env.add(("REQUEST_URI", path))
   if path.startsWith("/cgi-bin/"):
     path.delete(0 .. "/cgi-bin/".high)
   elif path.startsWith("/$LIB/"):
     path.delete(0 .. "/$LIB/".high)
-  if path.len <= 0 or request.url.hostname != "":
+  if path.len <= 0:
     return ceInvalidCGIPath
   if path[0] == '/':
     for dir in ctx.config.cgiDir:
@@ -1003,12 +1018,33 @@ proc setupCmd(ctx: LoaderContext; request: RawRequest; cmd: var string;
   ceCGIFileNotFound
 
 proc loadCGIImpl(ctx: var LoaderContext; client: ClientHandle;
-    handle: InputHandle; request: RawRequest; prevURL: URL;
-    config: LoaderClientConfig): ConnectionError =
-  var env: seq[EnvVar] = @[]
-  var cmd: string
-  if (let res = ctx.setupCmd(request, cmd, env); res != ceNone):
-    return res
+    handle: InputHandle; body: var RequestBody; config: LoaderClientConfig;
+    cmd: var string; env: var seq[EnvVar]; argv: openArray[string];
+    tocache, canThrottle: bool): ConnectionError =
+  if canThrottle:
+    # Quick hack to throttle the number of simultaneous ongoing
+    # connections.
+    # We do not want to throttle non-net paths and requests originating
+    # from the pager (i.e. client is privileged); in the former case, we
+    # are probably dealing with local requests, and in the latter case, the
+    # config may be different than client.config.
+    handle.connectionOwner = client
+    if client.numConnections >= ctx.config.maxNetConnections:
+      let pending = PendingRequest(
+        handle: handle,
+        body: move(body),
+        tocache: tocache,
+        argv: @argv,
+        cmd: move(cmd),
+        env: move(env)
+      )
+      if client.pendingTail != nil:
+        client.pendingTail.next = pending
+      else:
+        client.pendingHead = pending
+      client.pendingTail = pending
+      return ceNone
+    inc client.numConnections
   # Pipe the response body as stdout.
   var pipefd: array[2, cint] # child -> parent
   if pipe(pipefd) == -1:
@@ -1016,7 +1052,7 @@ proc loadCGIImpl(ctx: var LoaderContext; client: ClientHandle;
   let istreamOut = newPosixStream(pipefd[0]) # read by loader
   var ostreamOut = newPosixStream(pipefd[1]) # written by child
   var ostreamOut2: PosixStream = nil
-  if request.tocache:
+  if tocache:
     # Set stdout to a file, and repurpose the pipe as a dummy to detect when
     # the process ends. outputId is the cache id.
     var tmpf = ctx.getTempFile()
@@ -1036,29 +1072,26 @@ proc loadCGIImpl(ctx: var LoaderContext; client: ClientHandle;
   var istream2: PosixStream = nil # child end (read) for rbtCache
   var cachedHandle: InputHandle = nil # for rbtCache
   var outputIn: OutputHandle = nil # for rbtOutput
-  if request.body.t == rbtCache:
+  if body.t == rbtCache:
     var n: int
-    (istream, n) = client.openCachedItem(request.body.cacheId)
+    (istream, n) = client.openCachedItem(body.cacheId)
     if istream == nil:
       return ceCGICachedBodyNotFound
-    cachedHandle = ctx.findCachedHandle(request.body.cacheId)
+    cachedHandle = ctx.findCachedHandle(body.cacheId)
     if cachedHandle != nil: # cached item still open, switch to streaming mode
       if client.cacheMap[n].offset == -1:
         return ceCGICachedBodyUnavailable
       istream2 = istream
-  elif request.body.t == rbtOutput:
-    outputIn = ctx.findOutput(request.body.outputId, client)
+  elif body.t == rbtOutput:
+    outputIn = ctx.findOutput(body.outputId, client)
     if outputIn == nil:
       return ceCGIOutputHandleNotFound
-  if request.body.t notin {rbtNone, rbtCache} or istream2 != nil:
+  if body.t notin {rbtNone, rbtCache} or istream2 != nil:
     var pipefdRead: array[2, cint] # parent -> child
     if pipe(pipefdRead) == -1:
       return ceFailedToSetUpCGI
     istream = newPosixStream(pipefdRead[0])
     ostream = newPosixStream(pipefdRead[1])
-  let contentLen = request.body.contentLength()
-  let auth = if prevURL != nil: client.findAuth(request, prevURL) else: nil
-  env.setupEnv(request, contentLen, prevURL, config, auth)
   var pid: int
   ctx.forkStream.withPacketWriter w:
     w.swrite(istream != nil)
@@ -1069,6 +1102,7 @@ proc loadCGIImpl(ctx: var LoaderContext; client: ClientHandle;
     if ostreamOut2 != nil:
       w.sendFd(ostreamOut2.fd)
     w.swrite(env)
+    w.swrite(argv)
     w.swrite(cmd)
   do:
     pid = -1
@@ -1083,31 +1117,20 @@ proc loadCGIImpl(ctx: var LoaderContext; client: ClientHandle;
     return ceFailedToSetUpCGI
   handle.parser = HeaderParser()
   handle.stream = istreamOut
-  ctx.writeBody(ostream, istream2, request.body, client, outputIn,
-    cachedHandle)
+  ctx.writeBody(ostream, istream2, body, client, outputIn, cachedHandle)
   ceNone
 
 proc loadCGI(ctx: var LoaderContext; client: ClientHandle; handle: InputHandle;
-    request: RawRequest; prevURL: URL; config: LoaderClientConfig) =
-  if prevURL != nil and not ctx.isPrivileged(client) and prevURL.isNetPath():
-    # Quick hack to throttle the number of simultaneous ongoing
-    # connections.
-    # We do not want to throttle non-net paths and requests originating
-    # from the pager (i.e. client is privileged); in the former case,
-    # we are probably dealing with local requests, and in the latter
-    # case, the config may be different than client.config.
-    handle.connectionOwner = client
-    if client.numConnections >= ctx.config.maxNetConnections:
-      client.pending.add((handle, request, prevURL))
-      return
-    inc client.numConnections
-  let code = ctx.loadCGIImpl(client, handle, request, prevURL, config)
+    body: var RequestBody; config: LoaderClientConfig; cmd: var string;
+    env: var seq[EnvVar]; argv: openArray[string];
+    tocache, canThrottle: bool) =
+  let code = ctx.loadCGIImpl(client, handle, body, config, cmd, env, argv,
+    tocache, canThrottle)
   if code == ceNone:
     if handle.stream != nil:
       ctx.addFd(handle)
   else:
-    ctx.rejectHandle(handle, code)
-    ctx.close(handle)
+    ctx.rejectHandleClose(handle, code)
 
 proc findPassedFd(client: ClientHandle; name: string): int =
   for i in 0 ..< client.passedFdMap.len:
@@ -1118,8 +1141,8 @@ proc findPassedFd(client: ClientHandle; name: string): int =
 proc loadStream(ctx: var LoaderContext; client: ClientHandle;
     handle: InputHandle; request: RawRequest) =
   let i = client.findPassedFd(request.url.pathname)
-  if i == -1:
-    ctx.rejectHandle(handle, ceFileNotFound, "stream not found")
+  if i < 0:
+    ctx.rejectHandleClose(handle, ceFileNotFound, "stream not found")
     return
   case ctx.sendResult(handle, 0)
   of pbrDone: discard
@@ -1419,21 +1442,64 @@ proc loadXChaCookie(ctx: var LoaderContext; client: ClientHandle;
 proc loadResource(ctx: var LoaderContext; client: ClientHandle;
     config: LoaderClientConfig; request: var RawRequest; handle: InputHandle;
     resource: bool) =
-  var redo = true
-  var tries = 0
-  var prevurl: URL = nil
-  while redo and tries < MaxRewrites:
-    redo = false
-    const BuiltinScheme = {stCgiBin, stStream, stCache, stData, stAbout}
+  if ctx.config.w3mCGICompat and request.url.schemeType == stFile:
+    let path = request.url.pathname.percentDecode()
+    if ctx.canRewriteForCGICompat(path):
+      let url = parseURL0("cgi-bin:" & path & request.url.search)
+      if url != nil:
+        request.url = url
+  var typeBuf = request.url.scheme & '/' &
+    ($request.httpMethod).toLowerAscii()
+  var netPathSeen = false
+  var internalSeen = false
+  var listSeen = false
+  let entry = ctx.browsecap.findResourceMut(typeBuf, request.url,
+    netPathSeen, internalSeen, listSeen, resource, request.internal)
+  if entry != nil and mfCgioutput in entry.flags:
+    var path: string
+    var argv: seq[string]
+    var env: seq[EnvVar]
+    let auth = client.findAuth(request, request.url)
+    let res = parseCGICommand(entry.cmd, typeBuf, request.url, path, argv,
+      env)
+    if res.isOk:
+      var cmd: string
+      let code = ctx.setupCmd(path, cmd, env)
+      if code == ceNone:
+        let canThrottle = not ctx.isPrivileged(client) and
+          request.url.isNetPath()
+        let contentLen = request.body.contentLength()
+        if auth != nil:
+          request.headers.addIfNotFound("Authorization", "Basic " &
+            btoa(auth.username & ':' & auth.password))
+        if mfUrimethodmap in entry.flags: # backwards-compat
+          env.add(("MAPPED_URI_SCHEME", request.url.scheme))
+          if auth != nil:
+            var user = percentEncode(auth.username, UserInfoPercentEncodeSet)
+            var pass = percentEncode(auth.password, UserInfoPercentEncodeSet)
+            env.add(("MAPPED_URI_USERNAME", move(user)))
+            env.add(("MAPPED_URI_PASSWORD", move(pass)))
+          env.add(("MAPPED_URI_HOST", request.url.hostname))
+          env.add(("MAPPED_URI_PORT", request.url.port))
+          env.add(("MAPPED_URI_PATH", request.url.pathname))
+          env.add(("MAPPED_URI_QUERY", request.url.search.substr(1)))
+        env.setupEnv(request, contentLen, config)
+        ctx.loadCGI(client, handle, request.body, config, cmd, env, argv,
+          request.tocache, canThrottle)
+      else:
+        ctx.rejectHandleClose(handle, code)
+    else:
+      ctx.rejectHandleClose(handle, ceInvalidBrowsecapEntry, $res.error)
+  elif entry != nil and not resource:
+    ctx.rejectHandleClose(handle, ceMailcap, entry.toStr(typeBuf))
+  else:
+    # handle built-in schemes here, because findResourceMut might have
+    # rewritten the URL into one
     case request.url.schemeType
-    of stCgiBin:
-      ctx.loadCGI(client, handle, request, prevurl, config)
     of stStream:
       ctx.loadStream(client, handle, request)
       if handle.stream != nil:
         ctx.addFd(handle)
-      else:
-        ctx.close(handle)
     of stCache:
       ctx.loadFromCache(client, handle, request)
       assert handle.stream == nil
@@ -1442,48 +1508,18 @@ proc loadResource(ctx: var LoaderContext; client: ClientHandle;
     of stAbout:
       ctx.loadAbout(handle, request)
     of stXChaCookie:
-      ctx.loadXChaCookie(client, handle, request)
-    else:
-      if ctx.config.w3mCGICompat and request.url.schemeType == stFile:
-        let path = request.url.pathname.percentDecode()
-        if ctx.canRewriteForCGICompat(path):
-          let url = parseURL0("cgi-bin:" & path & request.url.search)
-          if url != nil:
-            request.url = url
-            inc tries
-            redo = true
-            continue
-      prevurl = request.url
-      var typeBuf = request.url.scheme & '/' &
-        ($request.httpMethod).toLowerAscii()
-      var netPathSeen = false
-      var listSeen = false
-      let entry = ctx.browsecap.findResourceMut(typeBuf, request.url,
-        netPathSeen, listSeen, resource)
-      if entry != nil and mfCgioutput in entry.flags:
-        var canpipe: bool
-        let cmd = "cgi-bin:" & unquoteCommand(entry.cmd, typeBuf,
-          request.url.pathname, request.url, canpipe, uriparams = true,
-          shellQuote = false)
-        let url = parseURL0(cmd)
-        if url != nil:
-          request.url = url
-          inc tries
-          redo = true
-        else:
-          ctx.rejectHandle(handle, ceInvalidBrowsecapEntry)
-      elif entry != nil and not resource:
-        ctx.rejectHandle(handle, ceMailcap, entry.toStr(typeBuf))
-      elif request.url.schemeType in BuiltinScheme:
-        continue # rewritten to a built-in scheme
-      elif netPathSeen:
-        ctx.rejectHandle(handle, ceNetPathExpected)
-      elif listSeen:
-        ctx.rejectHandle(handle, ceInvalidMethod)
+      if request.internal:
+        ctx.loadXChaCookie(client, handle, request)
       else:
-        ctx.rejectHandle(handle, ceUnknownScheme)
-  if tries >= MaxRewrites:
-    ctx.rejectHandle(handle, ceTooManyRewrites)
+        ctx.rejectHandleClose(handle, ceInternalScheme)
+    elif netPathSeen:
+      ctx.rejectHandleClose(handle, ceNetPathExpected)
+    elif internalSeen:
+      ctx.rejectHandleClose(handle, ceInternalScheme)
+    elif listSeen:
+      ctx.rejectHandleClose(handle, ceInvalidMethod)
+    else:
+      ctx.rejectHandleClose(handle, ceUnknownScheme)
 
 proc setupRequestDefaults(request: var RawRequest; config: LoaderClientConfig;
     credentials: bool) =
@@ -1537,13 +1573,19 @@ proc loadConfigCmd(ctx: var LoaderContext; client: ClientHandle;
   r.sread(config)
   ctx.load(request, client, config, resource = false)
 
+proc getClientByPid(ctx: LoaderContext; pid: int): ClientHandle =
+  let item = ClientMapItem(ctx.clientMap.getOrDefault(pid))
+  if item != nil:
+    return item.handle
+  return nil
+
 proc getCacheFileCmd(ctx: var LoaderContext; rclient: ClientHandle;
     r: var PacketReader): CommandResult =
   var cacheId: int
   var sourcePid: int
   r.sread(cacheId)
   r.sread(sourcePid)
-  let client = ctx.clientMap.getOrDefault(sourcePid, nil)
+  let client = ctx.getClientByPid(sourcePid)
   let n = if client != nil: client.cacheMap.find(cacheId) else: -1
   rclient.withPacketWriterReturnEOF w:
     if n != -1:
@@ -1558,7 +1600,7 @@ proc addClientCmd(ctx: var LoaderContext; rclient: ClientHandle;
   var config: LoaderClientConfig
   r.sread(pid)
   r.sread(config)
-  assert pid notin ctx.clientMap
+  assert ctx.clientMap.getOrDefault(pid) == nil
   var sv {.noinit.}: array[2, cint]
   var res = cmdrDone
   rclient.withPacketWriter w:
@@ -1584,7 +1626,7 @@ proc removeClientCmd(ctx: var LoaderContext; rclient: ClientHandle;
     r: var PacketReader): CommandResult =
   var pid: int
   r.sread(pid)
-  let client = ctx.clientMap.getOrDefault(pid)
+  let client = ctx.getClientByPid(pid)
   if client != nil:
     ctx.unregClient.add(client)
   cmdrDone
@@ -1650,8 +1692,8 @@ proc shareCachedItemCmd(ctx: var LoaderContext; rclient: ClientHandle;
   r.sread(sourcePid)
   r.sread(targetPid)
   r.sread(id)
-  let sourceClient = ctx.clientMap.getOrDefault(sourcePid)
-  let targetClient = ctx.clientMap.getOrDefault(targetPid)
+  let sourceClient = ctx.getClientByPid(sourcePid)
+  let targetClient = ctx.getClientByPid(targetPid)
   let n = if sourceClient != nil and targetClient != nil:
     sourceClient.cacheMap.find(id)
   else:
@@ -1736,7 +1778,7 @@ proc teeCmd(ctx: var LoaderContext; rclient: ClientHandle; r: var PacketReader):
   r.sread(sourceId)
   r.sread(targetPid)
   let outputIn = ctx.findOutput(sourceId, rclient)
-  let target = ctx.clientMap.getOrDefault(targetPid)
+  let target = ctx.getClientByPid(targetPid)
   var pipev {.noinit.}: array[2, cint]
   var res = cmdrDone
   if target != nil and outputIn != nil and pipe(pipev) == 0:
@@ -1767,13 +1809,13 @@ proc addAuthCmd(ctx: var LoaderContext; rclient: ClientHandle;
     # This way, loading a URL with only the username set still lets us
     # load the password which is already associated with said username.
     if url.password != "" or item.username != url.username:
-      item.username = url.username
-      item.password = url.password
+      item.username = percentDecode(url.username)
+      item.password = percentDecode(url.password)
   else:
     let item = AuthItem(
       origin: url.authOrigin,
-      username: url.username,
-      password: url.password
+      username: percentDecode(url.username),
+      password: percentDecode(url.password)
     )
     ctx.authMap.add(item)
     ctx.pagerClient.authMap.add(item)
@@ -1903,7 +1945,7 @@ proc finishCycle(ctx: var LoaderContext) =
       if output.registered:
         ctx.unregister(output)
       ctx.oclose(output)
-      let handle = output.parent
+      let handle = move(output.parent)
       if handle != nil: # may be nil if from loadStream S_ISREG
         let i = handle.outputs.find(output)
         handle.outputs.del(i)
@@ -1928,16 +1970,16 @@ proc finishCycle(ctx: var LoaderContext) =
   for client in ctx.pendingConnections:
     if client.stream == nil:
       continue
-    var j = ctx.config.maxNetConnections - client.numConnections
-    for (handle, request, prevURL) in client.pending:
+    while client.pendingHead != nil:
       if client.numConnections >= ctx.config.maxNetConnections:
         break
-      ctx.loadCGI(client, handle, request, prevURL, client.config)
-    let L = max(client.pending.len - j, 0)
-    for i in 0 ..< L:
-      client.pending[i] = client.pending[j]
-      inc j
-    client.pending.setLen(L)
+      let pending = move(client.pendingHead)
+      client.pendingHead = move(pending.next)
+      if client.pendingHead == nil:
+        client.pendingTail = nil
+      ctx.loadCGI(client, pending.handle, pending.body, client.config,
+        pending.cmd, pending.env, pending.argv, pending.tocache,
+        canThrottle = true)
   ctx.pendingConnections.setLen(0)
 
 proc loaderLoop(ctx: var LoaderContext) =
@@ -1969,8 +2011,9 @@ proc loaderLoop(ctx: var LoaderContext) =
     ctx.finishCycle()
   ctx.exitLoader()
 
-proc runFileLoader*(config: LoaderConfig; stream, forkStream: PosixStream;
-    pagerPid: int; pagerConfig: LoaderClientConfig; browsecap: Mailcap) =
+proc runFileLoader*(rt: JSRuntime; config: LoaderConfig;
+    stream, forkStream: PosixStream; pagerPid: int;
+    pagerConfig: LoaderClientConfig; browsecap: Mailcap) =
   var ctx {.global.}: LoaderContext
   ctx = LoaderContext(
     config: config,
@@ -1985,8 +2028,8 @@ proc runFileLoader*(config: LoaderConfig; stream, forkStream: PosixStream;
     if dir.len > 0 and dir[^1] != '/':
       dir &= '/'
   ctx.pagerClient = ClientHandle(
-    stream: stream,
     pid: pagerPid,
+    stream: stream,
     config: pagerConfig
   )
   ctx.register(ctx.pagerClient)

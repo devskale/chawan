@@ -5,6 +5,7 @@ import css/cssvalues
 import css/lunit
 import html/dom
 import html/domrect
+import js/jsref
 import types/bitmap
 import types/refstring
 
@@ -74,7 +75,7 @@ type
     yshift*: LUnit
     # Maximum float height relative to the BFC.
     maxFloatHeight*: LUnit
-    # Clear offset relative to the BFC.
+    # Clear offset for floats (and floats *only*), relative to the BFC.
     clearOffset*: LUnit
     # Indicates which borders have been merged with an adjacent one.
     merge*: CSSBorderMerge
@@ -157,7 +158,7 @@ type
     cbtElement, cbtAnonymous, cbtText
 
   CSSBox* = ref object of RootObj
-    parent*: CSSBox
+    parent* {.cursor.}: CSSBox #TODO can we move this to the DOM?
     firstChild*: CSSBox
     next*: CSSBox
     absolute*: CSSAbsolute
@@ -167,7 +168,7 @@ type
     positioned*: bool # set if we participate in positioned layout
     render*: BoxRenderState # render output
     computed*: CSSValues
-    element*: Element
+    elementPtr*: ptr ElementObj
 
   CSSAbsolute* {.acyclic.} = ref object
     box*: BlockBox
@@ -306,7 +307,7 @@ proc borderBottomRight*(input: LayoutInput; cellSize: Size): Offset =
   var o = Offset0
   if input.border.right notin BorderStyleNoneHidden:
     o.x += cellSize.w
-  if input.border.bottom notin BorderStyleNoneHidden:
+  if input.border.bottom notin BorderStyleNoneHidden + BorderStyleInput:
     o.y += cellSize.h
   o
 
@@ -337,6 +338,9 @@ proc newDOMRect(offset: Offset; size: Size): DOMRect =
     size.h.toFloat64()
   )
 
+template element*(box: CSSBox): Element =
+  cast[Element](box.elementPtr)
+
 proc getClientRects(res: var seq[DOMRect]; box: CSSBox;
     firstOnly, blockOnly: bool) =
   if box of BlockBox:
@@ -353,8 +357,29 @@ proc getClientRects(res: var seq[DOMRect]; box: CSSBox;
       if it.element == box.element and it of InlineBox:
         res.getClientRects(it, firstOnly, false)
 
-getClientRectsImpl = proc(element: Element; firstOnly, blockOnly: bool):
-    seq[DOMRect] =
+proc unlinkElementBoxRecurse(box: CSSBox; element: Element) =
+  if box.element == element:
+    box.elementPtr = nil
+    for child in box.children:
+      unlinkElementBoxRecurse(box, element)
+
+proc unlinkElementBox(element: Element) {.exportc: "cha_$1".} =
+  if element.box != nil:
+    let box = CSSBox(element.box)
+    box.elementPtr = nil
+    # Ensure that any anonymous parent & child boxes lose the element
+    # reference as well.
+    var parent = box
+    while parent != nil:
+      if parent.element != element:
+        break
+      parent.elementPtr = nil
+      parent = parent.parent
+    for child in box.children:
+      unlinkElementBoxRecurse(child, element)
+
+proc getClientRects(element: Element; firstOnly, blockOnly: bool):
+    seq[DOMRect] {.exportc: "cha_$1".} =
   result = @[]
   if element.box != nil:
     result.getClientRects(CSSBox(element.box), firstOnly, blockOnly)

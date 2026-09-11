@@ -6,6 +6,7 @@
 <img id=toString name=a>
 <img id=img4 name=>
 <form id=myform name=asdf></form>
+<form id=myform name=asdf></div>
 <script src=asserts.js></script>
 <script>
 assertEquals(document.toString, document.getElementById("toString"));
@@ -14,8 +15,9 @@ document.toString.remove();
 document.testtest = "hi";
 assertEquals(document.ELEMENT_NODE, 1);
 assertEquals(Document.ELEMENT_NODE, 1);
-assertEquals(document.getElementsByName("").length, 0);
-assertEquals(Object.getOwnPropertyNames(document).toString(), "testtest,location,img2,img3,asdf");
+/* Note: Gecko returns 0 here, but the spec disagrees. */
+assertEquals(document.getElementsByName("").length, 1);
+assertEquals(Object.getOwnPropertyNames(document).sort().toString(), "asdf,img2,img3,location,testtest");
 /*
  * Note: the spec says Document == HTMLDocument, but in other browsers
  * this is not true.
@@ -33,6 +35,21 @@ assertEquals(document.implementation.createDocument.length, 2);
 assertThrows(() => document.implementation.createDocument(null), TypeError);
 document.getElementById("img4").remove();
 document.asdf.remove();
+myform.remove();
 document.img2.remove();
+assertEquals(document.scrollingElement, document.documentElement);
+abc.insertBefore(document.createElement("head"), null);
+document.head.remove();
+assertEquals(document.head, null);
+{
+	const locationDesc = Object.getOwnPropertyDescriptor(document, "location");
+	assertInstanceof(locationDesc.get, Function);
+	assertInstanceof(locationDesc.set, Function);
+	assertEquals(locationDesc.enumerable, true);
+	assertEquals(locationDesc.configurable, false);
+}
+{
+	assertEquals(document.getRootNode(), document);
+}
 document.getElementById("abc").textContent = "Success";
 </script>

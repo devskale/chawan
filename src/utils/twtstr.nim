@@ -190,6 +190,8 @@ proc kebabToCamelCase*(s: string): string =
       else:
         result &= c
       flip = false
+  if flip:
+    result &= '-'
 
 proc camelToKebabCase*(s: openArray[char]; dashPrefix = false): string =
   result = newStringOfCap(s.len)
@@ -785,11 +787,42 @@ proc dqEscape*(s: openArray[char]): string =
     result &= c
 
 proc cssEscape*(s: openArray[char]): string =
-  result = ""
+  result = newStringOfCap(s.len)
   for c in s:
     if c == '\'':
       result &= '\\'
     result &= c
+
+proc cssIdentEscape*(s: openArray[char]): string =
+  var res = newStringOfCap(s.len)
+  for i, c in s:
+    case c
+    of '\0': res &= "\uFFFD"
+    of Controls - {'\0'}:
+      res &= '\\'
+      if uint8(c) > 0xF:
+        res &= HexCharsLower[uint8(c) shr 4]
+      res &= HexCharsLower[uint8(c) and 0xF]
+      res &= ' '
+    of AsciiDigit:
+      if i == 0 or i == 1 and res[0] == '-':
+        res &= '\\'
+        res &= HexCharsLower[uint8(c) shr 4]
+        res &= HexCharsLower[uint8(c) and 0xF]
+        res &= ' '
+      else:
+        res &= c
+    of '-':
+      if res.len == 1:
+        res &= "\\-"
+      else:
+        res &= c
+    of NonAscii, '_', AsciiAlpha:
+      res &= c
+    else:
+      res &= "\\"
+      res &= c
+  move(res)
 
 proc join*(ss: openArray[string]; sep: char): string =
   if ss.len <= 0:
@@ -949,7 +982,7 @@ proc replaceControls*(s: openArray[char]): string =
     else:
       result.addUTF8(u)
 
-proc replaceSurrogates*(s: var string) =
+proc replaceSurrogates*(s: var openArray[char]) =
   var i = 0
   let slen = s.len
   while i < slen:
@@ -992,33 +1025,40 @@ proc normalizeLF*(s: openArray[char]): string =
 
 type IdentMapItem* = tuple[s: string; n: int]
 
-proc getIdentMap*[T: enum](lo, hi: T): seq[IdentMapItem] =
-  result = @[]
-  for e in lo .. hi:
-    result.add(($e, int(e)))
-  result.sort(proc(x, y: IdentMapItem): int = cmp(x.s, y.s))
-
-proc getIdentMap*[T: enum](e: typedesc[T]): seq[IdentMapItem] =
-  getIdentMap(T.low, T.high)
-
 proc cmpItem(x: IdentMapItem; y: openArray[char]): int =
   let slen = x.s.len
-  let ylen = y.len
-  let L = min(slen, ylen)
+  let n = cmp(slen, y.len)
+  if n != 0:
+    return n
   when nimvm:
-    for i in 0 ..< L:
+    for i in 0 ..< slen:
       let n = cmp(x.s[i], y[i])
       if n != 0:
         return n
   else:
-    if L > 0:
-      let n = cmpMem(unsafeAddr x.s[0], unsafeAddr y[0], L)
-      if n != 0:
-        return n
-  return cmp(slen, ylen)
+    if slen > 0:
+      return cmpMem(unsafeAddr x.s[0], unsafeAddr y[0], slen)
+  return 0
+
+proc getIdentMap*[T: enum](lo, hi: T): seq[IdentMapItem] =
+  result = @[]
+  for e in lo .. hi:
+    result.add(($e, int(e)))
+  result.sort(proc(x, y: IdentMapItem): int = cmpItem(x, y.s))
+
+proc getIdentMap*[T: enum](e: typedesc[T]): seq[IdentMapItem] =
+  getIdentMap(T.low, T.high)
 
 proc cmpItemNoCase(x: IdentMapItem; y: openArray[char]): int =
-  x.s.cmpIgnoreCase2(y)
+  let slen = x.s.len
+  let n = cmp(slen, y.len)
+  if n != 0:
+    return n
+  for i in 0 ..< slen:
+    let n = cmp(x.s[i].toLowerAscii(), y[i].toLowerAscii())
+    if n != 0:
+      return n
+  return 0
 
 proc strictParseEnum0(map: openArray[IdentMapItem]; s: openArray[char]): int =
   let i = map.binarySearch(s, cmpItem)
@@ -1035,6 +1075,8 @@ proc strictParseEnum*[T: enum](s: openArray[char]): Opt[T] =
     {.pop.}
   err()
 
+# Warning: the comparator here is *not* the standard cmp, but rather a
+# length-based one.
 proc parseEnumNoCase0*(map: openArray[IdentMapItem]; s: openArray[char]): int =
   let i = map.binarySearch(s, cmpItemNoCase)
   if i != -1:
@@ -1131,7 +1173,7 @@ proc atob(c: char): uint8 {.inline.} =
   return uint8.high
 
 # Warning: this overrides outs.
-proc atob*(outs: var string; data: string): Err[cstring] =
+proc atob*(outs: var string; data: openArray[char]): Err[cstring] =
   outs = newStringOfCap(data.len div 4 * 3)
   var buf = array[4, uint8].default
   var i = 0
@@ -1221,14 +1263,26 @@ proc btoa*(data: openArray[uint8]): string =
 proc btoa*(data: openArray[char]): string =
   return btoa(data.toOpenArrayByte(0, data.len - 1))
 
+template uncheckedInc(i: untyped) =
+  {.push overflowChecks: off.}
+  inc i
+  {.pop.}
+
+iterator myitems*[IX, T](a: array[IX, T]): lent T {.inline.} =
+  when a.len > 0:
+    var i = IX.low
+    while true:
+      yield a[i]
+      if i >= IX.high:
+        break
+      uncheckedInc i
+
 iterator mypairs*[T](a: openArray[T]): tuple[key: int; val: lent T] {.inline.} =
   var i = 0
   let L = a.len
   while i < L:
     yield (i, a[i])
-    {.push overflowChecks: off.}
-    inc i
-    {.pop.}
+    uncheckedInc i
 
 iterator ritems*[T](a: openArray[T]): lent T {.inline.} =
   var i = a.len
@@ -1268,5 +1322,15 @@ proc toggleIf*[T](x: var set[T]; y: T; b: bool) =
     x.incl(y)
   else:
     x.excl(y)
+
+template unionHooks*(typ: untyped) =
+  # workaround for https://github.com/nim-lang/Nim/issues/25236
+  {.push warning[Deprecated]:off.}
+  proc `=destroy`(a: var typ) =
+    discard
+
+  proc `=copy`(a: var typ; b: typ) =
+    copyMem(addr a, unsafeAddr b, sizeof(typ))
+  {.pop.}
 
 {.pop.} # raises: []

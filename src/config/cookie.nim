@@ -2,20 +2,20 @@
 
 import std/algorithm
 import std/posix
-import std/tables
 import std/times
 
 import io/chafile
 import io/dynstream
 import io/packetreader
 import io/packetwriter
+import js/jsref
 import types/opt
 import types/url
 import utils/tabutil
 import utils/twtstr
 
 type
-  Cookie* = ref object
+  Cookie* {.final.} = ref object of StrMapItem
     name: string
     value: string
     expires: int64 # unix time
@@ -30,7 +30,7 @@ type
 
   CookieJar* {.final.} = ref object of StrMapItem
     cookies: seq[Cookie]
-    map: Table[string, Cookie] # {host}{path}\t{name}
+    map: StrMap # keyed on {host}{path}\t{name}
     next: CookieJar
 
   CookieJarMap* = ref object
@@ -41,32 +41,30 @@ type
     transient*: bool # set if there is a failure in parsing cookies
 
 # Forward declarations
-proc getMapKey(cookie: Cookie): string
-
 proc sread*(r: var PacketReader; cookieJar: var CookieJar) =
   var n: bool
   r.sread(n)
   if n:
     cookieJar = CookieJar()
-    r.sread(cookieJar.name)
+    r.sread(cookieJar.s)
     r.sread(cookieJar.cookies)
     for cookie in cookieJar.cookies:
       if not cookie.skip:
-        cookieJar.map[cookie.getMapKey()] = cookie
+        cookieJar.map.put(cookie)
   else:
     cookieJar = nil
 
 proc swrite*(w: var PacketWriter; cookieJar: CookieJar) =
   w.swrite(cookieJar != nil)
   if cookieJar != nil:
-    w.swrite(cookieJar.name)
+    w.swrite(cookieJar.s)
     w.swrite(cookieJar.cookies)
 
 proc newCookieJarMap*(): CookieJarMap =
   return CookieJarMap()
 
 proc addNew*(map: CookieJarMap; name: sink string): CookieJar =
-  let jar = CookieJar(name: name)
+  let jar = CookieJar(s: name)
   map.jars.put(jar)
   if map.jarsTail == nil:
     map.jarsHead = jar
@@ -183,8 +181,8 @@ proc cookieDomainMatches(cookieDomain: string; url: URL): bool =
 
 proc add(cookieJar: CookieJar; cookie: Cookie; parseMode = false,
     persist = true) =
-  let s = cookie.getMapKey()
-  let old = cookieJar.map.getOrDefault(s)
+  cookie.s = cookie.getMapKey()
+  let old = Cookie(cookieJar.map.getOrDefault(cookie.s))
   if old != nil:
     if parseMode and old.isnew:
       return # do not override newly added cookies
@@ -194,7 +192,7 @@ proc add(cookieJar: CookieJar; cookie: Cookie; parseMode = false,
     else:
       # we cannot save this cookie, but it must be kept for this session.
       old.skip = true
-  cookieJar.map[s] = cookie
+  cookieJar.map.put(cookie)
   cookieJar.cookies.add(cookie)
 
 # https://www.rfc-editor.org/rfc/rfc6265#section-5.4
@@ -227,7 +225,7 @@ proc serialize*(cookieJar: CookieJar; url: URL; http: bool): string =
     res &= "="
     res &= cookie.value
   for i in expired.ritems:
-    cookieJar.map.del(cookieJar.cookies[i].getMapKey())
+    cookieJar.map.del(cookieJar.cookies[i])
     cookieJar.cookies.delete(i)
   move(res)
 
@@ -333,7 +331,7 @@ proc nextInt64(state: var ParseState; iq: openArray[char]): int64 =
   state.error = true
   return 0
 
-proc parse0(map: CookieJarMap; file: ChaFile; warnings: var seq[string]):
+proc parse0(map: CookieJarMap; file: AChaFile; warnings: var seq[string]):
     Opt[void] =
   var line = ""
   var nline = 0
@@ -354,7 +352,7 @@ proc parse0(map: CookieJarMap; file: ChaFile; warnings: var seq[string]):
       let cookie = Cookie(httpOnly: httpOnly, persist: true)
       var domain = state.nextField(line)
       var cookieJar: CookieJar = nil
-      if (let j = domain.find('@'); j != -1):
+      if (let j = domain.find('@'); j >= 0):
         cookie.domain = domain.substr(j + 1)
         if cookie.domain.startsWith("."):
           cookie.domain.delete(0..0)
@@ -391,14 +389,12 @@ proc parse*(map: CookieJarMap; ps: PosixStream; warnings: var seq[string];
     return err()
   let mtime = int64(stats.st_mtime)
   if mtime < otime:
-    let file = ?ps.fdopen("r")
-    let res = map.parse0(file, warnings)
-    ?file.close()
-    ?res
+    let file = ?ps.afdopen("r")
+    ?map.parse0(file, warnings)
     map.mtime = mtime
   ok()
 
-proc write0(map: CookieJarMap; file: ChaFile; ps: PosixStream;
+proc write0(map: CookieJarMap; file: AChaFile; ps: PosixStream;
     tmp, path: string): Opt[void] =
   ?file.write("""
 # Netscape HTTP Cookie file
@@ -416,8 +412,8 @@ proc write0(map: CookieJarMap; file: ChaFile; ps: PosixStream;
       var buf = ""
       if cookie.httpOnly:
         buf &= "#HttpOnly_"
-      if cookie.domain != jar.name:
-        buf &= jar.name & "@"
+      if cookie.domain != jar.s:
+        buf &= jar.s & "@"
       if not cookie.hostOnly:
         buf &= '.'
       buf &= cookie.domain & '\t'
@@ -451,10 +447,9 @@ proc write*(map: CookieJarMap; path: string): Opt[void] =
   let ps2 = newPosixStream(tmp, O_WRONLY or O_CREAT or O_EXCL, 0o600)
   if ps2 == nil:
     return err()
-  let file = ?ps2.fdopen("w")
-  let res = map.write0(file, ps2, tmp, path)
-  ?file.close()
-  res
+  let file = ?ps2.afdopen("w")
+  ?map.write0(file, ps2, tmp, path)
+  ok()
 
 proc needsWrite*(map: CookieJarMap): bool =
   not map.transient and map.jarsHead != nil

@@ -5,12 +5,12 @@
 
 import std/math
 
+import config/conftypes
 import css/box
 import css/cssparser
 import css/cssvalues
 import css/lunit
 import types/bitmap
-import types/winattrs
 import utils/luwrap
 import utils/strwidth
 import utils/twtstr
@@ -145,7 +145,8 @@ proc borderTop(input: LayoutInput; lctx: LayoutContext): LUnit =
   return 0'lu
 
 proc borderBottom(input: LayoutInput; lctx: LayoutContext): LUnit =
-  if input.border[dtVertical].send notin BorderStyleNoneHidden:
+  if input.border[dtVertical].send notin BorderStyleNoneHidden +
+      BorderStyleInput:
     return lctx.cellSize[dtVertical]
   return 0'lu
 
@@ -169,9 +170,6 @@ proc outerSize(box: BlockBox; input: LayoutInput; lctx: LayoutContext): Size =
     w = box.outerSize(dtHorizontal, input, lctx),
     h = box.outerSize(dtVertical, input, lctx)
   )
-
-proc max(span: Span): LUnit =
-  return max(span.start, span.send)
 
 # In CSS, "min" beats "max".
 proc minClamp(x: LUnit; span: Span): LUnit =
@@ -217,6 +215,13 @@ const MarginEndMap = [
   dtHorizontal: cptMarginRight,
   dtVertical: cptMarginBottom
 ]
+
+proc outerIntrWidth(box: BlockBox): LUnit =
+  #TODO borders...
+  var w = box.state.intr.w
+  w += box.computed{"margin-left"}.px(stretch(0'lu))
+  w += box.computed{"margin-right"}.px(stretch(0'lu))
+  return w
 
 proc spx(l: CSSLength; p: SizeConstraint; computed: CSSValues; padding: LUnit):
     LUnit =
@@ -409,7 +414,7 @@ proc fillImageSize(bounds: BoundsPart; osize: Size): Size =
     osize.w * osize.h
   return size(w = rat div osize.h, h = rat div osize.w)
 
-proc resolveImageSizes(lctx: LayoutContext; input: LayoutInput; space: Space;
+proc resolveImageSizes(lctx: LayoutContext; bounds: Bounds; space: Space;
     paddingSum: Size; bmp: NetworkBitmap; computed: CSSValues;
     intrinsic = false): Size =
   let width = computed{"width"}
@@ -442,12 +447,13 @@ proc resolveImageSizes(lctx: LayoutContext; input: LayoutInput; space: Space;
     if osize.w > 0'lu:
       size.h = size.w * osize.h div osize.w
   if intrinsic: # intrinsic min size
-    return input.bounds.mi.fillImageSize(size)
-  return input.bounds.a.fillImageSize(size)
+    return bounds.mi.fillImageSize(size)
+  return bounds.a.fillImageSize(size)
 
 proc applyImageSizes(lctx: LayoutContext; space: Space; paddingSum: Size;
     bmp: NetworkBitmap; computed: CSSValues; input: var LayoutInput) =
-  let size = lctx.resolveImageSizes(input, space, paddingSum, bmp, computed)
+  let size = lctx.resolveImageSizes(input.bounds, space, paddingSum, bmp,
+    computed)
   input.space = stretch(size)
   # Here we run into the problem that we are supposed to resolve intr in
   # layoutImage, but by that time we lose information of the parent size.
@@ -461,8 +467,8 @@ proc applyImageSizes(lctx: LayoutContext; space: Space; paddingSum: Size;
   # the size to.  I guess it would be cleaner if we had a different
   # LayoutInput variant for images (then we could just put intr right
   # there), but alas, we don't.
-  let intr = lctx.resolveImageSizes(input, space, paddingSum, bmp, computed,
-    intrinsic = true) + paddingSum
+  let intr = lctx.resolveImageSizes(input.bounds, space, paddingSum, bmp,
+    computed, intrinsic = true) + paddingSum
   for dim in DimensionType:
     let u = intr[dim]
     input.bounds.mi[dim] = Span(start: u, send: u)
@@ -531,8 +537,25 @@ proc resolveFlexItemSizes(lctx: LayoutContext; space: Space; dim: DimensionType;
       flexItem = true)
   )
   input.border = lctx.resolveBorder(computed, input.margin)
-  if dim != dtHorizontal:
-    input.space.h = maxContent()
+  let odim = dim.opposite()
+  let olength = computed.getLength(SizeMap[odim])
+  var hasCross = false
+  if olength.canpx(space[odim]):
+    hasCross = true
+    let u = olength.spx(space[odim], computed, paddingSum[odim])
+      .minClamp(input.bounds.a[odim])
+    input.space[odim] = stretch(u)
+    if olength.isPx:
+      input.bounds.mi[odim].start = max(u, input.bounds.mi[odim].start)
+      input.bounds.mi[odim].send = min(u, input.bounds.mi[odim].send)
+  elif input.space[odim].t == scStretch:
+    hasCross = true
+    let u = input.space[odim].u - input.margin[odim].sum() -
+      paddingSum[odim] - input.borderSum(odim, lctx)
+    input.space[odim] = stretch(minClamp(u, input.bounds.a[odim]))
+    if computed.getLength(MarginStartMap[odim]).auto or
+        computed.getLength(MarginEndMap[odim]).auto:
+      input.space[odim].t = scFitContent
   let length = computed.getLength(SizeMap[dim])
   if length.canpx(space[dim]):
     let u = length.spx(space[dim], computed, paddingSum[dim])
@@ -542,33 +565,27 @@ proc resolveFlexItemSizes(lctx: LayoutContext; space: Space; dim: DimensionType;
       input.bounds.mi[dim].start = max(u, input.bounds.mi[dim].start)
     if computed{"flex-grow"} == 0:
       input.bounds.mi[dim].send = min(u, input.bounds.mi[dim].send)
-  elif space[dim].t == scStretch and input.bounds.a[dim].send < LUnit.high:
-    input.space[dim] = stretch(input.bounds.a[dim].max())
   else:
-    # Ensure that space is indefinite in the first pass if no width has
-    # been specified.
-    input.space[dim] = maxContent()
-  let odim = dim.opposite()
-  let olength = computed.getLength(SizeMap[odim])
-  if olength.canpx(space[odim]):
-    let u = olength.spx(space[odim], computed, paddingSum[odim])
-      .minClamp(input.bounds.a[odim])
-    input.space[odim] = stretch(u)
-    if olength.isPx:
-      input.bounds.mi[odim].start = max(u, input.bounds.mi[odim].start)
-      input.bounds.mi[odim].send = min(u, input.bounds.mi[odim].send)
-  elif input.space[odim].isDefinite():
-    let u = input.space[odim].u - input.margin[odim].sum() -
-      paddingSum[odim] - input.borderSum(odim, lctx)
-    input.space[odim] = SizeConstraint(
-      t: input.space[odim].t,
-      u: minClamp(u, input.bounds.a[odim])
-    )
-    if computed.getLength(MarginStartMap[odim]).auto or
-        computed.getLength(MarginEndMap[odim]).auto:
-      input.space[odim].t = scFitContent
-  elif input.bounds.a[odim].send < LUnit.high:
-    input.space[odim] = stretch(input.bounds.a[odim].max())
+    let bmp = box.getImageBitmap()
+    if bmp != nil:
+      if hasCross:
+        let size = size(w = bmp.width.toLUnit(), h = bmp.height.toLUnit())
+        if size[odim] != 0'lu:
+          input.space[dim] =
+            stretch(input.space[odim].u * size[dim] div size[odim])
+        else:
+          input.space[dim] = maxContent()
+      else:
+        var space2: Space
+        space2[dim] = maxContent()
+        space2[odim] = fitContent(space[odim])
+        let size = lctx.resolveImageSizes(input.bounds, space2, paddingSum,
+          bmp, computed)
+        input.space[dim] = stretch(size[dim])
+    else:
+      # Space is indefinite in the first pass if width has not been
+      # specified.
+      input.space[dim] = maxContent()
   return input
 
 proc resolveBlockSpace(lctx: LayoutContext; input: var LayoutInput;
@@ -768,7 +785,7 @@ proc resolveBlockSizes(lctx: LayoutContext; space: Space; box: BlockBox):
 # using the temporary yshift variable instead of updating bfcOffset itself.)
 type
   LineInitState = enum
-    lisUninited, lisNoExclusions, lisExclusions
+    lisUninited, lisInited
 
   LineBoxState = object
     atomsHead: InlineAtom
@@ -889,7 +906,7 @@ proc addMargin(a: var Span; b: LUnit) =
     a.send = max(b, a.send)
 
 proc clearFloats(offsety: var LUnit; fstate: var FlowState; bfcOffsety: LUnit;
-    clear: CSSClear; cleared: var bool) =
+    clear: CSSClear; byFloat: bool; cleared: var bool) =
   let oy = bfcOffsety + offsety
   var y = oy
   let target = case clear
@@ -906,57 +923,63 @@ proc clearFloats(offsety: var LUnit; fstate: var FlowState; bfcOffsety: LUnit;
   if clearedTo != fstate.exclusionsHead:
     cleared = y > max(fstate.clearOffset, oy)
   fstate.clearOffset = y
-  if target == FloatNone:
+  # If we are clearing a float, then preceding floats still apply to block
+  # elements, just not to the floats themselves.  So dropping them would
+  # be wrong.
+  if target == FloatNone and not byFloat:
     fstate.exclusionsHead = clearedTo
   offsety = y - bfcOffsety
 
 proc clearFloats(offsety: var LUnit; fstate: var FlowState; bfcOffsety: LUnit;
-    clear: CSSClear) =
+    byFloat: bool; clear: CSSClear) =
   var dummy: bool
-  offsety.clearFloats(fstate, bfcOffsety, clear, dummy)
+  offsety.clearFloats(fstate, bfcOffsety, clear, byFloat, dummy)
 
-proc findNextFloatOffset(fstate: FlowState; offset: Offset; size: Size;
-    space: Space; float: CSSFloat; outw: var LUnit): Offset =
-  # Algorithm originally from QEmacs.
-  var y = offset.y
-  let leftStart = offset.x
-  let rightStart = offset.x + max(size.w, space.w.u)
-  while true:
-    var left = leftStart
-    var right = rightStart
-    var miny = high(LUnit)
-    let cy2 = y + size.h
-    for ex in fstate.exclusions:
-      let ey2 = ex.offset.y + ex.size.h
-      if cy2 >= ex.offset.y and y < ey2:
-        let ex2 = ex.offset.x + ex.size.w
-        if ex.t == FloatLeft and left < ex2:
-          left = ex2
-        if ex.t == FloatRight and right > ex.offset.x:
-          right = ex.offset.x
-        miny = min(ey2, miny)
-    let w = right - left
-    if w >= size.w or miny == high(LUnit):
-      # Enough space, or no other exclusions found at this y offset.
-      outw = min(w, space.w.u) # do not overflow the container.
-      if float == FloatLeft:
-        return offset(x = left, y = y)
-      else: # FloatRight
-        return offset(x = right - size.w, y = y)
-    # Move y to the bottom exclusion edge at the lowest y (where the exclusion
-    # still intersects with the previous y).
-    y = miny
-  assert false
-  Offset0
+proc excludeFloats(fstate: FlowState; offset: Offset; nexty: var LUnit): Span =
+  # Returns available space on line, starting from BFC offset.  Assumes
+  # there is infinite space to the right, so you must clamp the return
+  # value.
+  # nexty starts out as the end y offset; on return, it is set to the next
+  # y position to try if this span is inadequate, or to LUnit.high if no
+  # floats were found.
+  let y = offset.y
+  var left = offset.x
+  var right = LUnit.high
+  var miny = LUnit.high
+  let cy2 = nexty
+  for ex in fstate.exclusions:
+    let ey2 = ex.offset.y + ex.size.h
+    if ex.offset.y <= cy2 and y < ey2:
+      if ex.t == FloatLeft:
+        left = max(ex.offset.x + ex.size.w, left)
+      else:
+        right = min(ex.offset.x, right)
+      miny = min(miny, ey2)
+  nexty = miny
+  return Span(start: left, send: right)
 
 proc findNextFloatOffset(fstate: FlowState; offset: Offset; size: Size;
     space: Space; float: CSSFloat): Offset =
-  var dummy: LUnit
-  return fstate.findNextFloatOffset(offset, size, space, float, dummy)
-
-proc findNextBlockOffset(fstate: FlowState; offset: Offset; size: Size;
-    outw: var LUnit): Offset =
-  return fstate.findNextFloatOffset(offset, size, fstate.space, FloatLeft, outw)
+  # Algorithm originally from QEmacs.
+  var offset = offset
+  let rightStart = offset.x + max(size.w, space.w.u)
+  while true:
+    var nexty = offset.y + size.h
+    let span = fstate.excludeFloats(offset, nexty)
+    let start = span.start
+    let send = min(span.send, rightStart)
+    let w = send - start
+    if w >= size.w or nexty == LUnit.high:
+      # Enough space, or no other exclusions found at this y offset.
+      if float == FloatLeft:
+        return offset(x = start, y = offset.y)
+      else: # FloatRight
+        return offset(x = send - size.w, y = offset.y)
+    # Move y to the bottom exclusion edge at the lowest y (where the exclusion
+    # still intersects with the previous y).
+    offset.y = nexty
+  assert false
+  Offset0
 
 proc positionFloat(fstate: var FlowState; child: BlockBox; space: Space;
     outerSize: Size; marginOffset, bfcOffset, offset: Offset) =
@@ -965,7 +988,7 @@ proc positionFloat(fstate: var FlowState; child: BlockBox; space: Space;
   offset.y += fstate.marginTodo.sum()
   let clear = child.computed{"clear"}
   if clear != ClearNone:
-    offset.y.clearFloats(fstate, fstate.bfcOffset.y, clear)
+    offset.y.clearFloats(fstate, fstate.bfcOffset.y, byFloat = true, clear)
   var childBfcOffset = bfcOffset + offset - marginOffset
   childBfcOffset.y = max(fstate.clearOffset, childBfcOffset.y)
   let ft = child.computed{"float"}
@@ -1016,7 +1039,7 @@ type InitLineFlag = enum
   ilfFloat # set the line to inited, but do not flush floats.
   ilfAbsolute # set size, but allow further calls to override the state.
 
-proc initLine(fstate: var FlowState; flag = ilfRegular) =
+proc initLine(fstate: var FlowState; flag: InitLineFlag; nexty: var LUnit) =
   if flag == ilfRegular:
     let poffsety = fstate.offset.y
     fstate.flushMargins(fstate.offset.y)
@@ -1027,27 +1050,21 @@ proc initLine(fstate: var FlowState; flag = ilfRegular) =
   # we want to start from padding-left, but normally exclude padding
   # from space. so we must offset available width with padding-left too
   let paddingLeft = fstate.box.input.padding.left
-  fstate.lbstate.availableWidth = fstate.space.w.u + paddingLeft
-  fstate.lbstate.size.w = paddingLeft
-  fstate.lbstate.init = lisNoExclusions
+  fstate.lbstate.init = lisInited
   #TODO what if maxContent/minContent?
-  if fstate.exclusionsTail != nil:
-    let bfcOffset = fstate.bfcOffset
-    let y = fstate.offset.y + bfcOffset.y
-    var left = bfcOffset.x + fstate.lbstate.size.w
-    var right = bfcOffset.x + fstate.lbstate.availableWidth
-    for ex in fstate.exclusions:
-      if ex.offset.y <= y and y < ex.offset.y + ex.size.h:
-        fstate.lbstate.init = lisExclusions
-        if ex.t == FloatLeft:
-          left = ex.offset.x + ex.size.w
-        else:
-          right = ex.offset.x
-    fstate.lbstate.size.w = max(left - bfcOffset.x, fstate.lbstate.size.w)
-    fstate.lbstate.availableWidth = min(right - bfcOffset.x,
-      fstate.lbstate.availableWidth)
+  let pbfcOffset = fstate.bfcOffset
+  let start = pbfcOffset + offset(x = paddingLeft, y = fstate.offset.y)
+  nexty = start.y
+  let span = fstate.excludeFloats(start, nexty)
+  fstate.lbstate.availableWidth = min(span.send - pbfcOffset.x,
+    fstate.space.w.u + paddingLeft)
+  fstate.lbstate.size.w = span.start - pbfcOffset.x
   if flag == ilfAbsolute:
     fstate.lbstate.init = lisUninited
+
+proc initLine(fstate: var FlowState; flag = ilfRegular) =
+  var dummy: LUnit
+  fstate.initLine(flag, dummy)
 
 # Whitespace between words
 proc computeShift(lbstate: LineBoxState; ibox: InlineBox): int =
@@ -1350,7 +1367,8 @@ proc finishLine(fstate: var FlowState; ibox: InlineBox; wrap: bool;
     # add line to fstate
     let y = fstate.offset.y
     if clear != ClearNone:
-      fstate.lbstate.size.h.clearFloats(fstate, fstate.bfcOffset.y + y, clear)
+      fstate.lbstate.size.h.clearFloats(fstate, fstate.bfcOffset.y + y,
+        byFloat = false, clear)
     # * set first baseline if this is the first line box
     # * always set last baseline (so the baseline of the last line box remains)
     fstate.box.state.baseline = y + fstate.lbstate.baseline
@@ -1405,12 +1423,6 @@ proc shouldWrap(fstate: FlowState; w: LUnit): bool =
     return true # always wrap with min-content
   return fstate.lbstate.shouldWrap0(w)
 
-proc shouldWrap2(fstate: FlowState; w: LUnit): bool =
-  assert fstate.lbstate.init != lisUninited
-  if fstate.lbstate.init == lisNoExclusions:
-    return false
-  return fstate.lbstate.shouldWrap0(w)
-
 # Wrap assuming the next atom is "width" wide and associated with "ibox".
 # Returns true if wrapped (i.e. on newline).
 proc prepareSpace(fstate: var FlowState; ibox: InlineBox; width: LUnit): bool =
@@ -1439,15 +1451,22 @@ proc prepareSpace(fstate: var FlowState; ibox: InlineBox; width: LUnit): bool =
   # Line wrapping
   if not ibox.computed.nowrap and fstate.shouldWrap(widthSum):
     fstate.finishLine(ibox, wrap = true)
-    fstate.initLine()
+    var nexty: LUnit
+    fstate.initLine(ilfRegular, nexty)
     wrapped = true
     # Recompute on newline
     shift = fstate.lbstate.computeShift(ibox)
     # For floats: flush lines until we can place the atom.
-    #TODO this is inefficient
-    while fstate.shouldWrap2(width + shift.toLUnit() * fstate.cellSize.w):
-      fstate.finishLine(ibox, wrap = false, force = true)
-      fstate.initLine()
+    while nexty != LUnit.high and
+        fstate.lbstate.shouldWrap0(width + shift.toLUnit() *
+          fstate.cellSize.w):
+      # (grid: 1) quirk: avoid overlapping lines by rounding up
+      let diff = (nexty - fstate.offset.y - fstate.bfcOffset.y)
+      let diffCeil = diff.ceilTo(fstate.cellSize.h.toInt())
+      fstate.intr.h += diffCeil
+      fstate.offset.y += diffCeil
+      fstate.lbstate.init = lisUninited
+      fstate.initLine(ilfRegular, nexty)
       # Recompute on newline
       shift = fstate.lbstate.computeShift(ibox)
   if shift > 0:
@@ -1488,7 +1507,7 @@ proc addWordEOL(fstate: var FlowState; word: var WordState): bool =
   if word.s == "":
     return false
   let wrapPos = word.wrapPos
-  if wrapPos != -1:
+  if wrapPos >= 0:
     var leftstr = word.s.substr(wrapPos)
     word.s.setLen(wrapPos)
     if word.hasSoftHyphen:
@@ -1519,7 +1538,7 @@ proc checkWrap(fstate: var FlowState; word: var WordState; u: uint32;
       # (instead of any dash inside CJK sentences)
       word.wrapPos = -1
       fstate.flushIntrSize(word)
-    if uw == 2 or word.wrapPos != -1:
+    if uw == 2 or word.wrapPos >= 0:
       # break on cjk and wrap opportunities
       let plusWidth = word.width + shiftw + luw * fstate.cellSize.w
       if fstate.shouldWrap(plusWidth):
@@ -1752,7 +1771,7 @@ proc layoutFloat(fstate: var FlowState; child: BlockBox) =
     else:
       fstate.lbstate.pendingFloatsHead = f
     fstate.lbstate.pendingFloatsTail = f
-  fstate.intr.w = max(fstate.intr.w, child.state.intr.w)
+  fstate.intr.w = max(fstate.intr.w, child.outerIntrWidth())
 
 proc resolveAutoMarginStart(lctx: LayoutContext; input: LayoutInput;
     parentSpace: LUnit; child: BlockBox; dim: DimensionType): LUnit =
@@ -1790,7 +1809,8 @@ proc layoutBlockChild(fstate: var FlowState; child: BlockBox) =
         fstate.flushMargins(offset.y)
         break
       f = f.next
-    offset.y.clearFloats(fstate, fstate.bfcOffset.y, clear, cleared)
+    offset.y.clearFloats(fstate, fstate.bfcOffset.y, clear, byFloat = false,
+      cleared)
   fstate.marginTodo.addMargin(input.margin.top)
   if cleared:
     # subtract the current state of our collapsed margin so that the top
@@ -1803,42 +1823,69 @@ proc layoutBlockChild(fstate: var FlowState; child: BlockBox) =
     # This box establishes a new BFC.
     input.marginResolved = fstate.marginResolved
     fstate.flushMargins(offset.y)
-    lctx.layout(child, offset, input)
-    if fstate.exclusionsTail != nil:
-      # From the standard (abridged):
-      #
-      # > The border box of an element that establishes a new BFC must
-      # > not overlap the margin box of any floats in the same BFC. If
-      # > necessary, implementations should clear the said element, but
-      # > may place it adjacent to such floats if there is sufficient
-      # > space. CSS2 does not define when a UA may put said element
-      # > next to the float.
-      #
-      # ...thanks for nothing. So here's what we do:
-      #
-      # * run a normal pass
-      # * place the longest word (i.e. intr.w) somewhere
-      # * run another pass with the placement we got
-      #
-      #TODO other browsers just try again until they find enough available
-      # space; we should do that too once we have proper layout caching.
-      #
-      # Note that this does not apply to absolutely positioned elements,
-      # as those ignore floats.
-      let pbfcOffset = fstate.bfcOffset
-      let bfcOffset = offset(
-        x = pbfcOffset.x + child.state.offset.x,
-        y = max(pbfcOffset.y + child.state.offset.y, fstate.clearOffset)
-      )
-      let minSize = size(w = child.state.intr.w, h = lctx.cellSize.h)
-      var outw: LUnit
-      let offset = fstate.findNextBlockOffset(bfcOffset, minSize, outw)
-      let roffset = offset - pbfcOffset
-      # skip relayout if we can
-      if outw != fstate.space.w.u or roffset != child.state.offset:
-        space = initSpace(w = stretch(outw), h = fstate.space.h)
-        input = lctx.resolveBlockSizes(space, child)
-        lctx.layout(child, roffset, input)
+    # From the standard (abridged):
+    #
+    # > The border box of an element that establishes a new BFC must
+    # > not overlap the margin box of any floats in the same BFC.
+    # > If necessary, implementations should clear the said element, but
+    # > may place it adjacent to such floats if there is sufficient space.
+    # > CSS2 does not define when a UA may put said element next to the
+    # > float.
+    #
+    # ...thanks for nothing.  So what we do is mostly derived from what
+    # others appear to be doing:
+    #
+    # 1. set y to the intended offset
+    # 2. find the exclusion zone this y implies with height=0
+    # 3. layout in the exclusion zone
+    # 4. if the result *vertically* intersects with a float, try to squash
+    #    the box and relayout until it fits.  if the resulting width is
+    #    a) less than the intrinsic minimum width, in case child is a table
+    #    b) less than zero, in case child isn't a table
+    #    then move y downwards by the height of the shortest intersecting
+    #    float and go to step 2.  otherwise we're done
+    #
+    # A surprising consequence of this is that blocks are allowed to shrink
+    # to under min-content width, which I'm not exactly happy about but
+    # we'll see if it actually causes problems.
+    #
+    # Note that none of this applies to absolutely positioned elements,
+    # as those ignore floats.
+    let pbfcOffset = fstate.bfcOffset
+    var nexty = pbfcOffset.y + offset.y
+    var span = fstate.excludeFloats(pbfcOffset + offset, nexty)
+    let ospace = space
+    while true:
+      let start = span.start - pbfcOffset.x
+      let send = min(span.send - pbfcOffset.x, fstate.space.w.u)
+      if space.w.isDefinite():
+        # subtract the difference between start & offset to count newly
+        # available space without tripping up resolveBlockSizes
+        let diff = start - offset.x
+        space.w.u = min(send - diff, ospace.w.u)
+      input = lctx.resolveBlockSizes(space, child)
+      lctx.layout(child, offset(start, offset.y), input)
+      if not space.w.isDefinite(): # I guess it doesn't matter yet
+        break
+      # does it fit?
+      nexty = pbfcOffset.y + offset.y + child.state.size.h
+      let span2 = fstate.excludeFloats(pbfcOffset + offset, nexty)
+      # the spec says you can make it narrower if it's a block, but not if
+      # it's a table.
+      let minWidth = if child.computed{"display"} == DisplayTable:
+        child.state.intr.w
+      else:
+        0'lu
+      let intrFits = span2.send - span2.start >= minWidth
+      if span2.start <= span.start and span2.send >= span.send and intrFits:
+        break # yes, we are done
+      # no, try again
+      if intrFits:
+        span = span2 # try to shrink as much as possible
+      else:
+        # no space, box will always collide; advance downwards
+        offset.y = nexty - pbfcOffset.y
+        span = fstate.excludeFloats(pbfcOffset + offset, nexty)
   else:
     offset += input.borderTopLeft(lctx)
     input.bfcOffset = fstate.bfcOffset + offset
@@ -1899,7 +1946,7 @@ proc layoutBlockChild(fstate: var FlowState; child: BlockBox) =
   fstate.offset.y += outerSize.h
   fstate.intr.h += outerSize.h - child.state.size.h + child.state.intr.h
   fstate.lbstate.whitespaceNum = 0
-  fstate.intr.w = max(fstate.intr.w, child.state.intr.w)
+  fstate.intr.w = max(fstate.intr.w, child.outerIntrWidth())
 
 proc layoutOuterBlock(fstate: var FlowState; child: BlockBox) =
   if child.computed{"position"} in PositionAbsoluteFixed:
@@ -1977,7 +2024,7 @@ proc layoutInlineBlock(fstate: var FlowState; ibox: InlineBox; box: BlockBox) =
     )
     discard fstate.prepareSpace(ibox, atom.size.w)
     fstate.putAtom(atom)
-    fstate.intr.w = max(fstate.intr.w, box.state.intr.w)
+    fstate.intr.w = max(fstate.intr.w, box.outerIntrWidth())
     fstate.lbstate.intrh = max(fstate.lbstate.intrh, atom.size.h)
     fstate.lbstate.charwidth = 0
     fstate.lbstate.whitespaceNum = 0
@@ -2125,6 +2172,8 @@ proc layoutFlow(lctx: LayoutContext; box: BlockBox; input: LayoutInput;
     fstate.layoutFlow0()
     # Restore old intrinsic input, as the new ones are a function of the
     # current input and therefore wrong.
+    #TODO the theory seems correct behind this one, but in practice I
+    # can't seem to find a case where it makes a difference.
     fstate.intr = oldIntr
   elif fstate.space.w.t == scMeasure:
     fstate.maxChildWidth += fstate.totalFloatWidth
@@ -2285,6 +2334,7 @@ type
     width: LUnit
     height: LUnit
     borderWidth: LUnit
+    hasBottomBorder: bool
     blockBorder: Span
     box: BlockBox
     ncols: int
@@ -2311,11 +2361,14 @@ type
 
 proc layoutTableCell(lctx: LayoutContext; box: BlockBox; space: Space;
     border: CSSBorder; merge: CSSBorderMerge) =
+  let computed = box.computed
+  let padding = lctx.resolvePadding(space.w, computed)
+  let paddingSum = padding.sum()
   box.input = LayoutInput(
-    padding: lctx.resolvePadding(space.w, box.computed),
+    padding: padding,
     space: initSpace(w = space.w, h = maxContent()),
-    bounds: DefaultBounds,
-    border: border
+    border: border,
+    bounds: lctx.resolveBounds(space, paddingSum, computed, replaced = false)
   )
   box.keepLayout = true
   box.resetState()
@@ -2339,14 +2392,14 @@ proc layoutTableCell(lctx: LayoutContext; box: BlockBox; space: Space;
     box.state.baselineSet = true
 
 # Grow cells with a rowspan > 1 (to occupy their place in a new row).
-proc growRowspan(tctx: var TableContext; growi, n: var int; ntill, growlen: int;
-    width: var LUnit; cellHead, cellTail: var CellWrapper) =
+proc growRowspan(tctx: var TableContext; growi, n: var int; flush: bool;
+    growlen: int; width: var LUnit; cellHead, cellTail: var CellWrapper) =
   while growi < growlen:
     let cellw = tctx.cols[growi].growing
     if cellw == nil:
       inc growi
       continue
-    if growi > ntill:
+    if growi > n and not flush:
       break
     dec tctx.cols[growi].grown
     let grown = tctx.cols[growi].grown
@@ -2373,8 +2426,8 @@ proc growRowspan(tctx: var TableContext; growi, n: var int; ntill, growlen: int;
     inc growi
 
 proc resolveBorder(tctx: var TableContext; computed: CSSValues;
-    firstRow, lastCell, lastRow: bool; inlineBorder, blockBorder: var Span):
-    CSSBorder =
+    firstRow, lastCell, lastRow: bool; inlineBorder, blockBorder: var Span;
+    hasBottomBorder: var bool): CSSBorder =
   let lctx = tctx.lctx
   var dummyMargin = RelativeRect.default # table cells have no margin
   var border = lctx.resolveBorder(computed, dummyMargin)
@@ -2388,6 +2441,7 @@ proc resolveBorder(tctx: var TableContext; computed: CSSValues;
   if border.bottom notin BorderStyleNoneHidden:
     let d = if lastRow: 1'lu else: 2'lu
     blockBorder.send = max(blockBorder.send, lctx.cellSize.h div d)
+    hasBottomBorder = true
   if not lastCell:
     border[dtHorizontal].send = BorderStyleNone
   if not lastRow:
@@ -2458,6 +2512,7 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
   var cellHead: CellWrapper = nil
   var cellTail: CellWrapper = nil
   var blockBorder = Span(start: tctx.blockSpacing, send: tctx.blockSpacing)
+  var hasBottomBorder = false
   var n = 0
   var growi = 0
   var width = 0'lu
@@ -2469,10 +2524,11 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
   for box in row.children:
     let box = BlockBox(box)
     assert box.computed{"display"} == DisplayTableCell
-    let firstRow = rowi == 0
+    let firstRow = rowi == 0 or not tctx.rows[rowi - 1].hasBottomBorder
     let colspan = box.computed{"-cha-colspan"}
     # grow until n, but not more
-    tctx.growRowspan(growi, n, n, growlen, width, cellHead, cellTail)
+    tctx.growRowspan(growi, n, flush = false, growlen, width, cellHead,
+      cellTail)
     let rowspan = min(box.computed{"-cha-rowspan"}, numrows - rowi)
     let cw = box.computed{"width"}
     let ch = box.computed{"height"}
@@ -2483,7 +2539,7 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
     )
     var inlineBorder = Span(start: tctx.inlineSpacing, send: tctx.inlineSpacing)
     var border = tctx.resolveBorder(box.computed, firstRow, box.next == nil,
-      row.next == nil, inlineBorder, blockBorder)
+      row.next == nil, inlineBorder, blockBorder, hasBottomBorder)
     borderWidth += inlineBorder.sum()
     let merge = [dtHorizontal: not firstCell, dtVertical: not firstRow]
     lctx.layoutTableCell(box, space, border, merge)
@@ -2508,7 +2564,7 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
     borderWidth += spacing
     n = nextn
     firstCell = false
-  tctx.growRowspan(growi, n, tctx.cols.len, growlen, width, cellHead, cellTail)
+  tctx.growRowspan(growi, n, flush = true, growlen, width, cellHead, cellTail)
   width += borderWidth
   tctx.maxwidth = max(width, tctx.maxwidth)
   tctx.borderWidth = max(borderWidth, tctx.borderWidth)
@@ -2518,7 +2574,8 @@ proc preLayoutTableRow(tctx: var TableContext; row, parent: BlockBox;
     width: width,
     borderWidth: borderWidth,
     blockBorder: blockBorder,
-    ncols: n
+    ncols: n,
+    hasBottomBorder: hasBottomBorder
   ))
 
 proc alignTableCell(cell: BlockBox; availableHeight, baseline: LUnit) =
@@ -2913,18 +2970,21 @@ type
     intr: Size # intrinsic minimum size
     relativeChildren: seq[BlockBox]
     space: Space
+    bounds: Bounds
     firstBaseline: LUnit
     baseline: LUnit
     canWrap: bool
     reverse: bool
     dim: DimensionType # main dimension
     baselineSet: bool
+    justifyContent: CSSJustifyContent
 
   FlexMainContext = object
-    totalSize: Size
-    maxSize: Size
+    totalMainSize: LUnit
+    maxCrossSize: LUnit
     shrinkSize: LUnit
-    maxMargin: RelativeRect
+    maxCrossMargin: Span
+    marginAutoCount: uint16
     totalWeight: array[FlexWeightType, float32]
     pending: seq[FlexPendingItem]
 
@@ -2934,25 +2994,29 @@ proc layoutFlexItem(lctx: LayoutContext; box: BlockBox; input: LayoutInput) =
 const FlexRow = {FlexDirectionRow, FlexDirectionRowReverse}
 
 proc updateMaxSizes(mctx: var FlexMainContext; child: BlockBox;
-    input: LayoutInput; lctx: LayoutContext) =
-  for dim in DimensionType:
-    mctx.maxSize[dim] = max(mctx.maxSize[dim], child.state.size[dim] +
-      input.borderSum(dim, lctx))
-    mctx.maxMargin[dim].start = max(mctx.maxMargin[dim].start,
-      input.margin[dim].start)
-    mctx.maxMargin[dim].send = max(mctx.maxMargin[dim].send,
-      input.margin[dim].send)
+    input: LayoutInput; dim: DimensionType; lctx: LayoutContext) =
+  let odim = dim.opposite()
+  mctx.totalMainSize += child.outerSize(dim, input, lctx)
+  mctx.maxCrossSize = max(mctx.maxCrossSize, child.state.size[odim] +
+    input.borderSum(odim, lctx))
+  mctx.maxCrossMargin.start = max(mctx.maxCrossMargin.start,
+    input.margin[odim].start)
+  mctx.maxCrossMargin.send = max(mctx.maxCrossMargin.send,
+    input.margin[odim].send)
+  if child.computed.getLength(MarginStartMap[dim]).auto:
+    inc mctx.marginAutoCount
+  if child.computed.getLength(MarginEndMap[dim]).auto:
+    inc mctx.marginAutoCount
 
 proc redistributeMainSize(mctx: var FlexMainContext; diff: LUnit;
     wt: FlexWeightType; dim: DimensionType; lctx: LayoutContext) =
   var diff = diff
   var totalWeight = mctx.totalWeight[wt]
-  let odim = dim.opposite
   var relayout: seq[int] = @[]
   while (wt == fwtGrow and diff > 0'lu or wt == fwtShrink and diff < 0'lu) and
       totalWeight > 0:
-    # redo maxSize calculation; we only need height here
-    mctx.maxSize[odim] = 0'lu
+    # redo maxCrossSize calculation; we only need height here
+    mctx.maxCrossSize = 0'lu
     var udiv = totalWeight
     if wt == fwtShrink:
       udiv *= mctx.shrinkSize.toFloat32() / totalWeight
@@ -2965,9 +3029,11 @@ proc redistributeMainSize(mctx: var FlexMainContext; diff: LUnit;
     totalWeight = 0
     diff = 0'lu
     relayout.setLen(0)
+    mctx.totalMainSize = 0'lu
+    mctx.marginAutoCount = 0
     for i, it in mctx.pending.mpairs:
       if it.weights[wt] == 0:
-        mctx.updateMaxSizes(it.child, it.input, lctx)
+        mctx.updateMaxSizes(it.child, it.input, dim, lctx)
         continue
       var uw = unit * it.weights[wt]
       if wt == fwtShrink:
@@ -2997,13 +3063,13 @@ proc redistributeMainSize(mctx: var FlexMainContext; diff: LUnit;
       totalWeight += it.weights[wt]
       if it.weights[wt] == 0: # frozen, relayout immediately
         lctx.layoutFlexItem(it.child, it.input)
-        mctx.updateMaxSizes(it.child, it.input, lctx)
+        mctx.updateMaxSizes(it.child, it.input, dim, lctx)
       else: # delay relayout
         relayout.add(i)
     for i in relayout:
       let child = mctx.pending[i].child
       lctx.layoutFlexItem(child, mctx.pending[i].input)
-      mctx.updateMaxSizes(child, mctx.pending[i].input, lctx)
+      mctx.updateMaxSizes(child, mctx.pending[i].input, dim, lctx)
 
 proc flushMain(fctx: var FlexContext; mctx: var FlexMainContext;
     input: LayoutInput) =
@@ -3011,38 +3077,77 @@ proc flushMain(fctx: var FlexContext; mctx: var FlexMainContext;
   let odim = dim.opposite
   let lctx = fctx.lctx
   if fctx.space[dim].isDefinite:
-    let diff = fctx.space[dim].u - mctx.totalSize[dim]
+    let diff = fctx.space[dim].u - mctx.totalMainSize
     let wt = if diff > 0'lu: fwtGrow else: fwtShrink
     # Do not grow shrink-to-fit input.
     if wt == fwtShrink or fctx.space[dim].t == scStretch:
       mctx.redistributeMainSize(diff, wt, dim, lctx)
-  elif input.bounds.a[dim].start > 0'lu:
+  else:
     # Override with min-width/min-height, but *only* if we are smaller
-    # than the desired size. (Otherwise, we would incorrectly limit
+    # than the desired size.  (Otherwise, we would incorrectly limit
     # max-content size when only a min-width is requested.)
-    if input.bounds.a[dim].start > mctx.totalSize[dim]:
-      let diff = input.bounds.a[dim].start - mctx.totalSize[dim]
-      mctx.redistributeMainSize(diff, fwtGrow, dim, lctx)
-  let maxMarginSum = mctx.maxMargin[odim].sum()
-  let h = mctx.maxSize[odim] + maxMarginSum
+    let diff = input.bounds.a[dim].start - mctx.totalMainSize
+    mctx.redistributeMainSize(diff, fwtGrow, dim, lctx)
+  let maxMarginSum = mctx.maxCrossMargin.sum()
+  let h = (mctx.maxCrossSize + maxMarginSum).minClamp(input.bounds.a[odim])
   var intr = size(w = 0'lu, h = 0'lu)
   var offset = fctx.offset
+  var diff = if fctx.space[dim].t == scStretch:
+    max(fctx.space.w.u - mctx.totalMainSize, 0'lu)
+  else:
+    0'lu
+  var marginDiff = 0'lu
+  if mctx.marginAutoCount > 0:
+    marginDiff = diff div int(mctx.marginAutoCount).toLUnit()
+    diff = 0'lu
+  case fctx.justifyContent
+  of JustifyContentFlexStart: discard
+  of JustifyContentFlexEnd: offset[dim] += diff
+  of JustifyContentCenter: offset[dim] += diff div 2'lu
+  of JustifyContentSpaceBetween, JustifyContentSpaceAround: discard
   for it in mctx.pending.mitems:
     let oborder = it.child.input.borderSum(odim, lctx)
-    if it.child.state.size[odim] + oborder < h and
-        not it.input.space[odim].isDefinite:
-      # if the max height is greater than our height, then take max height
-      # instead. (if the box's available height is definite, then this will
-      # change nothing, so we skip it as an optimization.)
-      it.input.space[odim] = stretch(h - it.input.margin[odim].sum() -
-        it.input.padding[odim].sum() - oborder)
-      if odim == dtVertical:
-        # Exclude the bottom margin; space only applies to the actual
-        # height.
-        it.input.space[odim].u -= it.child.state.marginTodo.sum()
+    if it.input.space[odim].t != scStretch:
+      # If the box's available height was indefinite, it is possible that
+      # we can compute it now.
+      let paddingSum = it.input.padding.sum()
+      let computed = it.child.computed
+      let olength = computed.getLength(SizeMap[odim])
+      var space = fctx.space
+      space[odim] = stretch(h)
+      it.input.bounds = lctx.resolveBounds(space, paddingSum, computed,
+        replaced = false, flexItem = true)
+      let u = if olength.canpx(stretch(h)):
+        # We couldn't compute the initial size because it was fit-content
+        # and this is a percentage cross size.
+        olength.spx(stretch(h), computed, paddingSum[odim])
+      else:
+        # If the max height is greater than our height, then take max height
+        # instead.
+        var tmp = h - it.input.margin[odim].sum() - paddingSum[odim] - oborder
+        if odim == dtVertical:
+          # Exclude the bottom margin; space only applies to the actual
+          # height.
+          tmp -= it.child.state.marginTodo.sum()
+        tmp
+      it.input.space[odim] = stretch(u.minClamp(it.input.bounds.a[odim]))
       lctx.layoutFlexItem(it.child, it.input)
-    offset[dim] += it.input.margin[dim].start
+    var mainMarginStart = it.input.margin[dim].start
+    if it.child.computed.getLength(MarginStartMap[dim]).auto:
+      mainMarginStart = marginDiff
+    offset[dim] += mainMarginStart
     it.child.state.offset[dim] += offset[dim]
+    case fctx.justifyContent
+    of JustifyContentFlexStart, JustifyContentFlexEnd, JustifyContentCenter:
+      discard
+    of JustifyContentSpaceBetween:
+      if diff > 0'lu and mctx.pending.len > 1:
+        offset[dim] += diff div (mctx.pending.len - 1).toLUnit()
+    of JustifyContentSpaceAround:
+      if diff > 0'lu:
+        let diff2 = diff div mctx.pending.len.toLUnit()
+        it.child.state.offset[dim] += diff2 div 2'lu
+        offset[dim] += diff2
     # resolve auto cross margins for shrink-to-fit items
     if input.space[odim].t == scStretch:
       it.input.margin[odim].start += lctx.resolveAutoMarginStart(it.input,
@@ -3050,7 +3155,10 @@ proc flushMain(fctx: var FlexContext; mctx: var FlexMainContext;
     # margins are added here, since they belong to the flex item.
     it.child.state.offset[odim] += offset[odim] + it.input.margin[odim].start
     offset[dim] += it.child.state.size[dim]
-    offset[dim] += it.input.margin[dim].send
+    var mainMarginEnd = it.input.margin[dim].send
+    if it.child.computed.getLength(MarginEndMap[dim]).auto:
+      mainMarginEnd = marginDiff
+    offset[dim] += mainMarginEnd
     offset[dim] += it.input.borderSum(dim, lctx)
     let intru = it.child.state.intr[dim] + it.input.margin[dim].sum()
     if fctx.canWrap:
@@ -3080,43 +3188,29 @@ proc layoutFlexIter(fctx: var FlexContext; mctx: var FlexMainContext;
     child: BlockBox; input: LayoutInput) =
   let lctx = fctx.lctx
   let dim = fctx.dim
-  var childSizes = lctx.resolveFlexItemSizes(fctx.space, dim, child)
+  var parentSpace = fctx.space
+  if dim == dtVertical or fctx.canWrap:
+    parentSpace.h = maxContent()
+  var childSizes = lctx.resolveFlexItemSizes(parentSpace, dim, child)
   let flexBasis = child.computed{"flex-basis"}
-  let childMinBounds = childSizes.bounds.a[dim]
-  let skipBounds = childSizes.space[dim].t == scMaxContent
-  if skipBounds:
-    childSizes.bounds.a[dim] = DefaultSpan
-  lctx.layoutFlexItem(child, childSizes)
-  if not flexBasis.auto and fctx.space[dim].isDefinite:
-    # we can't skip this pass; it is needed to calculate the minimum
-    # height.
-    let minu = child.state.intr[dim]
-    childSizes.space[dim] = stretch(flexBasis.spx(fctx.space[dim],
+  if not flexBasis.auto and parentSpace[dim].isDefinite:
+    childSizes.space[dim] = stretch(flexBasis.spx(parentSpace[dim],
       child.computed, childSizes.padding[dim].sum()))
-    if minu > childSizes.space[dim].u:
-      # First pass gave us a box that is thinner than the minimum
-      # acceptable width for whatever reason; this may have happened
-      # because the initial flex basis was e.g. 0. Try to resize it to
-      # something more usable.
-      childSizes.space[dim] = stretch(minu)
-    lctx.layoutFlexItem(child, childSizes)
-  if skipBounds:
-    childSizes.bounds.a[dim] = childMinBounds
+  lctx.layoutFlexItem(child, childSizes)
   if child.computed{"position"} in PositionAbsoluteFixed:
     # Absolutely positioned flex children do not participate in flex layout.
     child.input.bfcOffset = Offset0
   else:
-    if fctx.canWrap and (fctx.space[dim].t == scMinContent or
-        fctx.space[dim].isDefinite and
-        mctx.totalSize[dim] + child.state.size[dim] > fctx.space[dim].u):
-      fctx.flushMain(mctx, input)
     let outerSize = child.outerSize(dim, childSizes, lctx)
-    mctx.updateMaxSizes(child, childSizes, lctx)
+    if fctx.canWrap and (parentSpace[dim].t == scMinContent or
+        parentSpace[dim].isDefinite and
+        mctx.totalMainSize + outerSize > parentSpace[dim].u):
+      fctx.flushMain(mctx, input)
+    mctx.updateMaxSizes(child, childSizes, dim, lctx)
     let grow = child.computed{"flex-grow"}
     let shrink = child.computed{"flex-shrink"}
     mctx.totalWeight[fwtGrow] += grow
     mctx.totalWeight[fwtShrink] += shrink
-    mctx.totalSize[dim] += outerSize
     if shrink != 0:
       mctx.shrinkSize += outerSize
     mctx.pending.add(FlexPendingItem(
@@ -3125,34 +3219,54 @@ proc layoutFlexIter(fctx: var FlexContext; mctx: var FlexMainContext;
       input: childSizes
     ))
 
+proc initFlexContext(lctx: LayoutContext; computed: CSSValues;
+    input: LayoutInput; space: Space): FlexContext =
+  let flexDir = computed{"flex-direction"}
+  let dim = if flexDir in FlexRow: dtHorizontal else: dtVertical
+  FlexContext(
+    lctx: lctx,
+    offset: input.padding.topLeft,
+    space: space,
+    canWrap: computed{"flex-wrap"} != FlexWrapNowrap,
+    reverse: computed{"flex-direction"} in FlexReverse,
+    justifyContent: computed{"justify-content"},
+    dim: dim,
+  )
+
 proc layoutFlex(lctx: LayoutContext; box: BlockBox; offset: Offset;
     input: LayoutInput) =
   if not lctx.layoutFlowRootPre(box, offset, input):
     return
-  let flexDir = box.computed{"flex-direction"}
-  let dim = if flexDir in FlexRow: dtHorizontal else: dtVertical
+  var space = input.space
+  var fctx = initFlexContext(lctx, box.computed, input, space)
+  let dim = fctx.dim
   let odim = dim.opposite()
-  var fctx = FlexContext(
-    lctx: lctx,
-    offset: input.padding.topLeft,
-    space: input.space,
-    canWrap: box.computed{"flex-wrap"} != FlexWrapNowrap,
-    reverse: box.computed{"flex-direction"} in FlexReverse,
-    dim: dim
-  )
-  if fctx.space[odim].t == scFitContent:
-    var u = 0'lu
+  let indefinite = fctx.space[dim].t == scFitContent
+  # track the actual intrinsic width that doesn't depend on the first
+  # layout's result
+  #TODO see the similar mechanism in flow, I'm not sure if this is really
+  # needed
+  var realIntr: Size
+  if indefinite:
+    # measure size
+    fctx.space[dim] = measure()
+    var mctx = FlexMainContext()
     for child in box.children:
       let child = BlockBox(child)
-      var childSizes = lctx.resolveFlexItemSizes(fctx.space, dim, child)
-      lctx.layoutFlexItem(child, childSizes)
-      u = max(u, child.outerSize(odim, childSizes, lctx))
-    u = min(fctx.space[odim].u, u)
-    fctx.space[odim] = stretch(u)
-  if fctx.space[dim].t == scFitContent and input.bounds.a[dim].start > 0'lu:
-    fctx.space[dim] = stretch(input.bounds.a[dim].start)
-  if fctx.space[dim].isDefinite:
-    fctx.space[dim].u = fctx.space[dim].u.minClamp(input.bounds.a[dim])
+      fctx.layoutFlexIter(mctx, child, input)
+      let intru = child.state.intr[dim] + input.margin[dim].sum()
+      if fctx.canWrap:
+        realIntr[dim] = max(realIntr[dim], intru)
+      else:
+        realIntr[dim] += intru
+      realIntr[odim] = max(child.state.intr[odim], realIntr[odim])
+    realIntr[odim] += mctx.maxCrossMargin.sum()
+    var size: Size
+    size[dim] = mctx.totalMainSize
+    size[odim] = mctx.maxCrossSize
+    box.applySize(input, size, space)
+    space[dim] = stretch(box.state.size[dim])
+    fctx = initFlexContext(lctx, box.computed, input, space)
   var mctx = FlexMainContext()
   for child in box.children:
     let child = BlockBox(child)
@@ -3165,6 +3279,8 @@ proc layoutFlex(lctx: LayoutContext; box: BlockBox; offset: Offset;
   size -= input.padding.topLeft
   box.applySize(input, size, input.space)
   box.state.size += paddingSum
+  if indefinite:
+    fctx.intr = realIntr
   box.applyIntr(input, fctx.intr + paddingSum)
   box.state.baselineSet = fctx.baselineSet
   box.state.firstBaseline = fctx.firstBaseline

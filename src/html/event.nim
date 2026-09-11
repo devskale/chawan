@@ -6,15 +6,17 @@ import html/catom
 import html/domexception
 import html/script
 import io/timeout
-import monoucha/fromjs
-import monoucha/jsbind
-import monoucha/jsnull
-import monoucha/jstypes
-import monoucha/jsutils
-import monoucha/quickjs
-import monoucha/tojs
-import types/jsopt
+import js/fromjs
+import js/jsbind
+import js/jsnull
+import js/jsopaque
+import js/jsref
+import js/jstypes
+import js/jsutils
+import js/quickjs
+import js/tojs
 import types/opt
+import types/refstring
 import utils/twtstr
 
 type
@@ -36,102 +38,172 @@ type
     efCancelable
     efTrusted
 
-  Event* = ref object of JSRootObj
-    timeStamp {.jsget.}: float64
-    target* {.jsget.}: EventTarget
-    currentTarget* {.jsget.}: EventTarget
-    ctype* {.jsget: "type".}: CAtom
-    eventPhase {.jsget.}: uint16
+  EventObj* {.pure.} = object of JSRootObj
+    timeStamp: float64
+    target*: EventTarget
+    currentTarget*: EventTarget
+    eventType*: CAtom
+    eventPhase: uint16
     flags: set[EventFlag]
 
-  CustomEvent* {.final.} = ref object of Event
-    detail {.jsget.}: JSValue
+  Event* = JSRef[EventObj]
 
-  MessageEvent* {.final.} = ref object of Event
-    data {.jsget.}: JSValue
-    origin {.jsget.}: string
+  CustomEventObj {.pure, final.} = object of EventObj
+    detail: JSValue
 
-  SubmitEvent* {.final.} = ref object of Event
-    submitter {.jsget.}: EventTarget
+  CustomEvent = JSRef[CustomEventObj]
 
-  UIEvent* = ref object of Event
-    detail {.jsget.}: int32
-    view {.jsget.}: EventTarget
+  MessageEventObj {.pure, final.} = object of EventObj
+    data: JSValue
+    origin: string
 
-  MouseEvent* {.final.} = ref object of UIEvent
-    screenX {.jsget.}: int32
-    screenY {.jsget.}: int32
-    clientX {.jsget, jsget: "x".}: int32
-    clientY {.jsget, jsget: "y".}: int32
-    button {.jsget.}: int16
-    buttons {.jsget.}: uint16
-    ctrlKey {.jsget.}: bool
-    shiftKey {.jsget.}: bool
-    altKey {.jsget.}: bool
-    metaKey {.jsget.}: bool
-    relatedTarget {.jsget.}: EventTarget
+  MessageEvent = JSRef[MessageEventObj]
+
+  SubmitEventObj {.pure, final.} = object of EventObj
+    submitter: EventTarget
+
+  SubmitEvent = JSRef[SubmitEventObj]
+
+  UIEventObj {.pure.} = object of EventObj
+    detail: int32
+    view: EventTarget
+
+  UIEvent = JSRef[UIEventObj]
+
+  MouseEventObj {.pure, final.} = object of UIEventObj
+    screenX: int32
+    screenY: int32
+    clientX: int32
+    clientY: int32
+    button: int16
+    buttons: uint16
+    ctrlKey: bool
+    shiftKey: bool
+    altKey: bool
+    metaKey: bool
+    relatedTarget: EventTarget
     #TODO and the others
 
-  InputEvent* {.final.} = ref object of UIEvent
-    data {.jsget.}: Option[string]
-    isComposing {.jsget.}: bool
-    inputType {.jsget.}: string
+  MouseEvent = JSRef[MouseEventObj]
 
-  EventTarget* = ref object of JSRootObj
+  InputEventObj {.final.} = object of UIEventObj
+    data: Option[string]
+    isComposing: bool
+    inputType: string
+
+  InputEvent = JSRef[InputEventObj]
+
+  EventTargetObj* = object of JSRootObj
     eventListener: EventListener
 
-  EventListener {.acyclic.} = ref object
-    # if callback is undefined, the listener has been removed
-    callback: JSValue
-    ctype: CAtom
-    capture: bool
-    once: bool
-    internal: bool
-    passive: bool
-    next: EventListener
-    signal: AbortSignal
+  EventTarget* = JSRef[EventTargetObj]
 
-  AbortSignal {.final.} = ref object of EventTarget
-    reason {.jsget.}: JSValue
-    aborted {.jsget.}: bool
+  MutationRecordType* = enum
+    mrtAttributes = "attributes"
+    mrtCharacterData = "characterData"
+    mrtChildList = "childList"
+
+  MutationRecordObj = object
+    t: MutationRecordType
+    attributeName: CAtom
+    attributeNamespace: CAtom
+    oldValue: RefString
+    target: EventTarget
+    addedNodes: JSRootRef
+    removedNodes: JSRootRef
+    previousSibling: EventTarget
+    nextSibling: EventTarget
+
+  MutationRecord = JSRef[MutationRecordObj]
+
+  MutationObserverObj = object
+    callback*: JSObject
+    nodes: seq[ptr EventTargetObj]
+    records*: seq[MutationRecord]
+
+  MutationObserver* = JSRef[MutationObserverObj]
+
+  EventListenerType = enum
+    eltEventListener, eltMutationObserver
+
+  ObservedItemFlag* = enum
+    oifChildList, oifAttributes, oifAttributeFilter, oifAttributeOldValue,
+    oifCharacterData, oifCharacterDataOldValue, oifSubtree
+
+  EventListenerFlag = enum
+    elfOnce, elfPassive
+
+  EventListener {.acyclic.} = ref object
+    flags*: set[ObservedItemFlag]
+    case t: EventListenerType
+    of eltEventListener:
+      # callback may be
+      # * null (accepted from addEventListener)
+      # * an object (whose handleEvent property will be invoked)
+      # * a function
+      callback: JSObject
+      eventType: CAtom
+      eflags: set[EventListenerFlag]
+      capture: bool
+      internal: bool
+      removed: bool
+      signal: AbortSignal
+    of eltMutationObserver:
+      observer*: MutationObserver
+      attributeFilter*: seq[CAtom]
+    # order is: eltEventListener nodes -> eltMutationObserver nodes
+    next: EventListener
+
+  AbortSignal = JSRef[AbortSignalObj]
+
+  AbortSignalObj {.pure, final.} = object of EventTargetObj
+    reason: JSValue
+    aborted: bool
     abortSteps: seq[JSValue]
     #TODO source/dependent signals
 
-  AbortController = ref object
-    signal {.jsget.}: AbortSignal
+  AbortControllerObj = object
+    signal: AbortSignal
 
-jsDestructor(AbortController)
-
-# Forward declaration hack
-var isDefaultPassiveImpl*: proc(target: EventTarget): bool {.nimcall,
-  raises: [].}
-var getParentImpl*: proc(ctx: JSContext; target: EventTarget; isLoad: bool):
-  EventTarget {.nimcall, raises: [].}
-var isWindowImpl*: proc(target: EventTarget): bool {.nimcall, raises: [].}
-var isHTMLElementImpl*: proc(target: EventTarget): bool {.nimcall, raises: [].}
-var setEventImpl*: proc(ctx: JSContext; event: Event): Event {.
-  nimcall, raises: [].}
+  AbortController = JSRef[AbortControllerObj]
 
 # Forward declarations
 proc removeEventListener(ctx: JSContext; eventTarget: EventTarget;
-  ctype: CAtomTraced; callback: JSValueConst;
+  eventType: CAtom; callback: JSValueConst;
   options: JSValueConst = JS_UNDEFINED): Opt[void]
+proc getClassID*(t: typedesc[EventTarget]): JSClassID
+proc getClassID(t: typedesc[AbortSignal]): JSClassID
+proc getClassID*(t: typedesc[Event]): JSClassID
+proc getClassID(t: typedesc[MessageEvent]): JSClassID
 
-iterator eventListeners(this: EventTarget): EventListener =
+# Forward declaration hack
+proc isDefaultPassive(target: EventTarget): bool {.importc: "cha_$1".}
+proc getParentImpl(target: EventTarget; isLoad: bool): EventTarget {.
+  importc: "cha_$1".}
+proc setEvent(ctx: JSContext; event: Event): Event {.importc: "cha_$1".}
+
+var windowClassID* {.global.}: JSClassID
+var nodeClassID* {.global.}: JSClassID
+var htmlElementClassID* {.global.}: JSClassID
+
+iterator eventListenersRaw(this: EventTarget): EventListener =
+  # includes mutation observers too!
   var it = this.eventListener
   while it != nil:
     yield it
     it = it.next
 
-proc finalize(rt: JSRuntime; target: EventTarget) {.jsfin.} =
-  # Can't take rt as param here, because elements may be unbound in JS.
-  for el in target.eventListeners:
-    JS_FreeValueRT(rt, el.callback)
+iterator eventListeners(this: EventTarget): EventListener =
+  for el in this.eventListenersRaw:
+    if el.t == eltEventListener:
+      yield el
+    else:
+      break
 
-proc mark(rt: JSRuntime; target: EventTarget; markFunc: JS_MarkFunc)
-    {.jsmark.} =
-  for el in target.eventListeners:
-    JS_MarkValue(rt, el.callback, markFunc)
+iterator mutationObservers*(this: EventTarget): EventListener =
+  for el in this.eventListenersRaw:
+    if el.t == eltMutationObserver:
+      yield el
 
 type
   EventInit* = object of JSDict
@@ -140,14 +212,17 @@ type
     composed* {.jsdefault.}: bool
 
   CustomEventInit = object of EventInit
-    detail {.jsdefault: JS_NULL.}: JSValueConst
+    detail {.jsdefault: trace(JS_NULL).}: JSValueTraced
 
   MessageEventInit* = object of EventInit
-    data* {.jsdefault: JS_NULL.}: JSValueConst
+    data* {.jsdefault: trace(JS_NULL).}: JSValueTraced
     origin {.jsdefault.}: string
     lastEventId {.jsdefault.}: string
 
 # Event
+template asEvent*[T: EventObj](x: JSRef[T]): Event =
+  Event(x)
+
 proc innerEventCreationSteps*(event: Event; eventInitDict: EventInit) =
   event.flags = {efInitialized}
   #TODO this should measure time starting from when the script was started.
@@ -159,191 +234,207 @@ proc innerEventCreationSteps*(event: Event; eventInitDict: EventInit) =
   if eventInitDict.composed:
     event.flags.incl(efComposed)
 
-proc newEvent(ctype: CAtomTraced; eventInitDict = EventInit()): Event {.
-    jsctor.} =
-  let event = Event(ctype: ctype.dup())
-  event.innerEventCreationSteps(eventInitDict)
-  return event
-
-proc newEvent*(ctype: StaticAtom; target: EventTarget;
+proc newEvent*(eventType: StaticAtom; target: EventTarget;
     bubbles, cancelable: bool): Event =
-  let event = Event(
-    ctype: ctype.toAtom(),
+  let event = jsNew EventObj(
+    eventType: eventType.view(),
     target: target,
     currentTarget: target,
   )
-  if bubbles:
-    event.flags.incl(efBubbles)
-  if cancelable:
-    event.flags.incl(efCancelable)
+  if event != nil:
+    if bubbles:
+      event.flags.incl(efBubbles)
+    if cancelable:
+      event.flags.incl(efCancelable)
   event
 
-proc newTrustedEvent*(ctype: StaticAtom; target: EventTarget;
+proc newTrustedEvent*(eventType: StaticAtom; target: EventTarget;
     bubbles, cancelable: bool): Event =
-  let event = Event(
-    ctype: ctype.toAtom(),
-    target: target,
-    currentTarget: target,
-    flags: {efTrusted}
-  )
-  if bubbles:
-    event.flags.incl(efBubbles)
-  if cancelable:
-    event.flags.incl(efCancelable)
+  let event = newEvent(eventType, target, bubbles, cancelable)
+  if event != nil:
+    event.flags.incl(efTrusted)
   event
-
-proc eventFlag(event: Event; flag: EventFlag): bool {.
-    jsmfget("bubbles", efBubbles), jsmfget("cancelable", efCancelable),
-    jsmfget("isTrusted", efTrusted), jsmfget("defaultPrevented", efCanceled),
-    jsmfget("cancelBubble", efStopPropagation),
-    jsmfget("composed", efComposed).} =
-  flag in event.flags
 
 proc setTrusted*(event: Event) =
   event.flags.incl(efTrusted)
 
-proc initialize(this: Event; ctype: CAtomTraced; bubbles, cancelable: bool) =
-  this.flags.incl(efInitialized)
-  this.flags.excl(efTrusted)
-  this.target = nil
-  this.ctype = ctype.dup()
-  this.flags.toggleIf(efBubbles, bubbles)
-  this.flags.toggleIf(efCancelable, cancelable)
+jsClassPublicDef(Event):
+  jsget Event, timeStamp
+  jsget Event, target
+  jsget Event, currentTarget
+  jsget Event, eventType, "type"
+  jsget Event, eventPhase
 
-proc initEvent(this: Event; ctype: CAtomTraced; bubbles, cancelable: bool)
-    {.jsfunc.} =
-  if efDispatch notin this.flags:
-    this.initialize(ctype, bubbles, cancelable)
+  proc newEvent(eventType: CAtom; eventInitDict = EventInit()): Event {.
+      jsctor.} =
+    let event = jsNew EventObj(eventType: eventType)
+    if event != nil:
+      event.innerEventCreationSteps(eventInitDict)
+    return event
 
-proc srcElement(this: Event): EventTarget {.jsfget.} =
-  return this.target
+  proc eventFlag(event: Event; flag: EventFlag): bool {.
+      jsmfget("bubbles", efBubbles), jsmfget("cancelable", efCancelable),
+      jsmfget("isTrusted", efTrusted), jsmfget("defaultPrevented", efCanceled),
+      jsmfget("cancelBubble", efStopPropagation),
+      jsmfget("composed", efComposed).} =
+    flag in event.flags
 
-#TODO shadow DOM etc.
-proc composedPath(this: Event): seq[EventTarget] {.jsfunc.} =
-  if this.currentTarget == nil:
-    return newSeq[EventTarget]()
-  return @[this.currentTarget]
+  proc initialize(this: Event; eventType: CAtom; bubbles, cancelable: bool) =
+    this.flags.incl(efInitialized)
+    this.flags.excl(efTrusted)
+    this.target = EventTarget(nil)
+    this.eventType = eventType
+    this.flags.toggleIf(efBubbles, bubbles)
+    this.flags.toggleIf(efCancelable, cancelable)
 
-proc stopPropagation(this: Event) {.jsfunc.} =
-  this.flags.incl(efStopPropagation)
+  proc initEvent(this: Event; eventType: CAtom; bubbles, cancelable: bool)
+      {.jsfunc.} =
+    if efDispatch notin this.flags:
+      this.initialize(eventType, bubbles, cancelable)
 
-proc `cancelBubble=`(this: Event; flag: EventFlag; cancel: bool) {.
-    jsmfset("cancelBubble", efStopPropagation).} =
-  if cancel:
-    this.stopPropagation()
+  proc srcElement(this: Event): EventTarget {.jsfget.} =
+    return this.target
 
-proc stopImmediatePropagation(this: Event) {.jsfunc.} =
-  this.flags.incl({efStopPropagation, efStopImmediatePropagation})
+  #TODO shadow DOM etc.
+  proc composedPath(this: Event): seq[EventTarget] {.jsfunc.} =
+    if this.currentTarget == nil:
+      return newSeq[EventTarget]()
+    return @[this.currentTarget]
 
-proc preventDefault(this: Event) {.jsfunc.} =
-  if efCancelable in this.flags and efInPassiveListener notin this.flags:
-    this.flags.incl(efCanceled)
+  proc stopPropagation(this: Event) {.jsfunc.} =
+    this.flags.incl(efStopPropagation)
 
-proc returnValue(this: Event): bool {.jsfget.} =
-  efCanceled notin this.flags
+  proc `cancelBubble=`(this: Event; flag: EventFlag; cancel: bool) {.
+      jsmfset("cancelBubble", efStopPropagation).} =
+    if cancel:
+      this.stopPropagation()
 
-proc `returnValue=`(this: Event; value: bool) {.jsfset: "returnValue".} =
-  if not value:
-    this.preventDefault()
+  proc stopImmediatePropagation(this: Event) {.jsfunc.} =
+    this.flags.incl({efStopPropagation, efStopImmediatePropagation})
+
+  proc preventDefault(this: Event) {.jsfunc.} =
+    if efCancelable in this.flags and efInPassiveListener notin this.flags:
+      this.flags.incl(efCanceled)
+
+  proc returnValue(this: Event): bool {.jsfget.} =
+    efCanceled notin this.flags
+
+  proc `returnValue=`(this: Event; value: bool) {.jsfset: "returnValue".} =
+    if not value:
+      this.preventDefault()
 
 # CustomEvent
-proc newCustomEvent*(ctx: JSContext; ctype: CAtomTraced;
-    eventInitDict = CustomEventInit(detail: JS_NULL)): CustomEvent {.jsctor.} =
-  let event = CustomEvent(
-    ctype: ctype.dup(),
-    detail: JS_DupValue(ctx, eventInitDict.detail)
-  )
-  event.innerEventCreationSteps(EventInit(eventInitDict))
-  return event
+jsClassDef(CustomEvent):
+  jsextends EventDef
 
-proc finalize(rt: JSRuntime; this: CustomEvent) {.jsfin.} =
-  JS_FreeValueRT(rt, this.detail)
+  jsget CustomEvent, detail
 
-proc mark(rt: JSRuntime; this: CustomEvent; markFun: JS_MarkFunc) {.jsmark.} =
-  JS_MarkValue(rt, this.detail, markFun)
+  proc newCustomEvent*(ctx: JSContext; eventType: CAtom;
+      eventInitDict = CustomEventInit(detail: trace(JS_NULL))): CustomEvent
+      {.jsctor.} =
+    let event = jsNew CustomEventObj(
+      eventType: eventType,
+      detail: JS_DupValue(ctx, eventInitDict.detail.v)
+    )
+    if event != nil:
+      event.asEvent.innerEventCreationSteps(EventInit(eventInitDict))
+    event
 
-proc initCustomEvent(ctx: JSContext; this: CustomEvent; ctype: CAtomTraced;
-    bubbles, cancelable: bool; detail: JSValueConst) {.jsfunc.} =
-  if efDispatch notin this.flags:
-    if efInitialized notin this.flags:
-      JS_FreeValue(ctx, this.detail)
-    this.detail = JS_DupValue(ctx, detail)
-    this.initialize(ctype, bubbles, cancelable)
+  proc initCustomEvent(ctx: JSContext; this: CustomEvent; eventType: CAtom;
+      bubbles, cancelable: bool; detail: JSValueConst) {.jsfunc.} =
+    if efDispatch notin this.flags:
+      if efInitialized notin this.flags:
+        JS_FreeValue(ctx, this.detail)
+      this.detail = JS_DupValue(ctx, detail)
+      this.asEvent.initialize(eventType, bubbles, cancelable)
 
 # MessageEvent
-proc newMessageEvent*(ctx: JSContext; ctype: CAtom;
-    eventInit = MessageEventInit(data: JS_NULL)): MessageEvent =
-  let event = MessageEvent(
-    ctype: ctype,
-    data: JS_DupValue(ctx, eventInit.data),
+proc newMessageEvent*(ctx: JSContext; eventType: CAtom;
+    eventInit = MessageEventInit(data: trace(JS_NULL))): MessageEvent =
+  let event = jsNew MessageEventObj(
+    eventType: eventType,
+    data: JS_DupValue(ctx, eventInit.data.v),
     origin: eventInit.origin
   )
-  event.innerEventCreationSteps(EventInit(eventInit))
+  if event != nil:
+    event.asEvent.innerEventCreationSteps(EventInit(eventInit))
   return event
 
-proc finalize(rt: JSRuntime; this: MessageEvent) {.jsfin.} =
-  JS_FreeValueRT(rt, this.data)
+jsClassDef(MessageEvent):
+  jsextends EventDef
 
-proc mark(rt: JSRuntime; this: MessageEvent; markFun: JS_MarkFunc) {.jsmark.} =
-  JS_MarkValue(rt, this.data, markFun)
+  jsget MessageEvent, data
+  jsget MessageEvent, origin
 
 # SubmitEvent
 type EventTargetHTMLElement* = distinct EventTarget
 proc fromJS(ctx: JSContext; val: JSValueConst; res: var EventTargetHTMLElement):
-    FromJSResult =
-  var res0: EventTarget
-  ?ctx.fromJS(val, res0)
-  if not res0.isHTMLElementImpl():
-    JS_ThrowTypeError(ctx, "HTMLElement expected")
-    return fjErr
-  res = EventTargetHTMLElement(res0)
+    JSCode =
+  var res0: pointer
+  ?ctx.fromJS(val, htmlElementClassID, res0)
+  res = cast[EventTargetHTMLElement](res0)
   fjOk
 
 type SubmitEventInit* = object of EventInit
   submitter* {.jsdefault.}: EventTargetHTMLElement
 
-proc newSubmitEvent*(ctype: CAtomTraced; eventInit = SubmitEventInit()):
-    SubmitEvent {.jsctor.} =
-  let event = SubmitEvent(
-    ctype: ctype.dup(),
-    submitter: EventTarget(eventInit.submitter)
-  )
-  event.innerEventCreationSteps(EventInit(eventInit))
-  return event
+jsClassDef(SubmitEvent):
+  jsextends EventDef
+
+  jsget SubmitEvent, submitter
+
+  proc newSubmitEvent*(eventType: CAtom; eventInit = SubmitEventInit()):
+      SubmitEvent {.jsctor.} =
+    let event = jsNew SubmitEventObj(
+      eventType: eventType,
+      submitter: EventTarget(eventInit.submitter)
+    )
+    if event != nil:
+      event.asEvent.innerEventCreationSteps(EventInit(eventInit))
+    event
 
 # UIEvent
-type EventTargetWindow* = distinct EventTarget
-proc fromJS(ctx: JSContext; val: JSValueConst; res: var EventTargetWindow):
-    FromJSResult =
-  var res0: EventTarget
-  ?ctx.fromJS(val, res0)
-  if not res0.isWindowImpl():
-    JS_ThrowTypeError(ctx, "Window expected")
-    return fjErr
-  res = EventTargetWindow(res0)
+type EventTargetWindowNull* = distinct EventTarget
+
+proc fromJS(ctx: JSContext; val: JSValueConst; res: var EventTargetWindowNull):
+    JSCode =
+  if JS_IsNull(val):
+    res = EventTargetWindowNull(nil)
+  else:
+    var res0: pointer
+    ?ctx.fromJS(val, windowClassID, res0)
+    res = EventTargetWindowNull(cast[EventTarget](res0))
   fjOk
 
 type UIEventInit = object of EventInit
-  view* {.jsdefault.}: EventTargetWindow
+  view* {.jsdefault.}: EventTargetWindowNull
   detail* {.jsdefault.}: int32
 
-proc newUIEvent*(ctype: CAtomTraced; eventInit = UIEventInit()): UIEvent
-    {.jsctor.} =
-  let event = UIEvent(
-    ctype: ctype.dup(),
-    view: EventTarget(eventInit.view),
-    detail: eventInit.detail
-  )
-  event.innerEventCreationSteps(EventInit(eventInit))
-  return event
+jsClassDef(UIEvent):
+  jsextends EventDef
 
-proc initUIEvent(this: UIEvent; ctype: CAtomTraced; bubbles = false;
-    cancelable = false; view = none(EventTarget); detail = 0i32) {.jsfunc.} =
-  this.ctype = ctype.dup()
-  this.flags.toggleIf(efBubbles, bubbles)
-  this.flags.toggleIf(efCancelable, cancelable)
-  this.view = view.get(nil)
-  this.detail = detail
+  jsget UIEvent, detail
+  jsget UIEvent, view
+
+  proc newUIEvent*(eventType: CAtom; eventInit = UIEventInit()): UIEvent
+      {.jsctor.} =
+    let event = jsNew UIEventObj(
+      eventType: eventType,
+      view: EventTarget(eventInit.view),
+      detail: eventInit.detail
+    )
+    if event != nil:
+      event.asEvent.innerEventCreationSteps(EventInit(eventInit))
+    return event
+
+  proc initUIEvent(this: UIEvent; eventType: CAtom; bubbles = false;
+      cancelable = false; view = EventTargetWindowNull(nil); detail = 0i32)
+      {.jsfunc.} =
+    this.eventType = eventType
+    this.flags.toggleIf(efBubbles, bubbles)
+    this.flags.toggleIf(efCancelable, cancelable)
+    this.view = EventTarget(view)
+    this.detail = detail
 
 type EventModifierInit = object of UIEventInit
   ctrlKey {.jsdefault.}: bool
@@ -360,27 +451,43 @@ type MouseEventInit* = object of EventModifierInit
   clientY* {.jsdefault.}: int32
   button* {.jsdefault.}: int16
   buttons* {.jsdefault.}: uint16
-  relatedTarget {.jsdefault.}: Option[EventTarget]
+  relatedTarget {.jsdefault.}: JSNullRef[EventTargetObj]
 
-proc newMouseEvent*(ctype: CAtomTraced; eventInit = MouseEventInit()):
-    MouseEvent {.jsctor.} =
-  let event = MouseEvent(
-    ctype: ctype.dup(),
-    view: EventTarget(eventInit.view),
-    screenX: eventInit.screenX,
-    screenY: eventInit.screenY,
-    clientX: eventInit.clientX,
-    clientY: eventInit.clientY,
-    ctrlKey: eventInit.ctrlKey,
-    shiftKey: eventInit.shiftKey,
-    altKey: eventInit.altKey,
-    metaKey: eventInit.metaKey,
-    button: cast[int16](eventInit.button),
-    buttons: uint16(eventInit.buttons),
-    relatedTarget: eventInit.relatedTarget.get(nil)
-  )
-  event.innerEventCreationSteps(EventInit(eventInit))
-  return event
+jsClassDef(MouseEvent):
+  jsextends UIEventDef
+
+  jsget MouseEvent, screenX
+  jsget MouseEvent, screenY
+  jsget MouseEvent, clientX, "clientX", "x"
+  jsget MouseEvent, clientY, "clientY", "y"
+  jsget MouseEvent, button
+  jsget MouseEvent, buttons
+  jsget MouseEvent, ctrlKey
+  jsget MouseEvent, shiftKey
+  jsget MouseEvent, altKey
+  jsget MouseEvent, metaKey
+  jsget MouseEvent, relatedTarget
+
+  proc newMouseEvent*(eventType: CAtom; eventInit = MouseEventInit()):
+      MouseEvent {.jsctor.} =
+    let event = jsNew MouseEventObj(
+      eventType: eventType,
+      view: EventTarget(eventInit.view),
+      screenX: eventInit.screenX,
+      screenY: eventInit.screenY,
+      clientX: eventInit.clientX,
+      clientY: eventInit.clientY,
+      ctrlKey: eventInit.ctrlKey,
+      shiftKey: eventInit.shiftKey,
+      altKey: eventInit.altKey,
+      metaKey: eventInit.metaKey,
+      button: cast[int16](eventInit.button),
+      buttons: uint16(eventInit.buttons),
+      relatedTarget: eventInit.relatedTarget.get
+    )
+    if event != nil:
+      event.asEvent.innerEventCreationSteps(EventInit(eventInit))
+    event
 
 # InputEvent
 type InputEventInit* = object of UIEventInit
@@ -388,45 +495,202 @@ type InputEventInit* = object of UIEventInit
   isComposing* {.jsdefault.}: bool
   inputType* {.jsdefault.}: string
 
-#TODO jsctor
-proc newInputEvent*(ctype: CAtomTraced; eventInit = InputEventInit()):
-    InputEvent =
-  let event = InputEvent(
-    ctype: ctype.dup(),
-    view: EventTarget(eventInit.view),
-    data: eventInit.data,
-    isComposing: eventInit.isComposing,
-    inputType: eventInit.inputType,
-    detail: eventInit.detail
+jsClassDef(InputEvent):
+  jsextends UIEventDef
+
+  jsget InputEvent, data
+  jsget InputEvent, isComposing
+  jsget InputEvent, inputType
+
+  proc newInputEvent*(eventType: CAtom; eventInit = InputEventInit()):
+      InputEvent {.jsctor.} =
+    let event = jsNew InputEventObj(
+      eventType: eventType,
+      view: EventTarget(eventInit.view),
+      data: eventInit.data,
+      isComposing: eventInit.isComposing,
+      inputType: eventInit.inputType,
+      detail: eventInit.detail
+    )
+    if event != nil:
+      event.asEvent.innerEventCreationSteps(EventInit(eventInit))
+    event
+
+# MutationRecord
+jsClassDef(MutationRecord):
+  jsget MutationRecord, t, "type"
+  jsget MutationRecord, target
+  jsget MutationRecord, addedNodes
+  jsget MutationRecord, removedNodes
+  jsget MutationRecord, previousSibling
+  jsget MutationRecord, nextSibling
+  jsget MutationRecord, attributeName
+  jsget MutationRecord, attributeNamespace
+  jsget MutationRecord, oldValue
+
+# MutationObserver
+type OptionalBool = enum
+  obNone, obFalse, obTrue
+
+proc fromJS(ctx: JSContext; val: JSValueConst; ob: var OptionalBool):
+    JSCode =
+  var status = fjOk
+  if JS_IsUndefined(val):
+    ob = obNone
+  else:
+    var b: bool
+    status = ctx.fromJS(val, b)
+    ob = if b: obTrue else: obFalse
+  status
+
+type MutationObserverInit {.pure.} = object of JSDict
+  childList {.jsdefault.}: bool
+  attributes {.jsdefault.}: OptionalBool
+  characterData {.jsdefault.}: OptionalBool
+  subtree {.jsdefault.}: bool
+  attributeOldValue {.jsdefault.}: OptionalBool
+  characterDataOldValue {.jsdefault.}: OptionalBool
+  attributeFilter {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
+
+proc queueRecord*(observer: MutationObserver; target: EventTarget;
+    t: MutationRecordType; name, namespace: CAtom; oldValue: RefString;
+    addedNodes, removedNodes: JSRootRef;
+    previousSibling, nextSibling: EventTarget) =
+  let record = jsNew MutationRecordObj(
+    t: t,
+    target: target,
+    attributeName: name,
+    attributeNamespace: namespace,
+    oldValue: oldValue,
+    addedNodes: addedNodes,
+    removedNodes: removedNodes,
+    previousSibling: previousSibling,
+    nextSibling: nextSibling
   )
-  event.innerEventCreationSteps(EventInit(eventInit))
-  return event
+  if record != nil:
+    observer.records.add(record)
+
+jsClassDef(MutationObserver):
+  proc newMutationObserver(ctx: JSContext; callback: JSValueConst):
+      MutationObserver {.jsctor.} =
+    jsNew MutationObserverObj(callback: ctx.dupTraceObj(callback))
+
+  proc mark(rt: JSRuntime; this: MutationObserver; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for record in this.records:
+      rt.markObj(record, markFunc)
+
+  proc observe(ctx: JSContext; this: MutationObserver; jsTarget: JSValueConst;
+      jsInit: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
+    var targetp: pointer
+    ?ctx.fromJS(jsTarget, nodeClassID, targetp)
+    let target = cast[ptr EventTargetObj](targetp)
+    var init = MutationObserverInit(
+      attributeFilter: trace(JS_UNDEFINED)
+    )
+    if not JS_IsUndefined(jsInit):
+      ?ctx.fromJS(jsInit, init)
+    var flags: set[ObservedItemFlag]
+    var attributeFilter: seq[CAtom]
+    if not JS_IsUndefined(init.attributeFilter):
+      flags.incl(oifAttributeFilter)
+    if oifAttributeFilter in flags:
+      ?ctx.fromJS(init.attributeFilter, attributeFilter)
+    if (oifAttributeFilter in flags or init.attributeOldValue == obTrue) and
+        init.attributes == obFalse or
+        init.characterDataOldValue == obTrue and init.characterData == obFalse:
+      return JS_ThrowTypeError(ctx, "incompatible MutationObserver flags")
+    if oifAttributeFilter in flags or init.attributeOldValue != obNone or
+        init.attributes == obTrue:
+      flags.incl(oifAttributes)
+    if init.attributes == obFalse:
+      flags.excl(oifAttributes)
+    if init.attributeOldValue == obTrue:
+      flags.incl(oifAttributeOldValue)
+    if init.characterDataOldValue != obNone or init.characterData == obTrue:
+      flags.incl(oifCharacterData)
+    if init.characterData == obFalse:
+      flags.excl(oifCharacterData)
+    if init.characterDataOldValue == obTrue:
+      flags.incl(oifCharacterDataOldValue)
+    if init.childList:
+      flags.incl(oifChildList)
+    block add:
+      for el in cast[EventTarget](target).mutationObservers:
+        if el.observer == this:
+          #TODO remove transient registered observers
+          el.flags = flags
+          el.attributeFilter = move(attributeFilter)
+          break add
+      let el = EventListener(
+        t: eltMutationObserver,
+        observer: this,
+        flags: flags,
+        attributeFilter: move(attributeFilter)
+      )
+      var it = target.eventListener
+      if it == nil:
+        target.eventListener = el
+      else:
+        # insert after event listeners
+        while it.next != nil and it.next.t == eltEventListener:
+          it = it.next
+        el.next = it.next
+        it.next = el
+      this.nodes.add(target)
+    return JS_UNDEFINED
+
+  proc disconnect(this: MutationObserver) {.jsfunc.} =
+    for node in this.nodes:
+      var it = node.eventListener
+      var prev: EventListener = nil
+      while it != nil:
+        if it.t == eltMutationObserver and it.observer == this:
+          if prev == nil:
+            node.eventListener = it.next
+          else:
+            prev.next = it.next
+        prev = it
+        it = it.next
+    # the spec forgot about nodes, but surely we want to empty it?
+    this.nodes = @[]
+    this.records = @[]
+
+  proc takeRecords(this: MutationObserver): seq[MutationRecord] {.jsfunc.} =
+    move(this.records)
 
 # EventTarget
-proc newEventTarget(): EventTarget {.jsctor.} =
-  return EventTarget()
+template asEventTarget*[T: EventTargetObj](x: JSRef[T]): EventTarget =
+  EventTarget(x)
 
-proc defaultPassiveValue(ctype: CAtomTraced; eventTarget: EventTarget): bool =
+proc defaultPassiveValue(eventType: CAtom; eventTarget: EventTarget): bool =
   const check = [satTouchstart, satTouchmove, satWheel, satMousewheel]
-  return ctype.toStaticAtom() in check and eventTarget.isDefaultPassiveImpl()
+  return eventType.toStaticAtom() in check and eventTarget.isDefaultPassive()
 
 proc findEventListener(ctx: JSContext; eventTarget: EventTarget;
-    ctype: CAtomTraced; callback: JSValueConst; capture: bool): EventListener =
+    eventType: CAtom; callback: JSValueConst; capture: bool): EventListener =
   for it in eventTarget.eventListeners:
-    if not it.internal and it.ctype == ctype and
-        ctx.strictEquals(it.callback, callback) and it.capture == capture:
+    if not it.internal and not it.removed and it.eventType == eventType and
+        ctx.strictEquals(it.callback.value, callback) and
+        it.capture == capture:
       return it
   nil
 
-proc hasEventListener*(eventTarget: EventTarget; ctype: CAtomTraced): bool =
+proc findInternalEventListener(ctx: JSContext; eventTarget: EventTarget;
+    eventType: StaticAtom): EventListener =
   for it in eventTarget.eventListeners:
-    if it.ctype == ctype:
+    if it.internal and not it.removed and it.eventType == eventType:
+      return it
+  nil
+
+proc hasEventListener*(eventTarget: EventTarget; eventType: CAtom): bool =
+  for it in eventTarget.eventListeners:
+    if it.eventType == eventType:
       return true
   false
 
-# EventListener
 proc invoke(ctx: JSContext; listener: EventListener; event: Event): JSValue =
-  if JS_IsNull(listener.callback):
+  if listener.callback == nil:
     return JS_UNDEFINED
   let jsTarget = ctx.toJS(event.currentTarget)
   if JS_IsException(jsTarget):
@@ -436,16 +700,18 @@ proc invoke(ctx: JSContext; listener: EventListener; event: Event): JSValue =
     JS_FreeValue(ctx, jsTarget)
     return JS_EXCEPTION
   var ret = JS_UNINITIALIZED
-  if JS_IsFunction(ctx, listener.callback):
+  #TODO user object operation
+  let callback = JS_DupValue(ctx, listener.callback.value)
+  if JS_IsFunction(ctx, callback):
     # Apparently it's a bad idea to call a function that can then delete
     # the reference it was called from (hence the dup).
-    let callback = JS_DupValue(ctx, listener.callback)
-    ret = ctx.callFree(callback, jsTarget, jsEvent)
+    ret = ctx.call(callback, jsTarget, jsEvent)
   else:
-    assert JS_IsObject(listener.callback)
-    ret = JS_GetPropertyStr(ctx, listener.callback, "handleEvent")
+    assert JS_IsObject(callback)
+    ret = JS_GetPropertyStr(ctx, callback, "handleEvent")
     if not JS_IsException(ret):
-      ret = ctx.callFree(ret, jsTarget, jsEvent)
+      ret = ctx.callFree(ret, callback, jsEvent)
+  JS_FreeValue(ctx, callback)
   JS_FreeValue(ctx, jsTarget)
   JS_FreeValue(ctx, jsEvent)
   return ret
@@ -455,44 +721,46 @@ proc removeEventListenerData(ctx: JSContext; _: JSValueConst;
     funcData: JSValueConstArray): JSValue {.cdecl.} =
   var this: EventTarget
   ?ctx.fromJS(funcData[0], this)
-  var ctype: CAtomTraced
-  ?ctx.fromJS(funcData[1], ctype)
-  if ctx.removeEventListener(this, ctype, funcData[2], funcData[3]).isErr:
+  var eventType: CAtom
+  ?ctx.fromJS(funcData[1], eventType)
+  if ctx.removeEventListener(this, eventType, funcData[2], funcData[3]).isErr:
     return JS_EXCEPTION
   return JS_UNDEFINED
 
-# shared
-proc addEventListener(ctx: JSContext; target: EventTarget; ctype: CAtomTraced;
+proc addEventListener(ctx: JSContext; target: EventTarget; eventType: CAtom;
     capture, once, internal: bool; passive: Option[bool];
     callback: JSValueConst; signal: AbortSignal): Opt[void] =
-  if signal != nil and signal.aborted or JS_IsUndefined(callback):
+  if signal != nil and signal.aborted:
     return ok()
-  let passive = passive.get(defaultPassiveValue(ctype, target))
-  if ctx.findEventListener(target, ctype, callback, capture) == nil:
+  let passive = passive.get(defaultPassiveValue(eventType, target))
+  if ctx.findEventListener(target, eventType, callback, capture) == nil:
     # dedup
     let listener = EventListener(
-      ctype: ctype.dup(),
+      t: eltEventListener,
+      eventType: eventType,
       capture: capture,
-      once: once,
       internal: internal,
-      passive: passive,
-      callback: JS_DupValue(ctx, callback),
+      callback: ctx.dupTraceObj(callback),
       next: target.eventListener,
       signal: signal
     )
+    if passive:
+      listener.eflags.incl(elfPassive)
+    if once:
+      listener.eflags.incl(elfOnce)
     target.eventListener = listener
     if signal != nil:
       let jsTarget = ctx.toJS(target)
       if JS_IsException(jsTarget):
         return err()
-      let jsType = ctx.toJS(ctype)
+      let jsType = ctx.toJS(eventType)
       if JS_IsException(jsType):
         JS_FreeValue(ctx, jsTarget)
         return err()
       let jsCapture = ctx.toJS(capture)
       let data = [jsTarget, jsType, JS_DupValue(ctx, callback), jsCapture]
       let fun = JS_NewCFunctionData(ctx, removeEventListenerData, 0, 0, 4,
-        data.toJSValueArray())
+        data.toJSValueConstArray())
       ctx.freeValues(data)
       if JS_IsException(fun):
         return err()
@@ -518,7 +786,7 @@ proc flattenMore(ctx: JSContext; options: JSValueConst;
   let capture = ?ctx.flatten(options)
   var once = false
   var passive = none(bool)
-  var signal: AbortSignal = nil
+  var signal: AbortSignal
   if JS_IsObject(options):
     discard ?ctx.fromJSGetProp(options, "once", once)
     var res: bool
@@ -534,13 +802,12 @@ proc flattenMore(ctx: JSContext; options: JSValueConst;
   ok()
 
 proc removeInternalEventListener(ctx: JSContext; eventTarget: EventTarget;
-    ctype: StaticAtom) =
+    eventType: StaticAtom) =
   var prev: EventListener = nil
   for it in eventTarget.eventListeners:
-    if it.ctype == ctype and it.internal:
-      let callback = it.callback
-      it.callback = JS_UNDEFINED
-      JS_FreeValue(ctx, callback)
+    if it.eventType == eventType and it.internal:
+      it.callback = JSObject(nil)
+      it.removed = true
       if prev == nil:
         eventTarget.eventListener = it.next
       else:
@@ -549,111 +816,32 @@ proc removeInternalEventListener(ctx: JSContext; eventTarget: EventTarget;
     prev = it
 
 proc addInternalEventListener(ctx: JSContext; eventTarget: EventTarget;
-    ctype: StaticAtom; callback: JSValueConst): Opt[void] =
-  ctx.removeInternalEventListener(eventTarget, ctype)
-  ctx.addEventListener(eventTarget, ctype.view(), capture = false,
-    once = false, internal = true, passive = none(bool), callback, signal = nil)
+    eventType: StaticAtom; callback: JSValueConst): Opt[void] =
+  ctx.removeInternalEventListener(eventTarget, eventType)
+  ctx.addEventListener(eventTarget, eventType.view(), capture = false,
+    once = false, internal = true, passive = none(bool), callback,
+    signal = AbortSignal(nil))
 
 # Event reflection
-const EventReflectMap = [
-  cint(0): satLoadstart,
-  satProgress,
-  satAbort,
-  satError,
-  satLoad,
-  satTimeout,
-  satLoadend,
-  satReadystatechange,
-  satFocus,
-  satBlur
-]
-
-proc eventReflectGet*(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
-    {.cdecl.} =
-  return JS_NULL
-
-proc eventReflectSet0*(ctx: JSContext; target: EventTarget;
-    val: JSValueConst; magic: cint; fun2: JSSetterMagicFunction;
-    atom: StaticAtom; target2 = none(EventTarget)): JSValue =
-  if JS_IsFunction(ctx, val) or JS_IsNull(val):
-    let jsTarget = ctx.toJS(target)
-    if JS_IsException(jsTarget):
-      return JS_EXCEPTION
-    let jsTarget2 = ctx.toJS(target2)
-    if JS_IsException(jsTarget2):
-      JS_FreeValue(ctx, jsTarget)
-      return JS_EXCEPTION
-    let name = "on" & $atom
-    let getter = ctx.identityFunction(val)
-    if JS_IsException(getter):
-      ctx.freeValues(jsTarget, jsTarget2)
-      return JS_EXCEPTION
-    let f = JSCFunctionType(setter_magic: fun2)
-    let setter = JS_NewCFunction2(ctx, f.generic, cstring(name), 1,
-      JS_CFUNC_setter_magic, magic)
-    if JS_IsException(getter):
-      ctx.freeValues(jsTarget, jsTarget2, getter)
-      return JS_EXCEPTION
-    let ja = JS_NewAtom(ctx, cstring(name))
-    if ja == JS_ATOM_NULL:
-      ctx.freeValues(jsTarget, jsTarget2, getter, setter)
-      return JS_EXCEPTION
-    var ret = JS_DefineProperty(ctx, jsTarget, ja, JS_UNDEFINED, getter,
-        setter, JS_PROP_HAS_GET or JS_PROP_HAS_SET or
-        JS_PROP_HAS_CONFIGURABLE or JS_PROP_CONFIGURABLE)
-    if ret != -1 and target2.isSome:
-      # target2 is set to document.body in case of properties like
-      # onload, which set functions both on document.body and window,
-      # but only set an event listener on window.
-      ret = JS_DefineProperty(ctx, jsTarget2, ja, JS_UNDEFINED, getter,
-        setter, JS_PROP_HAS_GET or JS_PROP_HAS_SET or
-        JS_PROP_HAS_CONFIGURABLE or JS_PROP_CONFIGURABLE)
-    JS_FreeAtom(ctx, ja)
-    ctx.freeValues(getter, setter, jsTarget, jsTarget2)
-    if ret == -1:
-      return JS_EXCEPTION
-    if JS_IsNull(val):
-      ctx.removeInternalEventListener(target, atom)
-    elif ctx.addInternalEventListener(target, atom, val).isErr:
-      return JS_EXCEPTION
-  return JS_DupValue(ctx, val)
-
-proc eventReflectSet*(ctx: JSContext; this, val: JSValueConst; magic: cint):
+proc eventReflectGetImpl*(ctx: JSContext; this: EventTarget; name: StaticAtom):
     JSValue {.cdecl.} =
-  var target: EventTarget
-  ?ctx.fromJS(this, target)
-  return ctx.eventReflectSet0(target, val, magic, eventReflectSet,
-    EventReflectMap[magic])
+  if this == nil:
+    return JS_EXCEPTION
+  let el = ctx.findInternalEventListener(this, name)
+  if el == nil:
+    return JS_NULL
+  return JS_DupValue(ctx, el.callback.value)
 
-proc addEventListener(ctx: JSContext; eventTarget: EventTarget;
-    ctype: CAtomTraced; callback: JSValueConst;
-    options: JSValueConst = JS_UNDEFINED): Opt[void] {.jsfunc.} =
-  if not JS_IsObject(callback) and not JS_IsNull(callback):
-    JS_ThrowTypeError(ctx, "callback is not an object")
-    return err()
-  var res: FlattenMoreResult
-  ?ctx.flattenMore(options, res)
-  ctx.addEventListener(eventTarget, ctype, res.capture, res.once,
-    internal = false, res.passive, callback, res.signal)
-
-proc removeEventListener(ctx: JSContext; eventTarget: EventTarget;
-    ctype: CAtomTraced; callback: JSValueConst;
-    options: JSValueConst = JS_UNDEFINED): Opt[void] {.jsfunc.} =
-  let capture = ?ctx.flatten(options)
-  var prev: EventListener = nil
-  for it in eventTarget.eventListeners:
-    if not it.internal and it.ctype == ctype and
-        ctx.strictEquals(it.callback, callback) and it.capture == capture:
-      let callback = it.callback
-      it.callback = JS_UNDEFINED
-      JS_FreeValue(ctx, callback)
-      if prev == nil:
-        eventTarget.eventListener = it.next
-      else:
-        prev.next = it.next
-      break
-    prev = it
-  ok()
+proc eventReflectSetImpl*(ctx: JSContext; this: EventTarget; val: JSValueConst;
+    atom: StaticAtom): JSValue =
+  if this == nil:
+    return JS_EXCEPTION
+  if JS_IsFunction(ctx, val) or JS_IsNull(val):
+    if JS_IsNull(val):
+      ctx.removeInternalEventListener(this, atom)
+    elif ctx.addInternalEventListener(this, atom, val).isErr:
+      return JS_EXCEPTION
+  return JS_UNDEFINED
 
 type
   DispatchItem = object
@@ -669,15 +857,15 @@ type
     bubble: seq[DispatchItem]
 
 proc collectItems(dctx: var DispatchContext; target: EventTarget) =
-  let ctype = dctx.event.ctype
+  let eventType = dctx.event.eventType
   let bubbles = efBubbles in dctx.event.flags
-  let isLoad = dctx.event.ctype == satLoad.toAtom()
+  let isLoad = dctx.event.eventType == satLoad
   var it = target
   while it != nil:
     var capture: seq[EventListener] = @[]
     var bubble: seq[EventListener] = @[]
     for el in it.eventListeners:
-      if el.ctype == ctype:
+      if el.eventType == eventType:
         if el.capture:
           capture.add(el)
         elif bubbles or it == target:
@@ -686,22 +874,22 @@ proc collectItems(dctx: var DispatchContext; target: EventTarget) =
       dctx.capture.add(DispatchItem(target: it, els: move(capture)))
     if bubble.len > 0:
       dctx.bubble.add(DispatchItem(target: it, els: move(bubble)))
-    it = dctx.ctx.getParentImpl(it, isLoad)
+    it = it.getParentImpl(isLoad)
 
 proc dispatchEvent0(dctx: var DispatchContext; item: DispatchItem) =
   let ctx = dctx.ctx
   let event = dctx.event
   event.currentTarget = item.target
   for el in item.els.ritems:
-    if JS_IsUndefined(el.callback):
+    if el.removed:
       continue # removed, presumably by a previous handler
-    if el.passive:
+    if elfPassive in el.eflags:
       event.flags.incl(efInPassiveListener)
     let e = ctx.invoke(el, event)
     if JS_IsException(e):
       ctx.logException()
     JS_FreeValue(ctx, e)
-    if el.passive:
+    if elfPassive in el.eflags:
       event.flags.excl(efInPassiveListener)
     if efCanceled in event.flags:
       dctx.canceled = true
@@ -712,7 +900,7 @@ proc dispatchEvent0(dctx: var DispatchContext; item: DispatchItem) =
 
 proc dispatch*(ctx: JSContext; target: EventTarget; event: Event;
     targetOverride = false): bool =
-  let prev = ctx.setEventImpl(event)
+  let prev = ctx.setEvent(event)
   var dctx = DispatchContext(ctx: ctx, event: event)
   event.flags.incl(efDispatch)
   if not targetOverride:
@@ -734,112 +922,201 @@ proc dispatch*(ctx: JSContext; target: EventTarget; event: Event;
     dctx.dispatchEvent0(item)
   event.eventPhase = 0
   event.flags.excl(efDispatch)
-  discard ctx.setEventImpl(prev)
+  discard ctx.setEvent(prev)
   return dctx.canceled
 
-proc dispatchEvent(ctx: JSContext; this: EventTarget; event: Event): JSValue
-    {.jsfunc.} =
-  if efDispatch in event.flags:
-    return JS_ThrowDOMException(ctx, "InvalidStateError",
-      "event's dispatch flag is already set")
-  if efInitialized notin event.flags:
-    return JS_ThrowDOMException(ctx, "InvalidStateError",
-      "event is not initialized")
-  event.flags.excl(efTrusted)
-  if ctx.dispatch(this, event):
-    return JS_FALSE
-  return JS_TRUE
+jsClassPublicDef(EventTarget):
+  proc finalize(rt: JSRuntime; this: EventTarget) {.jsfin.} =
+    # Can't take rt as param here, because elements may be unbound in JS.
+    for el in this.eventListenersRaw:
+      if el.t == eltMutationObserver:
+        let i = el.observer.nodes.find(cast[ptr EventTargetObj](this))
+        if i >= 0: # might have already been destroyed
+          el.observer.nodes.del(i)
+
+  proc mark(rt: JSRuntime; this: EventTarget; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for el in this.eventListenersRaw:
+      case el.t
+      of eltEventListener:
+        JS_MarkValue(rt, el.callback, markFunc)
+        rt.markObj(el.signal, markFunc)
+      of eltMutationObserver:
+        rt.markObj(el.observer, markFunc)
+
+  proc newEventTarget(): EventTarget {.jsctor.} =
+    jsNew EventTargetObj()
+
+  proc addEventListener(ctx: JSContext; eventTarget: EventTarget;
+      eventType: CAtom; callback: JSValueConst;
+      options: JSValueConst = JS_UNDEFINED): Opt[void] {.jsfunc.} =
+    if not JS_IsObject(callback) and not JS_IsNull(callback):
+      JS_ThrowTypeError(ctx, "callback is not an object")
+      return err()
+    var res: FlattenMoreResult
+    ?ctx.flattenMore(options, res)
+    ctx.addEventListener(eventTarget, eventType, res.capture, res.once,
+      internal = false, res.passive, callback, res.signal)
+
+  proc removeEventListener(ctx: JSContext; eventTarget: EventTarget;
+      eventType: CAtom; callback: JSValueConst;
+      options: JSValueConst = JS_UNDEFINED): Opt[void] {.jsfunc.} =
+    let capture = ?ctx.flatten(options)
+    var prev: EventListener = nil
+    for it in eventTarget.eventListeners:
+      if not it.internal and not it.removed and it.eventType == eventType and
+          ctx.strictEquals(it.callback.value, callback) and
+          it.capture == capture:
+        it.callback = JSObject(nil)
+        it.removed = true
+        if prev == nil:
+          eventTarget.eventListener = it.next
+        else:
+          prev.next = it.next
+        break
+      prev = it
+    ok()
+
+  proc dispatchEvent(ctx: JSContext; this: EventTarget; event: Event): JSValue
+      {.jsfunc.} =
+    if efDispatch in event.flags:
+      return JS_ThrowDOMException(ctx, "InvalidStateError",
+        "event's dispatch flag is already set")
+    if efInitialized notin event.flags:
+      return JS_ThrowDOMException(ctx, "InvalidStateError",
+        "event is not initialized")
+    event.flags.excl(efTrusted)
+    if ctx.dispatch(this, event):
+      return JS_FALSE
+    return JS_TRUE
+
+proc addEventGetSetImpl*(ctx: JSContext; obj: JSValueConst; id: JSClassID;
+    atoms: openArray[StaticAtom]; get: JSGetterMagicFunction;
+    set: JSSetterMagicFunction): Opt[void] =
+  assert ctx.isInstanceOf(id, EventTargetDef.id)
+  for atom in atoms:
+    let name = "on" & $atom
+    ?ctx.addReflectFunction(obj, cstring(name), get, set, cint(atom))
+  ok()
+
+proc fromJSEventTarget(ctx: JSContext; this: JSValueConst;
+    tclassid: JSClassID): EventTarget =
+  let ctxOpaque = ctx.getOpaque()
+  var classid: JSClassID
+  var p: pointer
+  if JS_VALUE_GET_PTR(ctxOpaque.global) != JS_VALUE_GET_PTR(this):
+    p = JS_GetAnyOpaque(this, classid)
+  else:
+    classid = ctxOpaque.gclass
+    p = ctxOpaque.globalObj
+  if not ctx.isInstanceOf(classid, tclassid):
+    JS_ThrowTypeErrorInvalidClass(ctx, tclassid)
+    return EventTarget(nil)
+  return cast[EventTarget](p)
+
+template addEventGetSetObj*(ctx2: JSContext; obj: JSValueConst; id: JSClassID;
+    atoms: varargs[StaticAtom]): Opt[void] =
+  proc eventReflectGet(ctx: JSContext; this: JSValueConst; magic: cint):
+      JSValue {.cdecl.} =
+    let target = ctx.fromJSEventTarget(this, id)
+    ctx.eventReflectGetImpl(target, cast[StaticAtom](magic))
+
+  proc eventReflectSet(ctx: JSContext; this, val: JSValueConst;
+      magic: cint): JSValue {.cdecl.} =
+    let target = ctx.fromJSEventTarget(this, id)
+    ctx.eventReflectSetImpl(target, val, cast[StaticAtom](magic))
+
+  ctx2.addEventGetSetImpl(obj, id, atoms, eventReflectGet, eventReflectSet)
+
+template addEventGetSet*(ctx: JSContext; id: JSClassID;
+    atoms: varargs[StaticAtom]): Opt[void] =
+  if ctx.getOpaque() == nil:
+    return ok()
+  let proto = JS_GetClassProto(ctx, id)
+  let res = ctx.addEventGetSetObj(proto, id, atoms)
+  JS_FreeValue(ctx, proto)
+  res
 
 # AbortSignal
-proc finalize(rt: JSRuntime; this: AbortSignal) {.jsfin.} =
-  JS_FreeValueRT(rt, this.reason)
-  rt.freeValues(this.abortSteps)
-
-proc mark(rt: JSRuntime; this: AbortSignal; markFun: JS_MarkFunc) {.jsmark.} =
-  JS_MarkValue(rt, this.reason, markFun)
-  for it in this.abortSteps:
-    JS_MarkValue(rt, it, markFun)
-
 proc toSignalReason(ctx: JSContext; reason: JSValueConst): JSValue =
   if not JS_IsUndefined(reason):
     return JS_DupValue(ctx, reason)
   JS_ThrowDOMException(ctx, "AbortError", "aborted (core not dumped)")
   return JS_GetException(ctx)
 
-proc abortSignalAbort(ctx: JSContext; reason: JSValueConst = JS_UNDEFINED):
-    AbortSignal {.jsstfunc: "AbortSignal#abort".} =
-  AbortSignal(reason: ctx.toSignalReason(reason))
+jsClassDef(AbortSignal):
+  jsextends EventTargetDef
 
-proc throwIfAborted(ctx: JSContext; signal: AbortSignal): JSValue {.jsfunc.} =
-  if signal.aborted:
-    return JS_Throw(ctx, JS_DupValue(ctx, signal.reason))
-  return JS_UNDEFINED
+  proc addAbortSignalEvents(ctx: JSContext): Opt[void] =
+    ctx.addEventGetSet(classDef.id, satAbort)
 
-#TODO _any
+  jsget AbortSignal, reason
+  jsget AbortSignal, aborted
+
+  proc finalize(rt: JSRuntime; this: AbortSignal) {.jsfin.} =
+    rt.freeValues(this.abortSteps)
+
+  proc mark(rt: JSRuntime; this: AbortSignal; markFun: JS_MarkFunc) {.
+      jsmark.} =
+    for it in this.abortSteps:
+      JS_MarkValue(rt, it, markFun)
+
+  proc abort(ctx: JSContext; reason: JSValueConst = JS_UNDEFINED): AbortSignal
+      {.jsstfunc.} =
+    jsNew AbortSignalObj(reason: ctx.toSignalReason(reason))
+
+  proc throwIfAborted(ctx: JSContext; signal: AbortSignal): JSValue
+      {.jsfunc.} =
+    if signal.aborted:
+      return JS_Throw(ctx, JS_DupValue(ctx, signal.reason))
+    return JS_UNDEFINED
+
+  #TODO _any
 
 # AbortController
-proc newAbortController(ctx: JSContext): AbortController {.jsctor.} =
-  let signal = AbortSignal(reason: JS_UNDEFINED)
-  AbortController(signal: signal)
+jsClassDef(AbortController):
+  jsget AbortController, signal
 
-proc abort(ctx: JSContext; this: AbortController; reason: JSValueConst): JSValue
-    {.jsfunc.} =
-  let signal = this.signal
-  if not signal.aborted:
-    signal.reason = ctx.toSignalReason(reason)
-    #TODO dependent signals
-    for step in signal.abortSteps:
-      let res = ctx.call(step, JS_UNDEFINED)
-      if JS_IsException(res):
-        return res
-      JS_FreeValue(ctx, res)
-    let event = newTrustedEvent(satAbort, signal, bubbles = false,
-      cancelable = false)
-    discard ctx.dispatch(signal, event)
-  return JS_UNDEFINED
+  proc newAbortController(ctx: JSContext): AbortController {.jsctor.} =
+    let signal = jsNew AbortSignalObj(reason: JS_UNDEFINED)
+    if signal == nil:
+      return AbortController(nil)
+    jsNew AbortControllerObj(signal: signal)
 
-# atoms must be sorted in the order of EventReflectMap
-proc addEventGetSet*(ctx: JSContext; obj: JSValueConst;
-    atoms: openArray[StaticAtom]): Opt[void] =
-  var i = cint(0)
-  for atom in atoms:
-    while EventReflectMap[i] != atom:
-      inc i
-    let name = "on" & $atom
-    ?ctx.addReflectFunction(obj, cstring(name), eventReflectGet,
-      eventReflectSet, i)
+  proc abort(ctx: JSContext; this: AbortController; reason: JSValueConst):
+      JSValue {.jsfunc.} =
+    let signal = this.signal
+    if not signal.aborted:
+      signal.reason = ctx.toSignalReason(reason)
+      #TODO dependent signals
+      for step in signal.abortSteps:
+        let res = ctx.call(step, JS_UNDEFINED)
+        if JS_IsException(res):
+          return res
+        JS_FreeValue(ctx, res)
+      let event = newTrustedEvent(satAbort, signal.asEventTarget,
+        bubbles = false, cancelable = false)
+      discard ctx.dispatch(signal.asEventTarget, event)
+    return JS_UNDEFINED
+
+proc addEventTarget*(ctx: JSContext): JSCode =
+  # must do this first, so that we can init Window ASAP
+  ctx.registerClass(EventTargetDef)
+
+proc addEventModule*(ctx: JSContext): Opt[void] =
+  ?ctx.registerClass(EventDef)
+  ?ctx.registerClass(CustomEventDef)
+  ?ctx.registerClass(MessageEventDef)
+  ?ctx.registerClass(SubmitEventDef)
+  ?ctx.registerClass(UIEventDef)
+  ?ctx.registerClass(MouseEventDef)
+  ?ctx.registerClass(InputEventDef)
+  ?ctx.defineConsts(EventDef.id, EventPhase)
+  ?ctx.registerClass(MutationRecordDef)
+  ?ctx.registerClass(MutationObserverDef)
+  ?ctx.registerClass(AbortSignalDef)
+  ?ctx.addAbortSignalEvents()
+  ?ctx.registerClass(AbortControllerDef)
   ok()
-
-proc addEventGetSet*(ctx: JSContext; classid: JSClassID;
-    atoms: openArray[StaticAtom]): Opt[void] =
-  let proto = JS_GetClassProto(ctx, classid)
-  let res = ctx.addEventGetSet(proto, atoms)
-  JS_FreeValue(ctx, proto)
-  res
-
-proc addEventModule*(ctx: JSContext):
-    Opt[tuple[eventCID, eventTargetCID: JSClassID]] =
-  let eventCID = ctx.registerType(Event)
-  if eventCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(CustomEvent, parent = eventCID)
-  ?ctx.registerType(MessageEvent, parent = eventCID)
-  ?ctx.registerType(SubmitEvent, parent = eventCID)
-  let uiEventCID = ctx.registerType(UIEvent, parent = eventCID)
-  if uiEventCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.registerType(MouseEvent, parent = uiEventCID)
-  ?ctx.registerType(InputEvent, parent = uiEventCID)
-  if ctx.defineConsts(eventCID, EventPhase) == dprException:
-    return err()
-  let eventTargetCID = ctx.registerType(EventTarget)
-  if eventTargetCID == JS_INVALID_CLASS_ID:
-    return err()
-  let abortSignalCID = ctx.registerType(AbortSignal, parent = eventTargetCID)
-  if abortSignalCID == JS_INVALID_CLASS_ID:
-    return err()
-  ?ctx.addEventGetSet(abortSignalCID, [satAbort])
-  ?ctx.registerType(AbortController)
-  ok((eventCID, eventTargetCID))
 
 {.pop.} # raises: []

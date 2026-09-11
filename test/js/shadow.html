@@ -8,14 +8,58 @@
 const el = document.getElementById("y");
 const shadow = el.attachShadow({mode: "open"})
 {
+	assertEquals(shadow.mode, "open");
+	assertEquals(shadow.delegatesFocus, false);
+	assertEquals(shadow.slotAssignment, "named");
+	assertEquals(shadow.clonable, false);
+	assertEquals(shadow.serializable, false);
 	assertEquals(shadow.nextSibling, null);
 	assertEquals(shadow.previousSibling, null);
 	assertEquals(el.firstChild.previousSibling, null);
+	assertEquals(shadow.getRootNode(), shadow);
+	assertEquals(shadow.getRootNode({composed: true}), document);
 	assertInstanceof(el.firstChild, Text);
+}
+{
+	shadow.innerHTML = "<div id=test-id>test</div>";
+	assertEquals(shadow.firstElementChild.id, "test-id");
+	assertEquals(document.getElementById("test-id"), null);
+	assertEquals(window["test-id"], undefined);
+	const x = shadow.getElementById("test-id");
+	assertEquals(x.id, "test-id");
+	x.remove();
+	assertEquals(shadow.getElementById("test-id"), null);
+}
+{
+	shadow.innerHTML = "<div id=test-remove>test</div>";
+	const x = shadow.getElementById("test-remove");
+	el.remove();
+	assertEquals(x.getRootNode(), shadow);
+	x.remove();
+}
+{
+	const doc = document.implementation.createHTMLDocument();
+	const el = doc.createElement("div");
+	assertEquals(el.getRootNode(), el);
+	const shadow = el.attachShadow({mode: "open"});
+	shadow.innerHTML = "<div id=x>blah</div>";
+	const x = shadow.getElementById("x");
+	doc.body.appendChild(el);
+	assertEquals(x.getRootNode(), shadow);
+	assertEquals(el.getRootNode(), doc);
 }
 {
 	z.attachShadow({mode: "open"});
 }
+{
+	/* closed */
+	const el = document.createElement("div");
+	el.attachShadow({mode: "closed"});
+	assertEquals(el.shadowRoot, null);
+	assertThrows(() => el.attachShadow({mode: "closed"}), DOMException);
+	assertThrows(() => el.attachShadow({mode: "open"}), DOMException);
+}
 shadow.append("Success")
+x.before(shadow);
 document.getElementById("x").remove();
 </script>

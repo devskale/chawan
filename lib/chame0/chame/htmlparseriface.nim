@@ -32,7 +32,6 @@ when defined(nimdocdummy):
   ## Also, make sure that parameter names match the ones defined here,
   ## otherwise you are likely to get strange compilation errors.
   # Dummy definitions
-  import std/tables
   import htmlparser
   type
     HandleImpl = int
@@ -45,9 +44,11 @@ static:
   # HandleImpl and atom type AtomImpl.
   doAssert DOMBuilderImpl is DOMBuilder[HandleImpl, AtomImpl]
 
-converter toDOMBuilderImpl(dombuilder: DOMBuilder[HandleImpl, AtomImpl]):
+{.push objChecks: off.}
+template toDOMBuilderImpl(dombuilder: DOMBuilder[HandleImpl, AtomImpl]):
     DOMBuilderImpl =
-  return DOMBuilderImpl(dombuilder)
+  DOMBuilderImpl(dombuilder)
+{.pop.}
 
 when defined(nimdocdummy):
   import std/macros
@@ -94,7 +95,7 @@ proc getDocumentImpl(builder: DOMBuilderImpl): HandleImpl {.doc.}
   ## This must not return nil, not even in the fragment parsing case.
 
 proc getParentNodeImpl(builder: DOMBuilderImpl; handle: HandleImpl):
-    Option[HandleImpl] {.doc.}
+    HandleImpl {.doc.}
   ## Retrieve a handle to the parent node.
   ## May return none(Handle) if no parent node exists.
 
@@ -144,10 +145,7 @@ proc createElementForTokenImpl(builder: DOMBuilderImpl; localName: AtomImpl;
   ## access to the parser internals, so for this step, the parser will call
   ## associateWithFormImpl if all conditions (except "the intended parent is
   ## in the same tree as the element pointed to by the form element pointer")
-  ## are fulfilled.  TODO: regrettably this no longer works because of
-  ## custom element attribute callbacks.  I suppose we should either add a
-  ## "getFormToAssociate" callback that the other side can call, or pass
-  ## form directly.
+  ## are fulfilled.
 
 proc getLocalNameImpl(builder: DOMBuilderImpl; handle: HandleImpl): AtomImpl
     {.doc.}
@@ -182,7 +180,7 @@ proc addAttrsIfMissingImpl(builder: DOMBuilderImpl; handle: HandleImpl,
   ## exists in a document.
 
 proc insertCommentImpl(builder: DOMBuilderImpl; parent: HandleImpl;
-    text: string; before: Option[HandleImpl]) {.doc.}
+    text: sink string; before: HandleImpl) {.doc.}
   ## Create a new comment node, and insert it into `parent` before the node
   ## `before`.
   ## `text` is a string representing the new comment node's character data.
@@ -192,7 +190,7 @@ proc appendDocumentTypeImpl(builder: DOMBuilderImpl; name, publicId,
   ## Append a new document type node to the Document node.
 
 proc insertBeforeImpl(builder: DOMBuilderImpl; parent, child: HandleImpl;
-    before: Option[HandleImpl]) {.doc.}
+    before: HandleImpl) {.doc.}
   ## Insert node `child` before the node called `before`.
   ##
   ## If `before` is `none(Handle)`, `child` is expected to be appended to
@@ -204,8 +202,8 @@ proc insertBeforeImpl(builder: DOMBuilderImpl; parent, child: HandleImpl;
   ##
   ## Note: parent may be either an Element or a Document node.
 
-proc insertTextImpl(builder: DOMBuilderImpl; parent: HandleImpl; text: string;
-    before: Option[HandleImpl]) {.doc.}
+proc insertTextImpl(builder: DOMBuilderImpl; parent: HandleImpl;
+    text: sink string; before: HandleImpl) {.doc.}
   ## Insert a text node at the specified location with contents `text`. If
   ## the specified location has a previous sibling that is a text node, no new
   ## text node should be created, but instead `text` should be appended to the
@@ -271,7 +269,7 @@ when defined(nimdocdummy):
     discard
 
   proc getParentNodeImpl(builder: DOMBuilderImpl; handle: HandleImpl):
-      Option[HandleImpl] =
+      HandleImpl =
     discard
 
   proc createHTMLElementImpl(builder: DOMBuilderImpl): HandleImpl = discard
@@ -292,22 +290,23 @@ when defined(nimdocdummy):
     discard
 
   proc addAttrsIfMissingImpl(builder: DOMBuilderImpl; handle: HandleImpl,
-      attrs: Table[AtomImpl, string]) =
+      attrs: seq[ParsedAttr[AtomImpl]]) =
     discard
 
-  proc createCommentImpl(builder: DOMBuilderImpl; text: string): HandleImpl =
+  proc insertCommentImpl(builder: DOMBuilderImpl; parent: HandleImpl;
+      text: string; before: HandleImpl) =
     discard
 
-  proc createDocumentTypeImpl(builder: DOMBuilderImpl; name, publicId,
-      systemId: string): HandleImpl =
+  proc appendDocumentTypeImpl(builder: DOMBuilderImpl; name, publicId,
+      systemId: string) =
     discard
 
   proc insertBeforeImpl(builder: DOMBuilderImpl; parent, child: HandleImpl;
-      before: Option[HandleImpl]) =
+      before: HandleImpl) =
     discard
 
-  proc insertTextImpl(builder: DOMBuilderImpl; parent: HandleImpl; text: string;
-      before: Option[HandleImpl]) =
+  proc insertTextImpl(builder: DOMBuilderImpl; parent: HandleImpl;
+      text: sink string; before: HandleImpl) =
     discard
 
   proc removeImpl(builder: DOMBuilderImpl; child: HandleImpl) =

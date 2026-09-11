@@ -94,14 +94,20 @@ Example:
 images = true
 \f[I]# disable website CSS\f[R]
 styling = false
+
 \f[I]# Specify user styles.\f[R]
 user\-style = \(aq\(aq\(aq
-/* you can import external UA styles like this: */
+/* you can import external user styles like this
+ * (rooted at your config directory): */
 \(atimport \(aquser.css\(aq;
+
 /* or just insert the style inline as follows. */
+
 /* enforce the default text\-decoration for links (i.e. underline). */
 a[href] { text\-decoration: revert !important }
-\(atmedia (monochrome) { /* only in color\-mode \(dqmonochrome\(dq (or \-M) */
+
+/* following rules are restricted to color\-mode \(dqmonochrome\(dq (or \-M) */
+\(atmedia (monochrome) {
 	/* disable UA style of bold font (no need for important here) */
 	a[href]:hover { font\-weight: initial }
 	/* ...and italicize the font on hover instead.
@@ -110,8 +116,8 @@ a[href] { text\-decoration: revert !important }
 	a[href]:hover { font\-style: italic !important }
 }
 \(aq\(aq\(aq
-\f[I]# You *can* set scripting to true here, but I strongly recommend using\f[R]
-\f[I]# [[siteconf]] to enable it on a per\-site basis instead.\f[R]
+\f[I]# You *can* set scripting to true (or \(aqapp\(aq) here, but I strongly recommend\f[R]
+\f[I]# using [[siteconf]] to enable it on a per\-site basis instead.\f[R]
 .EE
 .PP
 Following is a list of buffer options:
@@ -226,7 +232,7 @@ search term includes a capital letter.
 Note: this can also be overridden inline in the search bar (vim\-style),
 with the escape sequences \f[CR]\(rsc\f[R] (ignore case) and
 \f[CR]\(rsC\f[R] (strict case).
-See search mode for details.
+See \f[I]search mode\f[R] section for details.
 .RE
 .SS Encoding
 Encoding options are to be placed in the \f[CR][encoding]\f[R] section.
@@ -247,8 +253,8 @@ correctly.
 display\-charset = \(lqauto\(rq
 \f[B]charset label string\f[R] / \f[B]\(lqauto\(rq\f[R]
 .RS
-Character set for keyboard input and displaying documents.
-Used in dump mode as well.
+Character set for keyboard input and displaying documents both in
+interactive and headless/dump mode.
 (This means that e.g.\ \f[CR]cha \-I EUC\-JP \-O UTF\-8 a > b\f[R] is
 roughly equivalent to \f[CR]iconv \-f EUC\-JP \-t UTF\-8\f[R].)
 .RE
@@ -311,6 +317,8 @@ urimethodmap = [\(lq$CHA_DIR/urimethodmap\(rq, \(lq\(ti/.urimethodmap\(rq, \(lq/
 \f[B]array of paths\f[R]
 .RS
 Search path for urimethodmap files.
+This format is deprecated; instead, \f[CR]auto\-browsecap\f[R] should be
+used.
 See \f[B]cha\-urimethodmap\f[R](5) for details.
 .RE
 .TP
@@ -336,7 +344,14 @@ to achive the same results (with the same caveat).
 download\-dir = \(lq${TMPDIR:\-/tmp}/\(rq
 \f[B]path\f[R]
 .RS
-Path to pre\-fill for \(lqSave to:\(rq prompts.
+Path to pre\-fill for \(lqSave to:\(rq (i.e.\ download) prompts.
+.RE
+.TP
+ask\-download\-dir = true
+\f[B]boolean\f[R]
+.RS
+Whether Chawan should prompt for a download directory.
+Can be overridden by siteconf.
 .RE
 .TP
 show\-download\-panel = true
@@ -710,6 +725,9 @@ These are to be specified as sub\-keys to table \f[CR][omnirule]\f[R].
 (The sub\-key itself is ignored; you can use anything as long it
 doesn\(cqt conflict with other keys.)
 .PP
+These rules also apply to URLs passed as CLI arguments, so e.g.
+\f[CR]cha ddg:\(aqsearch term\(aq\f[R] works too.
+.PP
 Examples:
 .IP
 .EX
@@ -718,7 +736,7 @@ Examples:
 \f[I]# Brave search.)\f[R]
 \f[B][omnirule.ddg]\f[R]
 match = \(aq\(haddg:\(aq
-substitute\-url = \(aq(x) => \(dqhttps://lite.duckduckgo.com/lite/?kp=\-1&kd=\-1&q=\(dq + encodeURIComponent(x.split(\(dq:\(dq).slice(1).join(\(dq:\(dq))\(aq
+substitute\-url = \(aq(x) => \(dqhttps://lite.duckduckgo.com/lite/?kp=\-1&kd=\-1&q=\(dq + encodeURIComponent(x.substring(x.indexOf(\(aq\f[B]:\f[R]\(aq) + 1))\(aq
 
 \f[I]# To use the above rule, open the URL bar with C\-k, clear it with\f[R]
 \f[I]# C\-u, and type ddg:keyword.\f[R]
@@ -747,7 +765,7 @@ Currently, these are:
 .IP \(bu 2
 \f[CR]wd:\f[R] \- English Wiktionary.
 .IP \(bu 2
-\f[CR]mo:\f[R] \- Mojeek.
+\f[CR]ms:\f[R] \- Marginalia Search (old version).
 .PP
 Omnirule options:
 .TP
@@ -755,9 +773,8 @@ match
 \f[B]regex\f[R]
 .RS
 Regular expression used to match the input string.
-Note that websites passed as arguments are matched as well.
-Note: regexes are handled according to the match mode regex handling
-rules.
+The expressions are handled according to \f[I]match mode\f[R] regex
+handling rules.
 .RE
 .TP
 substitute\-url
@@ -828,8 +845,8 @@ url
 .RS
 Regular expression used to match the URL.
 Either this or the \f[CR]host\f[R] option must be specified.
-Note: regexes are handled according to the match mode regex handling
-rules.
+The expressions are handled according to \f[I]match mode\f[R] regex
+handling rules.
 .RE
 .TP
 host
@@ -839,8 +856,8 @@ Regular expression used to match the host part of the URL (i.e.\ domain
 name/ip address).
 Either this or the \f[CR]url\f[R] option (but not both) must be
 specified.
-Note: regexes are handled according to the match mode regex handling
-rules.
+The expressions are handled according to \f[I]match mode\f[R] regex
+handling rules.
 .RE
 .TP
 rewrite\-url
@@ -959,6 +976,13 @@ user\-style = buffer.user\-style
 Specify a user style sheet specific to the site.
 Refer to \f[CR]buffer.user\-style\f[R] for details.
 .RE
+.TP
+ask\-download\-dir = external.ask\-download\-dir
+\f[B]string\f[R]
+.RS
+Specify whether the user should be prompted for a path when saving
+resources from this URL.
+.RE
 .SS Keybindings
 Keybindings are to be placed in these sections:
 .IP \(bu 2
@@ -1034,10 +1058,10 @@ Exit the browser.
 suspend
 \f[B]C\-z\f[R]
 .RS
-Temporarily suspend the browser
-Note: this also suspends e.g.\ buffer processes or CGI scripts.
-So if you are downloading something, that will be delayed until you
-restart the process.
+Temporarily suspend the browser.
+This also suspends child processes including buffers or CGI scripts, so
+if you are downloading something, that will be suspended too until you
+restart the process (e.g., with the shell command \f[CR]fg\f[R]).
 .RE
 .TP
 load
@@ -1085,7 +1109,7 @@ Display information about the current line on the status line.
 .RE
 .TP
 toggleSource
-\f[B]\(rs\f[R]
+\f[B]\(rs\f[R] (backslash)
 .RS
 If viewing an HTML buffer, open a new buffer with its source.
 Otherwise, open the current buffer\(cqs contents as HTML.
@@ -1123,10 +1147,9 @@ depending on what the previously viewed buffer was.
 .RE
 .TP
 discardBufferPrev, discardBufferNext
-\f[B]d ,\f[R], \f[B]d .\f[R]
+\f[B]d ,\f[R] (d and then a comma), \f[B]d .\f[R] (d and then a period)
 .RS
-Discard the current buffer, and move back to the previous/next buffer,
-or open the link under the cursor.
+Discard the current buffer, and move back to the previous/next buffer.
 .RE
 .TP
 discardTree
@@ -1136,7 +1159,7 @@ Discard all child buffers of the current buffer.
 .RE
 .TP
 nextBuffer, prevBuffer
-\f[B].\f[R], \f[B],\f[R]
+\f[B].\f[R] (period), \f[B],\f[R] (comma)
 .RS
 Switch to the next or previous buffer respectively.
 .RE
@@ -1151,18 +1174,25 @@ displayed.
 .TP
 searchForward, searchBackward
 Search for a string in the current buffer, forwards or backwards.
+An empty string repeats the previous search in the respective direction.
 .TP
 isearchForward, searchBackward
-\f[B]/\f[R], \f[B]?\f[R]
+\f[B]/\f[R] (slash), \f[B]?\f[R] (question mark)
 .RS
 Incremental\-search for a string, highlighting the first result,
 forwards or backwards.
+(That is, the search result will be highlighted as you type.)
+An empty string repeats the previous search in the respective direction.
 .RE
 .TP
 searchNext, searchPrev
 \f[B]n\f[R], \f[B]N\f[R]
 .RS
-Jump to the nth (or if unspecified, first) next/previous search result.
+Jump to the nth (or if unspecified, first) next/previous search result
+in the current search direction.
+E.g., if you searched with \f[B]/\f[R] (slash), then searchPrev will
+jump to the previous item, but if you searched with \f[B]?\f[R]
+(question mark), then it will jump to the next item.
 .RE
 .TP
 peek
@@ -1171,10 +1201,10 @@ Display a message of the current buffer\(cqs URL on the status line.
 peekCursor
 \f[B]u\f[R]
 .RS
-Display a message of the URL or title under the cursor on the status
-line.
+Display a message of the URL or the value of the \(lqtitle\(rq attribute
+under the cursor on the status line.
 Multiple calls allow cycling through the two.
-(i.e.\ by default, press u once \-> title, press again \-> URL)
+(press u once \-> title, press again \-> URL)
 .RE
 .TP
 showFullAlert
@@ -1260,13 +1290,13 @@ Move the cursor to the first cell of the line.
 .RE
 .TP
 cursorLineTextStart
-\f[B]\(ha\f[R]
+\f[B]\(ha\f[R] (caret)
 .RS
 Move the cursor to the first non\-blank character of the line.
 .RE
 .TP
 cursorLineEnd
-\f[B]$\f[R]/\f[B]End\f[R]
+\f[B]$\f[R] (dollar)/\f[B]End\f[R]
 .RS
 Move the cursor to the last cell of the line.
 .RE
@@ -1302,7 +1332,7 @@ element (e.g.\ link, input field, etc).
 .RE
 .TP
 cursorPrevParagraph, cursorNextParagraph
-\f[B]{\f[R], \f[B]}\f[R]
+\f[B]{\f[R] (left brace), \f[B]}\f[R] (right brace)
 .RS
 Move the cursor to the end/beginning of the nth previous/next paragraph.
 .RE
@@ -1390,7 +1420,7 @@ Move to the first line/line in the middle of/last line on the screen.
 .TP
 raisePage, raisePageBegin, centerLine, centerLineBegin, lowerPage, lowerPageBegin
 \f[B]z t\f[R], \f[B]z RET\f[R], \f[B]z z\f[R], \f[B]z .\f[R], \f[B]z
-b\f[R], \f[B]z \-\f[R]
+b\f[R], \f[B]z \-\f[R] (z and then minus)
 .RS
 If \f[CR]n\f[R] is specified, move cursor to line \f[CR]n\f[R].
 Then,
@@ -1411,7 +1441,7 @@ non\-blank character, as the original keybindings in vi do.
 .RE
 .TP
 nextPageBegin
-\f[B]z +\f[R]
+\f[B]z +\f[R] (z and then plus)
 .RS
 If \f[CR]n\f[R] is specified, move to the screen before the nth line and
 raise the page.
@@ -1419,7 +1449,7 @@ Otherwise, go to the next screen\(cqs first line and raise the page.
 .RE
 .TP
 previousPageBegin
-\f[B]z \(ha\f[R]
+\f[B]z \(ha\f[R] (z and then caret)
 .RS
 If \f[CR]n\f[R] is specified, move to the screen before the nth line and
 lower the page.
@@ -1427,7 +1457,7 @@ Otherwise, go to the previous screen\(cqs last line and lower the page.
 .RE
 .TP
 cursorLeftEdge, cursorMiddleColumn, cursorRightEdge
-\f[B]g 0\f[R], \f[B]g c\f[R], \f[B]g $\f[R]
+\f[B]g 0\f[R], \f[B]g c\f[R], \f[B]g $\f[R] (g and then dollar)
 .RS
 Move to the first/middle/last column on the screen.
 .RE
@@ -1444,7 +1474,7 @@ Otherwise, jump to the first/last line of the buffer.
 .RE
 .TP
 gotoColumnOrBegin, gotoColumnOrEnd
-\f[B]|\f[R]
+\f[B]|\f[R] (pipe)
 .RS
 If \f[CR]n\f[R] is specified, jump to column \f[CR]n\f[R] of the current
 line.
@@ -1459,7 +1489,7 @@ Wait for a character \f[CR]x\f[R] and then set a mark with the ID
 .RE
 .TP
 gotoMark, gotoMarkY
-\f[B]\(ga\f[R], \f[B]\(cq\f[R]
+\f[B]\(ga\f[R] (grave accent), \f[B]\(cq\f[R] (apostrophe)
 .RS
 Wait for a character \f[CR]x\f[R] and then jump to the mark with the ID
 \f[CR]x\f[R] (if it exists on the page).
@@ -1468,7 +1498,7 @@ the Y position.
 .RE
 .TP
 markURL
-\f[B]:\f[R]
+\f[B]:\f[R] (colon)
 .RS
 Convert URL\-like strings to anchors on the current page.
 .RE
@@ -1510,17 +1540,95 @@ Reload the current buffer with cookies enabled/disabled.
 .RE
 .TP
 cursorSearchWordForward
-\f[B]C\-a\f[R], \f[B]*\f[R]
+\f[B]C\-a\f[R], \f[B]*\f[R] (asterisk)
 .RS
 Search for the word currently under the cursor.
 .RE
 .TP
 cursorSearchWordBackward
-\f[B]#\f[R]
+\f[B]#\f[R] (hash)
 .RS
 Search for the word currently under the cursor, backwards.
 .RE
+.SS Select actions
+Select menu actions are to be specified in the \f[CR][select]\f[R]
+section.
+These keybindings apply to both \f[CR]<select>\f[R] tags and the context
+menu (invoked with \f[CR]c\f[R]).
+.PP
+\f[CR]n\f[R] refers to a number preceding the action.
+e.g.\ in \f[CR]10gg\f[R], \f[CR]n\f[R] is 10.
+If no preceding number is input, then it is left unspecified.
+.PP
+Default keybindings are highlighted in \f[B]bold\f[R].
+.TP
+select.cursorUp, select.cursorDown
+\f[B]j\f[R]/\f[B]C\-p\f[R]/\f[B]Up\f[R]/\f[B][\f[R],
+\f[B]k\f[R]/\f[B]C\-n\f[R]/\f[B]Down\f[R]/\f[B]]\f[R]
+.RS
+Move the cursor upwards/downwards by \f[CR]n\f[R] menu items, or if
+\f[CR]n\f[R] is unspecified, by 1.
+.RE
+.TP
+select.scrollUp, select.scrollDown
+\f[B]K\f[R]/\f[B]C\-y\f[R], \f[B]J\f[R]/\f[B]C\-e\f[R], \f[B]z h\f[R],
+\f[B]z l\f[R]
+.RS
+Scroll up/down/left/right by \f[CR]n\f[R] lines, or if \f[CR]n\f[R] is
+unspecified, by one line.
+.RE
+.TP
+select.click
+\f[B]RET\f[R]/\f[B]LF\f[R]/\f[B]l\f[R]/\f[B]Right\f[R]
+.RS
+Submit the currently selected option.
+.RE
+.TP
+select.cancel
+\f[B]C\-c\f[R]/\f[B]C\-g\f[R]/\f[B]c\f[R]/\f[B]C\f[R]/\f[B]h\f[R]/\f[B]Left\f[R]
+.RS
+Close the select menu.
+(The \f[B]c\f[R]/\f[B]C\f[R] defaults are for symmetry with opening the
+context menu.)
+.RE
+.TP
+select.pageUp, select.pageDown
+\f[B]C\-u\f[R], \f[B]C\-d\f[R]
+.RS
+Move up/down one page on the select menu.
+.RE
+.TP
+select.halfPageUp, select.halfPageDown
+\f[B]C\-u\f[R], \f[B]C\-d\f[R]
+.RS
+Move up/down by half the select menu\(cqs size.
+.RE
+.TP
+select.gotoLineOrStart, select.gotoLineOrEnd
+\f[B]g g\f[R], \f[B]G\f[R]
+.RS
+Move to the first/last line of the select menu.
+.RE
+.TP
+select.searchForward, select.searchBackward
+\f[B]/\f[R] (slash), \f[B]?\f[R] (question mark)
+.RS
+Search & jump to a menu item.
+An empty string repeats the previous search in the respective direction.
+.RE
+.TP
+select.searchNext, select.searchPrev
+\f[B]n\f[R], \f[B]N\f[R]
+.RS
+Jump to the nth (or if unspecified, first) next/previous search result
+in the current search direction.
+E.g., if you searched with \f[B]/\f[R] (slash), then searchPrev will
+jump to the previous item, but if you searched with \f[B]?\f[R]
+(question mark), then it will jump to the next item.
+.RE
 .SS Line\-editing actions
+Line\-editing actions are to be specified in the \f[CR][line]\f[R]
+section.
 .TP
 line.submit
 \f[B]RET\f[R], \f[B]LF\f[R]

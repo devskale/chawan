@@ -17,7 +17,7 @@ assumed.  On Windows you have to use WSL.
 1. Clone the Chawan repository:  
    `git clone https://git.sr.ht/~bptato/chawan && cd chawan`
 2. Install the Nim compiler: <https://nim-lang.org/install.html>
-	* Please use 2.0.0 or newer, ideally 2.2.10.  (`nim -v` displays your
+	* Please use 2.0.0 or newer, ideally 2.2.12.  (`nim -v` displays your
 	  Nim compiler's version.)
 	  The 1.6 branch from 1.6.14 upwards may still work, but it isn't
 	  recommended unless you have no other choice.
@@ -52,7 +52,7 @@ Known stable packages are:
 * Arch Linux: <https://archlinux.org/packages/extra/x86_64/chawan/>
 * Debian (testing): <https://packages.debian.org/chawan>
 * FreeBSD: <https://www.freshports.org/www/chawan/>
-* Gentoo: (::guru overlay) <https://codeberg.org/gentoo/guru/src/branch/master/www-client/chawan>
+* Gentoo (::guru overlay): <https://codeberg.org/gentoo/guru/src/branch/master/www-client/chawan>
 * Homebrew: <https://formulae.brew.sh/formula/chawan>
 * NixOS: <https://search.nixos.org/packages?show=chawan>
 * Slackware (SBo): <https://slackbuilds.org/repository/15.0/network/chawan/>
@@ -86,8 +86,7 @@ Currently implemented features are:
 * supports several network [protocols](doc/protocols.md): HTTP(S), (S)FTP,
   Gopher, Gemini, Finger, Spartan
 * markdown viewer (`cha README.md`), man page viewer (`mancha`)
-* [user-defined protocols](doc/urimethodmap.md) and
-  [file formats](doc/mailcap.md)
+* [user-defined](doc/mailcap.md) protocols and file formats
 * syscall filter based sandboxing on FreeBSD, OpenBSD and Linux (through
   capsicum, pledge and seccomp-bpf)
 * bookmarks, history
@@ -100,14 +99,16 @@ First, read the [troubleshooting](doc/troubleshooting.md) document.
 If it doesn't help, [open a ticket](https://todo.sr.ht/~bptato/chawan).
 
 When using the ticket tracker, please make sure your tickets are valid
-markdown, or they become unreadable on the web interface.
-
-If you want to send plain text e-mails not formatted as markdown,
-use the [mailing list](mailto:~bptato/chawan-devel@lists.sr.ht) instead.
-This is also where you can send patches.
+markdown, or they become unreadable on the web interface.  If you want to
+send plain text e-mails not formatted as markdown, use the [mailing
+list](mailto:~bptato/chawan-devel@lists.sr.ht) instead.
 
 If you're having troubles accessing SourceHut, you can also use the
-[Codeberg mirror](https://codeberg.org/bptato/chawan).
+[Codeberg mirror](https://codeberg.org/bptato/chawan).  Patches can be sent
+to the mailing list, as Codeberg pull requests, or in private.
+
+(Please do not submit tickets or patches directly or indirectly generated
+with artificial neural networks.)
 
 ## Documentation index
 
@@ -121,7 +122,6 @@ Markdown files.
 * API description (for keybindings): [doc/api.md](doc/api.md)
 * mailcap: [doc/mailcap.md](doc/mailcap.md)
 * mime.types: [doc/mime.types.md](doc/mime.types.md)
-* urimethodmap: [doc/urimethodmap.md](doc/urimethodmap.md)
 * local CGI: [doc/cgi.md](doc/cgi.md)
 * protocols: [doc/protocols.md](doc/protocols.md)
 * inline images: [doc/image.md](doc/image.md)
@@ -133,6 +133,7 @@ If you're interested in modifying the code:
 
 * architecture: [doc/architecture.md](doc/architecture.md)
 * style guide, debugging tips, etc.: [doc/hacking.md](doc/hacking.md)
+* guide for interfacing with JS: [doc/jsguide.md](doc/jsguide.md)
 
 ## Relatives
 

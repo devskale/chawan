@@ -15,22 +15,22 @@ import io/chafile
 import io/console
 import io/dynstream
 import io/poll
+import js/fromjs
+import js/jsbind
+import js/jsopaque
+import js/jsref
+import js/jsutils
+import js/quickjs
+import js/tojs
 import local/clientutil
 import local/lineedit
 import local/pager
 import local/select
 import local/term
-import monoucha/fromjs
-import monoucha/jsbind
-import monoucha/jsutils
-import monoucha/quickjs
-import monoucha/tojs
 import server/bufferiface
 import server/forkserver
 import server/loaderiface
-import types/jsopt
 import types/opt
-import types/url
 import utils/myposix
 import utils/sandbox
 import utils/strwidth
@@ -269,7 +269,6 @@ proc initConfig(ctx: ParamParseContext; warnings: var seq[string];
     else:
       "config.toml"
     ?config.parseConfig(config.dir, file.get, warnings, jsctx, name)
-    discard file.get.close()
   for opt in ctx.opts:
     ?config.parseConfig(cwd, opt, warnings, jsctx, "<input>", laxnames = true)
   config{"userStyle"} &= ctx.stylesheet
@@ -278,8 +277,8 @@ proc initConfig(ctx: ParamParseContext; warnings: var seq[string];
 
 const libexecPath {.strdefine.} = "$CHA_BIN_DIR/../libexec/chawan"
 
-proc forkForkServer(loaderSockVec: array[2, cint]; pagerPid: int):
-    ForkServer {.myProveInit.} =
+proc forkForkServer(loaderSockVec: array[2, cint]; pagerPid: int;
+    rt: JSRuntime): ForkServer {.myProveInit.} =
   var sockVec {.noinit.}: array[2, cint] # stdin in forkserver
   var pipeFdErr {.noinit.}: array[2, cint] # stderr in forkserver
   if socketpair(AF_UNIX, SOCK_STREAM, IPPROTO_IP, sockVec) != 0:
@@ -301,7 +300,7 @@ proc forkForkServer(loaderSockVec: array[2, cint]; pagerPid: int):
     discard close(loaderSockVec[0])
     let controlStream = newPosixStream(sockVec[1])
     let loaderStream = newPosixStream(loaderSockVec[1])
-    runForkServer(controlStream, loaderStream, pagerPid)
+    runForkServer(controlStream, loaderStream, pagerPid, rt)
     exitnow(1)
   else:
     discard close(sockVec[1])
@@ -318,67 +317,67 @@ proc forkForkServer(loaderSockVec: array[2, cint]; pagerPid: int):
       westream: westream
     )
 
-proc setupStartupScript(ctx: JSContext; script: string) =
-  let path = ChaPath("$CHA_LIBEXEC_DIR/" & script).unquoteGet()
-  let ps = newPosixStream(path)
-  if ps != nil:
+when defined(embedStartup):
+  proc readStartupScriptROM(ctx: JSContext; src: string): JSValue =
+    JS_ReadObject(ctx, cast[ptr uint8](unsafeAddr src[0]),
+      csize_t(src.len), JS_READ_OBJ_BYTECODE or JS_READ_OBJ_ROM_DATA)
+
+proc setupStartupScript(ctx: JSContext) =
+  when defined(embedStartup):
+    const src = staticRead".obj/init.jsb"
+    let obj = ctx.readStartupScriptROM(src)
+  else:
+    let path = ChaPath("$CHA_LIBEXEC_DIR/init.jsb").unquoteGet()
+    let ps = newPosixStream(path)
+    if ps == nil:
+      die("failed to read startup bytecode at " & path)
     let src = ps.readAllOrMmap()
     let obj = JS_ReadObject(ctx, cast[ptr uint8](src.p), csize_t(src.len),
       JS_READ_OBJ_BYTECODE)
-    if JS_IsException(obj):
-      die(ctx.getExceptionMsg())
-    let ret = JS_EvalFunction(ctx, obj)
-    JS_FreeValue(ctx, obj)
-    if JS_IsException(ret):
-      die(ctx.getExceptionMsg())
-    JS_FreeValue(ctx, ret)
-  else:
-    die("failed to read startup bytecode")
+    deallocMem(src)
+  if JS_IsException(obj):
+    die(ctx.getExceptionMsg())
+  let ret = JS_EvalFunction(ctx, obj)
+  JS_FreeValue(ctx, obj)
+  if JS_IsException(ret):
+    die(ctx.getExceptionMsg())
+  JS_FreeValue(ctx, ret)
 
-proc readFile(ctx: JSContext; this: Window; path: string): JSValue
-    {.jsfunc.} =
-  var s: string
-  if chafile.readFile(path, s).isOk:
-    return ctx.toJS(s)
-  return JS_NULL
+jsNamespaceDef(Client): # fake namespace
+  proc readFile(ctx: JSContext; path: string): JSValue {.jsstfunc.} =
+    var s: string
+    if chafile.readFile(path, s).isOk:
+      return ctx.toJS(s)
+    return JS_NULL
 
-proc writeFile(ctx: JSContext; this: Window; path, content: string;
-    mode = cint(0o644)): JSValue {.jsfunc.} =
-  if chafile.writeFile(path, content, mode).isOk:
+  proc writeFile(ctx: JSContext; path, content: string; mode = cint(0o644)):
+      JSValue {.jsstfunc.} =
+    if chafile.writeFile(path, content, mode).isOk:
+      return JS_UNDEFINED
+    return JS_ThrowTypeError(ctx, "Could not write to file %s", cstring(path))
+
+  proc getenv(ctx: JSContext; s: string; fallback: JSValueConst = JS_NULL):
+      JSValue {.jsstfunc.} =
+    let env = twtstr.getEnvCString(s)
+    if env == nil:
+      return JS_DupValue(ctx, fallback)
+    return JS_NewString(ctx, env)
+
+  proc setenv(ctx: JSContext; s: string; val: JSValueConst): JSValue
+      {.jsstfunc.} =
+    if JS_IsNull(val):
+      twtstr.unsetEnv(s)
+    else:
+      var vals: string
+      ?ctx.fromJS(val, vals)
+      if twtstr.setEnv(s, vals).isErr:
+        return JS_ThrowTypeError(ctx, "Failed to set environment variable")
     return JS_UNDEFINED
-  return JS_ThrowTypeError(ctx, "Could not write to file %s", cstring(path))
-
-proc getenv(ctx: JSContext; this: Window; s: string;
-    fallback: JSValueConst = JS_NULL): JSValue {.jsfunc.} =
-  let env = twtstr.getEnvCString(s)
-  if env == nil:
-    return JS_DupValue(ctx, fallback)
-  return JS_NewString(ctx, env)
-
-proc setenv(ctx: JSContext; this: Window; s: string; val: JSValueConst):
-    JSValue {.jsfunc.} =
-  if JS_IsNull(val):
-    twtstr.unsetEnv(s)
-  else:
-    var vals: string
-    ?ctx.fromJS(val, vals)
-    if twtstr.setEnv(s, vals).isErr:
-      return JS_ThrowTypeError(ctx, "Failed to set environment variable")
-  return JS_UNDEFINED
-
-let ClientJSFunctions {.global.} = [
-  JS_CFUNC_DEF("getenv", 0, js_func_Window_getenv),
-  JS_CFUNC_DEF("setenv", 0, js_func_Window_setenv),
-  JS_CFUNC_DEF("readFile", 0, js_func_Window_readFile),
-  JS_CFUNC_DEF("writeFile", 0, js_func_Window_writeFile)
-]
 
 proc addJSModules(client: Window; ctx: JSContext): Opt[void] =
-  ?ctx.addCommonModules(client)
-  let global = JS_GetGlobalObject(ctx)
-  if not ctx.setPropertyFunctionList(global, ClientJSFunctions):
+  let global = ctx.getOpaque().global
+  if not ctx.setPropertyFunctionList(global, ClientDef.staticFuns):
     return err()
-  JS_FreeValue(ctx, global)
   ?ctx.addUtilModule()
   ?ctx.addLineEditModule()
   ?ctx.addConfigModule()
@@ -390,25 +389,14 @@ proc addJSModules(client: Window; ctx: JSContext): Opt[void] =
 proc newClient(forkserver: ForkServer; loader: FileLoader; jsctx: JSContext;
     urandom: PosixStream): Window {.myProveInit.} =
   let console = newConsole(cast[ChaFile](stderr))
-  let client = Window(
-    jsctx: jsctx,
-    loader: loader,
-    crypto: Crypto(urandom: urandom),
-    console: console,
-    settings: EnvironmentSettings(
-      scripting: smApp,
-    ),
-    dangerAlwaysSameOrigin: true,
-    document: newDocument(parseURL0("about:blank"))
-  )
-  if client.addJSModules(jsctx).isOk:
+  let client = newClient(jsctx, loader, urandom, console)
+  if client != nil and client.addJSModules(jsctx).isOk:
     return client
   else:
     die("failed to initialize JS: " & jsctx.getExceptionMsg())
 
-proc main2(rt: JSRuntime; loaderSockVec: array[2, cint]; pagerPid: int;
+proc main2(jsctx: JSContext; loaderSockVec: array[2, cint]; pagerPid: int;
     forkserver: ForkServer): int =
-  let jsctx = rt.newJSContext()
   let urandom = newPosixStream("/dev/urandom", O_RDONLY, 0)
   urandom.setCloseOnExec()
   var ctx = ParamParseContext(jsctx: jsctx, params: commandLineParams(), i: 0)
@@ -423,10 +411,9 @@ proc main2(rt: JSRuntime; loaderSockVec: array[2, cint]; pagerPid: int;
   if cres.isErr:
     die(cres.error)
   let config = cres.get
-  let global = JS_GetGlobalObject(jsctx)
-  if jsctx.definePropertyConvert(global, "config", config) == dprException:
+  let global = jsctx.getOpaque().global
+  if jsctx.definePropertyConvert(global, "config", config).isErr:
     die(jsctx.getExceptionMsg())
-  JS_FreeValue(jsctx, global)
   var history = true
   let ps = newPosixStream(STDIN_FILENO)
   if ctx.pages.len == 0 and ps.isatty():
@@ -452,17 +439,17 @@ proc main2(rt: JSRuntime; loaderSockVec: array[2, cint]; pagerPid: int;
     else:
       discard myposix.signal(SIGINT, myposix.SIG_DFL);
       discard kill(getpid(), SIGINT)
-  jsctx.setupStartupScript("init.jsb")
+  jsctx.setupStartupScript()
   let pager = newPager(config, forkserver, jsctx, warnings, loader, loaderPid,
-    client.console)
-  client.timeouts = pager.timeouts
+    client.console, addr client.timeouts)
+  if pager == nil:
+    die("failed to create pager")
   client.settings.attrsp = addr pager.term.attrs
   client.settings.scriptAttrsp = addr pager.term.attrs
-  let code = pager.run(ctx.pages, ctx.contentType, ctx.charset, history)
-  jsctx.free()
-  return code
+  return pager.run(ctx.pages, ctx.contentType, ctx.charset, history)
 
 proc main() =
+  let rt = newGlobalJSRuntime()
   initCAtomFactory()
   let binDir = myposix.getAppFilename().untilLast('/')
   if twtstr.setEnv("CHA_BIN_DIR", binDir).isErr or
@@ -472,10 +459,11 @@ proc main() =
   if socketpair(AF_UNIX, SOCK_STREAM, IPPROTO_IP, loaderSockVec) != 0:
     die("failed to set up initial socket pair")
   let pagerPid = getCurrentProcessId()
-  let forkserver = forkForkServer(loaderSockVec, pagerPid)
-  let jsrt = newGlobalJSRuntime()
-  let code = main2(jsrt, loaderSockVec, pagerPid, forkserver)
-  jsrt.free()
+  let forkserver = forkForkServer(loaderSockVec, pagerPid, rt)
+  let jsctx = rt.newJSContext()
+  let code = main2(jsctx, loaderSockVec, pagerPid, forkserver)
+  jsctx.free()
+  rt.free()
   quit(code)
 
 main()

@@ -4,35 +4,35 @@ import std/algorithm
 import std/macros
 import std/math
 import std/os
-import std/sets
-import std/tables
 
-import encoding/charset
 import config/chapath
 import config/conftypes
 import config/cookie
 import css/cssparser
 import css/cssvalues
+import encoding/charset
 import html/script
 import io/chafile
 import io/dynstream
-import monoucha/dtoa
-import monoucha/fromjs
-import monoucha/jsbind
-import monoucha/jspropenumlist
-import monoucha/jsutils
-import monoucha/quickjs
-import monoucha/tojs
+import js/dtoa
+import js/fromjs
+import js/jsbind
+import js/jsopaque
+import js/jspropenumlist
+import js/jsref
+import js/jstypes
+import js/jsutils
+import js/quickjs
+import js/tojs
 import server/headers
 import types/cell
 import types/color
-import types/jscolor
-import types/jsopt
 import types/opt
 import types/url
 import utils/dtoawrap
 import utils/lrewrap
 import utils/myposix
+import utils/tabutil
 import utils/twtstr
 
 type
@@ -46,12 +46,14 @@ type
     n: uint32
     val: JSValue
 
-  ActionMap* = ref object
+  ActionMapObj = object
     defaultAction*: JSValue
     t*: seq[Action]
     keyIdx: int
-    keyLast* {.jsget.}: int
+    keyLast*: int
     num: uint32
+
+  ActionMap* = JSRef[ActionMapObj]
 
   FormRequestType* = enum
     frtHttp = "http"
@@ -153,6 +155,7 @@ type
     # command sections
     csCmd = "cmd"
     csPage = "page"
+    csSelect = "select"
     csLine = "line"
     # array sections
     csSiteconf = "siteconf"
@@ -165,6 +168,7 @@ type
     # 1 byte
     coAllowHttpFromFile = "allowHttpFromFile"
     coAltScreen = "altScreen"
+    coAskDownloadDir = "askDownloadDir"
     coAutofocus = "autofocus"
     coBracketedPaste = "bracketedPaste"
     coColorMode = "colorMode"
@@ -303,21 +307,24 @@ type
     of cocClear:
       discard
 
-  ConfigRule* = ref object
+  ConfigRule* = ref object of StrMapItem
     name: string
     matchType*: SiteconfMatch # only used for siteconf
     regex*: Regex # url for siteconf, match for omnirule
     fun*: JSValue # substituteUrl for siteconf, rewriteUrl for omnirule
     entries*: seq[ConfigEntry] # only used for siteconf
+    prev: ConfigRule
     next: ConfigRule
 
   ConfigList = object
     head: ConfigRule
     tail: ConfigRule
+    map: StrMap
 
 const OptionMap = [
   coAllowHttpFromFile: (t: cotBool, section: csNetwork),
   coAltScreen: (cotBoolAuto, csDisplay),
+  coAskDownloadDir: (cotBool, csExternal),
   coAutofocus: (cotBool, csBuffer),
   coBracketedPaste: (cotBoolAuto, csInput),
   coColorMode: (cotColorModeAuto, csDisplay),
@@ -424,11 +431,11 @@ const SiteconfOptions = {
   coCookie, coScripting, coRefererFrom, coImages, coStyling,
   coInsecureSslNoVerify, coAutofocus, coMetaRefresh, coHistory, coMarkLinks,
   coShareCookieJar, coUserStyle, coFilterCmd, coDocumentCharset, coProxy,
-  coDefaultHeaders
+  coDefaultHeaders, coAskDownloadDir
 }
 
 type
-  Config* = ref ConfigObj
+  Config* = JSRef[ConfigObj]
 
   ConfigObj = object
     bits*: array[FirstBitOpt..LastBitOpt, ConfigOptionBit]
@@ -440,11 +447,10 @@ type
     documentCharset*: seq[Charset]
     defaultHeaders*: Headers
     proxy*: URL
-    dir* {.jsget.}: string
-    dataDir* {.jsget.}: string
+    dir*: string
+    dataDir*: string
     #TODO getset
     lists*: array[csSiteconf..csOmnirule, ConfigList]
-    ruleSeen: HashSet[string]
     cmdInit: seq[tuple[k: string; fun: pointer]] # initial k/v map
     actionMap*: array[csPage..csLine, ActionMap]
 
@@ -482,7 +488,7 @@ type
     entries: seq[ConfigEntry]
     beforeTable: seq[BeforeKey]
     # these sections have user-defined keys, so we prevent dupes like this
-    keysSeen: array[csCmd..csOmnirule, HashSet[string]]
+    keysSeen: array[csCmd..csOmnirule, StrMap]
     tableArrayCount: array[csSiteconf..csOmnirule, uint32]
     error: string
     line: int
@@ -500,32 +506,19 @@ type
     # cleared on every new siteconf/omnirule
     ruleOptionsSeen: set[ConfigOption]
 
-jsDestructor(ActionMap)
-jsDestructor(Config)
-
-when defined(gcDestructors):
-  proc `=destroy`*(a: var ConfigOptionBit) =
-    discard
-
-  proc `=destroy`*(a: var ConfigOptionHWord) =
-    discard
-
-  proc `=destroy`*(a: var ConfigOptionWord) =
-    discard
-
-  proc `=copy`*(a: var ConfigOptionBit; b: ConfigOptionBit) =
-    copyMem(addr a, unsafeAddr b, sizeof(a))
-
-  proc `=copy`*(a: var ConfigOptionHWord; b: ConfigOptionHWord) =
-    copyMem(addr a, unsafeAddr b, sizeof(a))
-
-  proc `=copy`*(a: var ConfigOptionWord; b: ConfigOptionWord) =
-    copyMem(addr a, unsafeAddr b, sizeof(a))
+unionHooks(ConfigOptionBit)
+unionHooks(ConfigOptionHWord)
+unionHooks(ConfigOptionWord)
 
 # Forward declarations
 proc consumeValue(cp: var ConfigParser; line: string; n: var int): Opt[void]
 proc parseConfigValue(cp: var ConfigParser): Opt[void]
 proc parseKeyComb(key: openArray[char]; warnings: var seq[string]): string
+proc parseConfig*(config: Config; dir: string; buf: openArray[char];
+  warnings: var seq[string]; ctx: JSContext; name: string; laxnames = false):
+  Err[string]
+proc getClassID(t: typedesc[Config]): JSClassID
+proc getClassID*(t: typedesc[ActionMap]): JSClassID
 
 static:
   doAssert sizeof(ConfigOptionBit) == 1
@@ -551,50 +544,30 @@ macro `{}`*(config: Config; s: static string): untyped =
   case ot
   of cotBool..cotScriptingMode:
     return quote do:
-      `config`.bits[ConfigOption(`t`)].`vs`
+      `config`[].bits[ConfigOption(`t`)].`vs`
   of cotInt32..cotFormatModeAuto:
     return quote do:
-      `config`.hwords[ConfigOption(`t`)].`vs`
+      `config`[].hwords[ConfigOption(`t`)].`vs`
   of cotCSSColor..cotRGBColorAuto:
     return quote do:
-      `config`.words[ConfigOption(`t`)].`vs`
+      `config`[].words[ConfigOption(`t`)].`vs`
   of cotString..cotCodepointSet:
     return quote do:
-      `config`.strs[ConfigOption(`t`)]
+      `config`[].strs[ConfigOption(`t`)]
   of cotCharsetSeq:
     return quote do:
-      `config`.documentCharset
+      `config`[].documentCharset
   of cotPathSeq:
     return quote do:
-      `config`.strSeqs[ConfigOption(`t`)]
+      `config`[].strSeqs[ConfigOption(`t`)]
   of cotHeaders:
     return quote do:
-      `config`.defaultHeaders
+      `config`[].defaultHeaders
   of cotURL:
     return quote do:
-      `config`.proxy
+      `config`[].proxy
   of cotRegex, cotFunction: # only used in omnirule/siteconf
     error("no such config value")
-
-proc page*(config: Config): lent ActionMap {.jsfget.} =
-  config.actionMap[csPage]
-
-proc line*(config: Config): lent ActionMap {.jsfget.} =
-  config.actionMap[csLine]
-
-proc parseConfig*(config: Config; dir: string; buf: openArray[char];
-  warnings: var seq[string]; ctx: JSContext; name: string; laxnames = false):
-  Err[string]
-
-proc finalize(rt: JSRuntime; map: ActionMap) {.jsfin.} =
-  JS_FreeValueRT(rt, map.defaultAction)
-  for it in map.t:
-    JS_FreeValueRT(rt, it.val)
-
-proc mark(rt: JSRuntime; map: ActionMap; markFunc: JS_MarkFunc) {.jsmark.} =
-  JS_MarkValue(rt, map.defaultAction, markFunc)
-  for it in map.t:
-    JS_MarkValue(rt, it.val, markFunc)
 
 template siteconf*(config: Config): ConfigList =
   config.lists[csSiteconf]
@@ -627,12 +600,12 @@ template defineAuto(typ, other: untyped) =
   template get*(v: typ): other =
     other(uint8(v) - 1)
 
-  proc toJS*(ctx: JSContext; v: typ): JSValue =
+  proc toJS(ctx: JSContext; v: typ): JSValue =
     if v.isSome:
       return ctx.toJS(v.get)
     return JS_NULL
 
-  proc fromJS*(ctx: JSContext; val: JSValueConst; res: var typ): FromJSResult =
+  proc fromJS(ctx: JSContext; val: JSValueConst; res: var typ): JSCode =
     if not JS_IsNull(val):
       res = typ(0)
     else:
@@ -650,19 +623,78 @@ template isSome*(v: FormatModeAuto): bool =
 template get*(v: FormatModeAuto): FormatMode =
   cast[set[FormatFlag]](uint32(v) - 1)
 
-proc toJS*(ctx: JSContext; v: FormatModeAuto): JSValue =
+proc toJS(ctx: JSContext; v: FormatModeAuto): JSValue =
   if v.isSome:
     return ctx.toJS(v.get)
   return JS_NULL
 
-proc fromJS*(ctx: JSContext; val: JSValueConst; res: var FormatModeAuto):
-    FromJSResult =
+proc fromJS(ctx: JSContext; val: JSValueConst; res: var FormatModeAuto):
+    JSCode =
   if JS_IsNull(val):
     res = FormatModeAuto(0)
   else:
     var res2: FormatMode
     ?ctx.fromJS(val, res2)
     res = FormatModeAuto(cast[uint32](res2) + 1)
+  fjOk
+
+proc toJS(ctx: JSContext; rgb: RGBColor): JSValue =
+  var res = "#"
+  res.pushHex(rgb.r)
+  res.pushHex(rgb.g)
+  res.pushHex(rgb.b)
+  return toJS(ctx, res)
+
+proc fromJS(ctx: JSContext; val: JSValueConst; res: var RGBColor):
+    JSCode =
+  var s: string
+  ?ctx.fromJS(val, s)
+  let x = parseLegacyColor(s)
+  if x.isErr:
+    JS_ThrowTypeError(ctx, x.error)
+    return fjErr
+  res = x.get
+  fjOk
+
+proc toJS(ctx: JSContext; rgba: ARGBColor): JSValue =
+  var res = "#"
+  res.pushHex(rgba.r)
+  res.pushHex(rgba.g)
+  res.pushHex(rgba.b)
+  res.pushHex(rgba.a)
+  return toJS(ctx, res)
+
+proc toJS(ctx: JSContext; c: CSSColor): JSValue =
+  if c.t in {cctArgb, cctOklab}:
+    return ctx.toJS(c.argb())
+  return ctx.toJS($c)
+
+proc fromJS(ctx: JSContext; val: JSValueConst; res: var ARGBColor): JSCode =
+  if JS_IsNumber(val):
+    # as hex
+    return ctx.fromJS(val, uint32(res))
+  # parse
+  var s: string
+  ?ctx.fromJS(val, s)
+  if x := parseARGBColor(s):
+    res = x
+    return fjOk
+  JS_ThrowTypeError(ctx, "unrecognized color")
+  fjErr
+
+proc fromJS(ctx: JSContext; val: JSValueConst; res: var CSSColor): JSCode =
+  var argb: ARGBColor
+  if ctx.fromJS(val, argb).isOk:
+    res = cssColor(argb)
+    return fjOk
+  var s: string
+  ?ctx.fromJS(val, s)
+  var p = initCSSParser(s)
+  let c = p.parseColor()
+  if c.isErr or p.has():
+    JS_ThrowTypeError(ctx, "invalid color %s", cstring(s))
+    return fjErr
+  res = c.get
   fjOk
 
 template isSome*(v: RGBColorAuto): bool =
@@ -674,13 +706,12 @@ template isNone*(v: RGBColorAuto): bool =
 template get*(v: RGBColorAuto): RGBColor =
   cast[RGBColor](int64(v))
 
-proc toJS*(ctx: JSContext; v: RGBColorAuto): JSValue =
+proc toJS(ctx: JSContext; v: RGBColorAuto): JSValue =
   if v.isSome:
     return ctx.toJS(v.get)
   return JS_NULL
 
-proc fromJS*(ctx: JSContext; val: JSValueConst; res: var RGBColorAuto):
-    FromJSResult =
+proc fromJS(ctx: JSContext; val: JSValueConst; res: var RGBColorAuto): JSCode =
   if JS_IsNull(val):
     res = RGBColorAuto(0)
   else:
@@ -697,8 +728,10 @@ proc evalCmdDecl(ctx: JSContext; s: string): JSValue =
     return ctx.compileScript("cmd." & s, "<command>")
   return ctx.compileScript(s, "<command>")
 
-proc newActionMap(ctx: JSContext; s, defaultAction: string): ActionMap =
-  let map = ActionMap(defaultAction: JS_UNDEFINED)
+proc newActionMap*(ctx: JSContext; s, defaultAction: string): ActionMap =
+  let map = jsNew ActionMapObj(defaultAction: JS_UNDEFINED)
+  if map == nil:
+    return map
   if defaultAction != "":
     map.defaultAction = ctx.evalCmdDecl(defaultAction)
   var dummy: seq[string]
@@ -717,62 +750,52 @@ proc newActionMap(ctx: JSContext; s, defaultAction: string): ActionMap =
       i = j + 1
   map
 
+proc forwardAction(ctx: JSContext; this: JSValueConst; argc: cint;
+    argv: JSValueConstArray; magic: cint; funcData: JSValueConstArray): JSValue
+    {.cdecl.} =
+  if not JS_IsFunction(ctx, funcData[0]):
+    let res = JS_EvalFunction(ctx, JS_DupValue(ctx, funcData[0]))
+    if JS_IsException(res):
+      return res
+    if not JS_IsFunction(ctx, res):
+      JS_FreeValue(ctx, res)
+      return JS_UNDEFINED
+    JS_FreeValue(ctx, JSValue(funcData[0]))
+    funcData[0] = JSValueConst(res)
+  return JS_Call(ctx, funcData[0], this, argc, argv)
+
 iterator items*(list: ConfigList): ConfigRule =
   var it = list.head
   while it != nil:
     yield it
     it = it.next
 
-proc add(list: var ConfigList; x: ConfigRule) =
+proc put(list: var ConfigList; ctx: JSContext; rule: ConfigRule) =
+  # Removes old rules (if any).
+  let oldRule = ConfigRule(list.map.getOrDefault(rule.name))
+  if oldRule != nil:
+    let prev = move(oldRule.prev)
+    let next = move(oldRule.next)
+    if prev != nil:
+      prev.next = next
+    if next != nil:
+      next.prev = prev
+    JS_FreeValue(ctx, oldRule.fun)
+  list.map.put(rule)
   if list.tail == nil:
-    list.head = x
+    list.head = rule
   else:
-    list.tail.next = x
-  list.tail = x
+    list.tail.next = rule
+    rule.prev = list.tail
+  list.tail = rule
 
-proc freeValues*(ctx: JSContext; list: ConfigList) =
-  for it in list:
-    JS_FreeValue(ctx, it.fun)
-
-proc clear(ctx: JSContext; list: var ConfigList) =
-  ctx.freeValues(list)
-  list.head = nil
-  list.tail = nil
-
-proc remove(ctx: JSContext; list: var ConfigList; name: string) =
-  var it = list.head
-  var prev: ConfigRule = nil
+proc clear(list: var ConfigList; rt: JSRuntime) =
+  var it = move(list.head)
   while it != nil:
-    if it.name == name:
-      let next = move(it.next)
-      if prev == nil:
-        list.head = next
-      else:
-        prev.next = next
-      if next == nil:
-        list.tail = nil
-      it.next = nil
-      JS_FreeValue(ctx, it.fun)
-      break
-    prev = it
-    it = it.next
-
-proc addOmniRule(ctx: JSContext; config: Config; name: string;
-    re, fun: JSValueConst): JSValue {.jsfunc.} =
-  var len: cint
-  let p = JS_GetRegExpBytecode(ctx, re, len)
-  if p == nil:
-    return JS_EXCEPTION
-  if not JS_IsFunction(ctx, fun):
-    return JS_ThrowTypeError(ctx, "function expected")
-  if config.ruleSeen.containsOrIncl(name): # replace
-    ctx.remove(config.omnirule, name)
-  config.omnirule.add(ConfigRule(
-    name: name,
-    regex: bytecodeToRegex(cast[REBytecode](p), len),
-    fun: JS_DupValue(ctx, fun)
-  ))
-  return JS_UNDEFINED
+    JS_FreeValueRT(rt, it.fun)
+    it.prev = nil
+    it = move(it.next)
+  list.tail = nil
 
 proc toJS*(ctx: JSContext; b: BoolAuto): JSValue =
   case b
@@ -798,7 +821,7 @@ proc toJS*(ctx: JSContext; val: ScriptingMode): JSValue =
   of smFalse: return JS_FALSE
   of smApp: return JS_NewString(ctx, "app")
 
-proc sort(ctx: JSContext; map: ActionMap) =
+proc sort*(map: ActionMap; ctx: JSContext) =
   map.t.sort(proc(a, b: Action): int =
     cmp(a.k, b.k), SortOrder.Ascending)
   #TODO we could probably do this more efficiently
@@ -1039,49 +1062,10 @@ proc parseKeyComb(key: openArray[char]; warnings: var seq[string]): string =
     realk &= ' '
   move(realk)
 
-proc find(a: ActionMap; s: string): int =
+proc find(a: ActionMap; s: openArray[char]): int =
   var dummy: seq[string]
   let rk = parseKeyComb(s, dummy)
   return a.t.binarySearch(rk, proc(x: Action; k: string): int = cmp(x.k, k))
-
-proc getter(ctx: JSContext; a: ActionMap; s: string): JSValue {.jsgetownprop.} =
-  let i = a.find(s)
-  if i == -1:
-    return JS_UNINITIALIZED
-  return JS_DupValue(ctx, a.t[i].val)
-
-proc setter(ctx: JSContext; a: ActionMap; k: string; val: JSValueConst):
-    Opt[void] {.jssetprop.} =
-  var dummy: seq[string]
-  let rk = parseKeyComb(k, dummy)
-  if rk == "":
-    return ok()
-  let val2 = if JS_IsFunction(ctx, val):
-    JS_DupValue(ctx, val)
-  else:
-    var s: string
-    ?ctx.fromJS(val, s)
-    ctx.evalCmdDecl(s)
-  if JS_IsException(val2):
-    return err()
-  a.t.add(Action(k: rk, val: val2, n: a.num))
-  inc a.num
-  ctx.sort(a)
-  ok()
-
-proc delete(a: ActionMap; k: string): bool {.jsdelprop.} =
-  let i = a.find(k)
-  if i != -1:
-    a.t.delete(i)
-  return i != -1
-
-proc names(ctx: JSContext; a: ActionMap): JSPropertyEnumList
-    {.jspropnames.} =
-  let L = uint32(a.t.len)
-  var list = newJSPropertyEnumList(ctx, L)
-  for it in a.t:
-    list.add(it.k)
-  return list
 
 proc isCompatibleIdent(s: string): bool =
   if s.len == 0 or s[0] notin AsciiAlpha + {'_', '$'}:
@@ -1362,7 +1346,8 @@ proc parseKey(cp: var ConfigParser; single, tableArray: bool; line: string;
   of csSiteconf, csOmnirule:
     if coAddEntry notin cp.ruleOptionsSeen:
       n = ?cp.consumeKey(camel = false, line, n)
-      if cp.keysSeen[section].containsOrIncl(cp.buf):
+      let item = StrMapItem(s: cp.buf)
+      if cp.keysSeen[section].hasKeyOrPut(item):
         return cp.err("duplicate key " & $section & '.' & cp.buf)
       cp.addRuleEntry()
       if single or n >= line.len or line[n] != '.':
@@ -1382,10 +1367,11 @@ proc parseKey(cp: var ConfigParser; single, tableArray: bool; line: string;
         return cp.err("invalid command name: " & cp.buf)
       cp.key &= '.'
       cp.key &= cp.buf
-    if cp.keysSeen[section].containsOrIncl(cp.key):
+    let item = StrMapItem(s: cp.key)
+    if cp.keysSeen[section].hasKeyOrPut(item):
       return cp.err("duplicate command")
     return ok(n)
-  of csPage, csLine:
+  of csPage, csSelect, csLine:
     if cp.key.len > 0:
       return cp.err("unexpected nested key for section " & $section)
     n = ?cp.consumeKey(camel = false, line, n)
@@ -1393,7 +1379,8 @@ proc parseKey(cp: var ConfigParser; single, tableArray: bool; line: string;
     cp.key = parseKeyComb(cp.buf, warnings)
     for warning in warnings:
       cp.warn(warning)
-    if cp.keysSeen[section].containsOrIncl(cp.key):
+    let item = StrMapItem(s: cp.key)
+    if cp.keysSeen[section].hasKeyOrPut(item):
       return cp.err("duplicate keybinding")
     return ok(n)
   else: discard
@@ -1469,7 +1456,14 @@ proc parseCharset(cp: var ConfigParser; x: var Charset): Opt[void] =
   let charset = getCharset(cp.buf)
   if charset == csUnknown and cp.buf != "auto":
     # auto represented as unknown
-    return cp.err("unknown charset '" & cp.buf & "'")
+    var buf = "unknown charset '" & cp.buf & "', expected one of [\"auto\", "
+    for e in csUnknown.succ..Charset.high:
+      buf &= '"'
+      buf &= $e
+      buf &= "\", "
+    buf.setLen(buf.high)
+    buf[^1] = ']'
+    return cp.err(move(buf))
   x = charset
   ok()
 
@@ -1487,7 +1481,7 @@ proc parseEnum[T: enum](cp: var ConfigParser; x: var T): Opt[void] =
       buf &= "\", "
     buf.setLen(buf.high)
     buf[^1] = ']'
-    return cp.err(buf)
+    return cp.err(move(buf))
   x = e.get
   ok()
 
@@ -1616,20 +1610,33 @@ proc parsePath(cp: var ConfigParser; x: var string): Opt[void] =
   ?cp.typeCheck(ttString)
   var y = ChaPath(cp.buf).unquote(cp.config.dir)
   if y.isErr:
-    return cp.err(y.error)
+    return cp.err(move(y.error))
   x = move(y.get)
   ok()
 
 proc parseCodepointSet(cp: var ConfigParser; x: var string): Opt[void] =
   ?cp.typeCheck(ttString)
-  var seen = initHashSet[uint32]()
-  var nseen = 0
+  var seen = newSeqOfCap[uint32](32)
+  var bad = -1'i64
+  var sorted = true
   for u in cp.buf.points:
-    if seen.containsOrIncl(u):
-      return cp.err("duplicate codepoint '" & u.toUTF8() & "'")
-    inc nseen
-    if nseen > int(cint.high):
+    if seen.len > 0:
+      let prev = seen[^1]
+      sorted = sorted and prev < u
+      if prev == u:
+        bad = int64(u)
+        break
+    seen.add(u)
+    if seen.len > int(cint.high):
       return cp.err("too many values")
+  if not sorted:
+    seen.sort()
+    for i in 1 ..< seen.len:
+      if seen[i] == seen[i - 1]:
+        bad = int64(seen[i])
+        break
+  if bad >= 0:
+    return cp.err("duplicate codepoint '" & uint32(bad).toUTF8() & "'")
   x = move(cp.buf)
   ok()
 
@@ -1660,7 +1667,7 @@ proc parsePathSeq(cp: var ConfigParser; x: var seq[string]): Opt[void] =
     for it in cp.arr:
       var y = ChaPath(it).unquote(cp.config.dir)
       if y.isErr:
-        return cp.err(y.error)
+        return cp.err(move(y.error))
       x.add(move(y.get))
   ok()
 
@@ -1677,7 +1684,7 @@ proc parseHeaders(cp: var ConfigParser; x: var ConfigHeadersInit): Opt[void] =
 proc parseURL(cp: var ConfigParser; x: var URL): Opt[void] =
   ?cp.typeCheck(ttString)
   if cp.buf == "":
-    x = nil
+    x = URL(nil)
   else:
     x = parseURL0(cp.buf)
     if x == nil:
@@ -1953,7 +1960,7 @@ proc parseConfigValue(cp: var ConfigParser): Opt[void] =
     else:
       nil
     cp.addCmdInit().add((cp.key, fun))
-  of csPage, csLine:
+  of csPage, csSelect, csLine:
     ?cp.typeCheck(ttString)
     let ctx = cp.ctx
     let val = ctx.evalCmdDecl(cp.buf)
@@ -1974,9 +1981,7 @@ proc applyEntry(ctx: JSContext; config: Config; entry: var ConfigEntry) =
   if section in {csSiteconf, csOmnirule}:
     if entry.t == cocStr and opt == coAddEntry:
       let rule = ConfigRule(fun: JS_UNDEFINED, name: move(entry.str))
-      if config.ruleSeen.containsOrIncl(rule.name): # replace
-        ctx.remove(config.lists[section], rule.name)
-      config.lists[section].add(rule)
+      config.lists[section].put(ctx, rule)
     else:
       let rule = config.lists[section].tail
       case entry.t
@@ -1986,7 +1991,7 @@ proc applyEntry(ctx: JSContext; config: Config; entry: var ConfigEntry) =
         rule.regex.bytecode = move(entry.regex.bytecode)
       of cocFunction:
         rule.fun = JS_MKPTR(JS_TAG_OBJECT, entry.fun)
-      of cocClear: ctx.clear(config.lists[section])
+      of cocClear: config.lists[section].clear(JS_GetRuntime(ctx))
       else:
         assert opt in SiteconfOptions
         rule.entries.add(entry)
@@ -2063,7 +2068,7 @@ proc initConfigParser(config: Config; dir: string; ctx: JSContext; name: string;
     opt: coAddEntry
   )
 
-proc parseFile(cp: var ConfigParser; file: ChaFile): Opt[void] =
+proc parseFile(cp: var ConfigParser; file: AChaFile): Opt[void] =
   var line: string
   while ?file.readLine(line):
     ?cp.parseConfigLine(line)
@@ -2085,7 +2090,7 @@ proc cleanup(cp: var ConfigParser) =
   if cp.error == "":
     cp.error = "failed to read config"
 
-proc parseConfig*(config: Config; dir: string; file: ChaFile;
+proc parseConfig*(config: Config; dir: string; file: AChaFile;
     warnings: var seq[string]; ctx: JSContext; name: string; laxnames = false):
     Err[string] =
   var cp = initConfigParser(config, dir, ctx, name, laxnames)
@@ -2097,12 +2102,11 @@ proc parseConfig*(config: Config; dir: string; file: ChaFile;
   # or just remove include
   var includes = move(config{"include"})
   for s in includes:
-    let x = chafile.fopen(s, "r")
+    var x = chafile.afopen(s, "r")
     if x.isErr:
       return err("include file not found: " & s)
-    let f = x.get
+    let f = move(x.get)
     ?config.parseConfig(dir, f, warnings, ctx, s.afterLast('/'))
-    f.close()
   warnings.add(cp.warnings)
   ok()
 
@@ -2127,21 +2131,21 @@ proc parseConfig*(config: Config; dir: string; buf: openArray[char];
   ok()
 
 proc openConfig*(dir, dataDir: var string; override: string;
-    warnings: var seq[string]): Opt[ChaFile] =
+    warnings: var seq[string]): Opt[AChaFile] =
   if override.len > 0:
     if override[0] == '/':
       dir = parentDir(override)
       dataDir = dir
-      return chafile.fopen(override, "r")
+      return chafile.afopen(override, "r")
     let path = myposix.getcwd() / override
     dir = parentDir(path)
     dataDir = dir
-    return chafile.fopen(path, "r")
+    return chafile.afopen(path, "r")
   dir = getEnvEmpty("CHA_DIR")
   if dir != "":
     # mainly just to behave sanely in nested invocations
     dataDir = getEnvEmpty("CHA_DATA_DIR", dir)
-    return chafile.fopen(dir / "config.toml", "r")
+    return chafile.afopen(dir / "config.toml", "r")
   dir = getEnvEmpty("XDG_CONFIG_HOME")
   var xdg: string
   if dir != "":
@@ -2151,7 +2155,7 @@ proc openConfig*(dir, dataDir: var string; override: string;
     xdg = "~/.config/chawan"
     dir = expandPath(xdg)
   let hasXdg = dirExists(dir)
-  if hasXdg and (let fs = chafile.fopen(dir / "config.toml", "r"); fs.isOk):
+  if hasXdg and (let fs = chafile.afopen(dir / "config.toml", "r"); fs.isOk):
     let s = getEnvEmpty("XDG_DATA_HOME")
     if s != "":
       dataDir = s / "chawan"
@@ -2163,51 +2167,11 @@ proc openConfig*(dir, dataDir: var string; override: string;
     return fs
   dir = expandPath("~/.chawan")
   dataDir = dir
-  let fs = chafile.fopen(dir / "config.toml", "r")
+  let fs = chafile.afopen(dir / "config.toml", "r")
   if fs.isOk and hasXdg:
     warnings.add("found both ~/.chawan and " & xdg &
       ", but only ~/.chawan will be used")
   fs
-
-# called at pager init
-proc initCommands(ctx: JSContext; config: Config): Opt[void] {.jsfunc.} =
-  let global = JS_GetGlobalObject(ctx)
-  let obj = JS_GetPropertyStr(ctx, global, "cmd")
-  JS_FreeValue(ctx, global)
-  if JS_IsException(obj):
-    JS_FreeValue(ctx, obj)
-    return err()
-  for (k, cmd) in config.cmdInit.mritems:
-    var objIt = JS_DupValue(ctx, obj)
-    let name = k.afterLast('.')
-    if name.len < k.len:
-      for ss in k.substr(0, k.high - name.len - 1).split('.'):
-        var prop = JS_GetPropertyStr(ctx, objIt, cstring(ss))
-        if JS_IsUndefined(prop):
-          prop = JS_NewObject(ctx)
-          case ctx.definePropertyE(objIt, ss, JS_DupValue(ctx, prop))
-          of dprException:
-            JS_FreeValue(ctx, obj)
-            return err()
-          else: discard
-        if JS_IsException(prop):
-          JS_FreeValue(ctx, obj)
-          return err()
-        JS_FreeValue(ctx, objIt)
-        objIt = prop
-    if cmd == nil:
-      continue
-    let dpr = ctx.definePropertyE(objIt, name, JS_MKPTR(JS_TAG_OBJECT, cmd))
-    JS_FreeValue(ctx, objIt)
-    cmd = nil
-    if dpr == dprException:
-      JS_FreeValue(ctx, obj)
-      return err()
-  JS_FreeValue(ctx, obj)
-  config.cmdInit = @[]
-  ctx.sort(config.page)
-  ctx.sort(config.line)
-  ok()
 
 const PageCommands = """
 y u copyCursorLink
@@ -2378,10 +2342,54 @@ C-Left line.prevWord
 C-Right line.nextWord
 """
 
+const SelectCommands = """
+RET select.click
+LF select.click
+Right select.click
+l select.click
+C-h select.cancel
+C-? select.cancel
+C-c select.cancel
+C-g select.cancel
+c select.cancel
+C select.cancel
+Left select.cancel
+h select.cancel
+C-d select.halfPageDown
+C-u select.halfPageUp
+C-f select.pageDown
+C-b select.pageUp
+Up select.cursorUp
+k select.cursorUp
+C-p select.cursorUp
+[ select.cursorUp
+Down select.cursorDown
+j select.cursorDown
+C-n select.cursorDown
+] select.cursorDown
+C-y select.scrollUp
+K select.scrollUp
+C-e select.scrollDown
+J select.scrollDown
+G select.gotoLineOrEnd
+g g select.gotoLineOrStart
+H select.cursorTop
+M select.cursorMiddle
+L select.cursorBottom
+/ select.searchForward
+? select.searchBackward
+n select.searchNext
+N select.searchPrev
+M-c enterCommand
+C-l load
+C-k webSearch
+"""
+
 # boolean options that initialize to true
 const ConfigInitTrue = [
   coConsoleBuffer, coWrap, coShowDownloadPanel, coViNumericPrefix,
-  coHighlightMarks, coShowCursorPosition, coShowHoverLink, coStyling, coHistory
+  coHighlightMarks, coShowCursorPosition, coShowHoverLink, coStyling,
+  coHistory, coAskDownloadDir
 ]
 
 const ConfigInitInt32 = {
@@ -2520,25 +2528,29 @@ proc addConfigSections(ctx: JSContext; config: Config): Opt[void] =
     let s = $opt
     let start = s.find('.') + 1
     let name = cast[cstring](unsafeAddr s[start])
-    if ctx.definePropertyGetSetCE(obj, name, getConfigOption, setConfigOption,
-        cint(opt)) == dprException:
-      return err()
+    ?ctx.definePropertyGetSetCE(obj, name, getConfigOption, setConfigOption,
+      cint(opt))
   let configObj = ctx.toJS(config)
   for section in csBuffer..csStatus:
     let s = $section
     let obj = objs[section]
-    if ctx.defineProperty(configObj, cstring(s), obj) == dprException:
-      return err()
+    ?ctx.defineProperty(configObj, cstring(s), obj)
   JS_FreeValue(ctx, configObj)
   ok()
 
 proc newConfig*(ctx: JSContext; dir, dataDir: string): Config =
-  let config = Config(
+  let page = newActionMap(ctx, PageCommands, "")
+  let line = newActionMap(ctx, LineCommands, "writeInputBuffer")
+  let select = newActionMap(ctx, SelectCommands, "pager.menuCommand()")
+  if page == nil or line == nil:
+    return Config(nil)
+  let config = jsNew ConfigObj(
     dir: dir,
     dataDir: dataDir,
     actionMap: [
-      csPage: newActionMap(ctx, PageCommands, ""),
-      csLine: newActionMap(ctx, LineCommands, "writeInputBuffer"),
+      csPage: page,
+      csSelect: select,
+      csLine: line,
     ],
     documentCharset: @[
       csUtf8, csShiftJIS, csEucJP, csIso8859_2
@@ -2566,7 +2578,7 @@ proc newConfig*(ctx: JSContext; dir, dataDir: string): Config =
   for it in ConfigInitPathSeq:
     for path in it[1]:
       config.strSeqs[it[0]].add(ChaPath(path).unquote(dir).get)
-  config.siteconf.add(ConfigRule(
+  config.siteconf.put(ctx, ConfigRule(
     name: "downloads",
     regex: compileMatchRegex("about:downloads").get,
     fun: JS_UNDEFINED,
@@ -2578,12 +2590,140 @@ proc newConfig*(ctx: JSContext; dir, dataDir: string): Config =
     )]
   ))
   if ctx.addConfigSections(config).isErr:
-    return nil
+    return Config(nil)
   config
 
+jsClassDef(Config):
+  jsget Config, dir
+  jsget Config, dataDir
+
+  proc mark(rt: JSRuntime; config: Config; markFunc: JS_MarkFunc) {.jsmark.} =
+    for list in config.lists.myitems:
+      for it in list:
+        JS_MarkValue(rt, it.fun, markFunc)
+        for entry in it.entries:
+          if entry.t == cocURL:
+            rt.markObj(entry.url, markFunc)
+    for map in config.actionMap.myitems:
+      rt.markObj(map, markFunc)
+
+  proc finalize(rt: JSRuntime; config: Config) {.jsfin.} =
+    for list in config.lists.mitems:
+      list.clear(rt)
+
+  proc getActionMap(config: Config; cs: ConfigSection): lent ActionMap {.
+      jsmfget("page", csPage), jsmfget("line", csLine),
+      jsmfget("select", csSelect).} =
+    config.actionMap[cs]
+
+  proc addOmniRule(ctx: JSContext; config: Config; name: sink string;
+      re: JSValueConst; fun: JSCallback): JSValue {.jsfunc.} =
+    var len: cint
+    let p = JS_GetRegExpBytecode(ctx, re, len)
+    if p == nil:
+      return JS_EXCEPTION
+    config.omnirule.put(ctx, ConfigRule(
+      name: name,
+      regex: bytecodeToRegex(cast[REBytecode](p), len),
+      fun: JS_DupValue(ctx, fun.value)
+    ))
+    return JS_UNDEFINED
+
+  # called at pager init
+  proc initCommands(ctx: JSContext; config: Config): Opt[void] {.jsfunc.} =
+    let obj = JS_GetPropertyStr(ctx, ctx.getOpaque().global, "cmd")
+    if JS_IsException(obj):
+      JS_FreeValue(ctx, obj)
+      return err()
+    for (k, cmd) in config.cmdInit.mritems:
+      var objIt = JS_DupValue(ctx, obj)
+      let name = k.afterLast('.')
+      if name.len < k.len:
+        for ss in k.substr(0, k.high - name.len - 1).split('.'):
+          var prop = JS_GetPropertyStr(ctx, objIt, cstring(ss))
+          if JS_IsUndefined(prop):
+            prop = JS_NewObject(ctx)
+            if ctx.definePropertyE(objIt, ss, JS_DupValue(ctx, prop)) == fjErr:
+              JS_FreeValue(ctx, obj)
+              return err()
+          if JS_IsException(prop):
+            JS_FreeValue(ctx, obj)
+            return err()
+          JS_FreeValue(ctx, objIt)
+          objIt = prop
+      if cmd == nil:
+        continue
+      let dpr = ctx.definePropertyE(objIt, name, JS_MKPTR(JS_TAG_OBJECT, cmd))
+      JS_FreeValue(ctx, objIt)
+      cmd = nil
+      if dpr == fjErr:
+        JS_FreeValue(ctx, obj)
+        return err()
+    JS_FreeValue(ctx, obj)
+    config.cmdInit = @[]
+    for cs in csPage..csLine:
+      config.actionMap[cs].sort(ctx)
+    ok()
+
+jsClassPublicDef(ActionMap):
+  jsget ActionMap, keyLast
+
+  proc finalize(rt: JSRuntime; map: ActionMap) {.jsfin.} =
+    for it in map.t:
+      JS_FreeValueRT(rt, it.val)
+
+  proc mark(rt: JSRuntime; map: ActionMap; markFunc: JS_MarkFunc) {.jsmark.} =
+    for it in map.t:
+      JS_MarkValue(rt, it.val, markFunc)
+
+  proc setter(ctx: JSContext; a: ActionMap; k: DOMString; val: JSValueConst):
+      Opt[void] {.jssetprop.} =
+    var dummy: seq[string]
+    let rk = parseKeyComb(k.toOpenArray(), dummy)
+    if rk == "":
+      return ok()
+    let val2 = if JS_IsFunction(ctx, val):
+      JS_DupValue(ctx, val)
+    else:
+      var s: string
+      ?ctx.fromJS(val, s)
+      ctx.evalCmdDecl(s)
+    if JS_IsException(val2):
+      return err()
+    a.t.add(Action(k: rk, val: val2, n: a.num))
+    inc a.num
+    a.sort(ctx)
+    ok()
+
+  proc getter(ctx: JSContext; a: ActionMap; s: DOMString): JSValue
+      {.jsgetownprop.} =
+    let i = a.find(s.toOpenArray())
+    if i < 0:
+      return JS_UNINITIALIZED
+    let val = a.t[i].val
+    if JS_IsFunction(ctx, val):
+      return JS_DupValue(ctx, val)
+    # bytecode function
+    return JS_NewCFunctionData(ctx, forwardAction, 0, 0, 1,
+      val.toJSValueConstArray())
+
+  proc delete(a: ActionMap; k: DOMString): bool {.jsdelprop.} =
+    let i = a.find(k.toOpenArray())
+    if i >= 0:
+      a.t.delete(i)
+    return i != -1
+
+  proc names(ctx: JSContext; a: ActionMap): JSPropertyEnumList
+      {.jspropnames.} =
+    let L = uint32(a.t.len)
+    var list = newJSPropertyEnumList(ctx, L)
+    for it in a.t:
+      list.add(it.k)
+    return list
+
 proc addConfigModule*(ctx: JSContext): Opt[void] =
-  ?ctx.registerType(ActionMap)
-  ?ctx.registerType(Config)
+  ?ctx.registerClass(ActionMapDef)
+  ?ctx.registerClass(ConfigDef)
   ok()
 
 {.pop.} # raises: []

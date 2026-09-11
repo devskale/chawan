@@ -1,4 +1,7 @@
-import monoucha/quickjs
+{.push raises: [].}
+
+import js/jsopaque
+import js/quickjs
 import types/opt
 
 {.compile("domexception.c", "").}
@@ -8,6 +11,10 @@ proc JS_ThrowDOMException*(ctx: JSContext; name, fmt: cstring): JSValue {.
   importc, varargs, discardable.}
 
 proc addDOMExceptionModule*(ctx: JSContext): Opt[void] =
+  if ctx.getOpaque() == nil:
+    return ok()
   if JS_AddIntrinsicDOMException(ctx) < 0:
     return err()
   ok()
+
+{.pop.} # raises: []

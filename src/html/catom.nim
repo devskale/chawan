@@ -1,38 +1,24 @@
 # String interning with reference counts.
 #
-# There's a complication here: Nim hooks only work reliably with ORC, but
-# we're stuck with refc because ORC still has some horrible bugs and
-# generates garbage code.
-#
-# As an inbetween solution, we do "semi-automatic" refcounting where local
-# variables are tracked with `=destroy`, but copy/dup hooks are not used
-# and atom members are sometimes managed manually in finalizers.  This
-# makes it so a compiler bug will, at worst, just cause a leak.
-#
 # On the different types:
 #
 # * StaticAtom is a pre-defined atom without a reference count.
-# * CAtomTraced is an atom with automatic reference counting.  It is
-#   still not possible to copy these; instead, when you have to dup the
-#   atom, use dupTrace().
-# * CAtom is an atom with manual refcounting.
-#
-# TODO: in the past, we didn't bother with refcounting atoms, and there is
-# still some code that straight out leaks them, in particular the HTML
-# parser.  Of course, the goal is to plug all leaks eventually.
+# * CAtom is an atom with automatic reference counting.
+# * CAtomRaw is an atom with manual refcounting.  It is used as a view to a
+#   CAtom in some places as an optimization.
 
 {.push raises: [].}
 
-import std/hashes
 import std/macros
-import std/sets
 
 import chame/tags
-import monoucha/fromjs
-import monoucha/jstypes
-import monoucha/quickjs
-import monoucha/tojs
-import types/jsopt
+import js/fromjs
+import js/jstypes
+import js/jsutils
+import js/quickjs
+import js/tojs
+import types/opt
+import utils/chahash
 import utils/tabutil
 import utils/twtstr
 
@@ -54,6 +40,7 @@ macro makeStaticAtom =
       satApplicationXml = "application/xml"
       satApplicationXmlHtml = "application/xml+html"
       satAsync = "async"
+      satAttributes = "attributes"
       satAutofocus = "autofocus"
       satAxis = "axis"
       satBgcolor = "bgcolor"
@@ -62,29 +49,25 @@ macro makeStaticAtom =
       satBorder = "border"
       satCellspacing = "cellspacing"
       satChange = "change"
-      satCharset = "charset"
       satChecked = "checked"
       satClass = "class"
-      satClassName = "className"
       satClear = "clear"
       satClick = "click"
       satCodetype = "codetype"
-      satColor = "color"
       satColorDashProfile = "color-profile"
       satCols = "cols"
       satColspan = "colspan"
       satCompact = "compact"
-      satContent = "content"
       satContextmenu = "contextmenu"
       satCrossorigin = "crossorigin"
       satCustomevent = "customevent"
       satDOMContentLoaded = "DOMContentLoaded"
       satDashChaHintCounter = "-cha-hint-counter"
       satDashChaLinkCounter = "-cha-link-counter"
+      satDataset = "dataset"
       satDatetime = "datetime"
       satDblclick = "dblclick"
       satDeclare = "declare"
-      satDefaultSelected = "defaultSelected"
       satDefer = "defer"
       satDirection = "direction"
       satDirname = "dirname"
@@ -100,25 +83,16 @@ macro makeStaticAtom =
       satFontDashFaceDashSrc = "font-face-src"
       satFontDashFaceDashUri = "font-face-uri"
       satFor = "for"
-      satForm = "form"
       satFormaction = "formaction"
       satFormenctype = "formenctype"
       satFormmethod = "formmethod"
-      satHCrossOrigin = "crossOrigin"
-      satHDateTime = "dateTime"
-      satHFormMethod = "formMethod"
-      satHHttpEquiv = "httpEquiv"
-      satHIsMap = "isMap"
-      satHNoValidate = "noValidate"
-      satHReferrerPolicy = "referrerPolicy"
-      satHUseMap = "useMap"
       satHash = "hash"
       satHeight = "height"
+      satHidden = "hidden"
       satHost = "host"
       satHostname = "hostname"
       satHref = "href"
       satHreflang = "hreflang"
-      satHtmlFor = "htmlFor"
       satHtmlevents = "htmlevents"
       satId = "id"
       satImageSvgXml = "image/svg+xml"
@@ -169,7 +143,6 @@ macro makeStaticAtom =
       satPassword = "password"
       satPathname = "pathname"
       satPort = "port"
-      satProgress = "progress"
       satProtocol = "protocol"
       satReadonly = "readonly"
       satReadystatechange = "readystatechange"
@@ -177,22 +150,19 @@ macro makeStaticAtom =
       satRel = "rel"
       satRequired = "required"
       satRev = "rev"
+      satReversed = "reversed"
       satRows = "rows"
       satRowspan = "rowspan"
       satRules = "rules"
       satScope = "scope"
       satScrolling = "scrolling"
-      satSearch = "search"
       satSelected = "selected"
       satShadow = "shadow"
       satShape = "shape"
-      satSize = "size"
       satSizes = "sizes"
-      satSlot = "slot"
       satSrc = "src"
       satSrcset = "srcset"
       satStart = "start"
-      satStyle = "style"
       satStylesheet = "stylesheet"
       satSubmit = "submit"
       satSvgevents = "svgevents"
@@ -200,17 +170,13 @@ macro makeStaticAtom =
       satText = "text"
       satTextHtml = "text/html"
       satTimeout = "timeout"
-      satTitle = "title"
-      satToString = "toString"
       satTouchmove = "touchmove"
       satTouchstart = "touchstart"
-      satType = "type"
       satUempty = ""
       satUievent = "uievent"
       satUievents = "uievents"
       satUsemap = "usemap"
       satUsername = "username"
-      satUstar = "*"
       satValign = "valign"
       satValue = "value"
       satValuetype = "valuetype"
@@ -223,20 +189,16 @@ macro makeStaticAtom =
     type StaticAtom* {.inject.} = enum
       satUnknown = ""
   let decl0 = decl[0][2]
-  var seen = HashSet[string].default
   for t in TagType:
     if t == ttUnknown:
       continue
     let tn = $t
     let name = "sat" & tn[0].toUpperAscii() & tn.substr(1).kebabToCamelCase()
-    seen.incl(tn)
     decl0.add(newNimNode(nnkEnumFieldDef).add(ident(name), newStrLitNode(tn)))
   for i, f in StaticAtom0.getType():
     if i == 0:
       continue
     let tn = $StaticAtom0(i - 1)
-    if tn in seen:
-      continue
     decl0.add(newNimNode(nnkEnumFieldDef).add(ident(f.strVal),
       newStrLitNode(tn)))
   decl
@@ -246,7 +208,7 @@ makeStaticAtom
 const CAtomFactoryInitSize* = 2048 # must be a power of 2
 
 type
-  CAtom* = distinct uint32
+  CAtomRaw* = distinct uint32
 
   AtomDesc = object
     s: string
@@ -261,22 +223,18 @@ type
 
   CAtomFactory = ptr CAtomFactoryObj
 
-  CAtomTraced* = distinct CAtom
-
 # This maps to JS null.
-const CAtomNull* = CAtom(0)
-const CAtomNullTraced* = CAtomTraced(CAtomNull)
+const CAtomNullRaw* = CAtomRaw(0)
 
-# Mandatory Atom functions
-proc `==`*(a, b: CAtom): bool {.borrow.}
-proc cmp*(a, b: CAtom): int {.borrow.}
+proc `==`*(a, b: CAtomRaw): bool {.borrow.}
+proc cmp*(a, b: CAtomRaw): int {.borrow.}
 
 var factory {.global.}: CAtomFactoryObj
 
 template getFactory(): CAtomFactory =
   addr factory
 
-proc hash*(atom: CAtom): Hash =
+proc hash*(atom: CAtomRaw): Hash =
   getFactory().atomMap[uint32(atom)].hcache
 
 proc freeAtomImpl(u: uint32) =
@@ -284,27 +242,22 @@ proc freeAtomImpl(u: uint32) =
   factory.atomMap[u].s = ""
   factory.atomMap[u].freeNext = factory.freeHead
   factory.freeHead = u
-  let mask = (factory.tab.len - 1)
-  var i = factory.atomMap[u].hcache and mask
-  while true:
-    if factory.tab[i] == u:
-      factory.tab[i] = 0
-      break
-    i = (i + 1) and mask
-  var j = i
-  while true:
-    j = (j + 1) and mask
-    let it = factory.tab[j]
-    if it == 0:
-      break
-    let k = factory.atomMap[it].hcache and mask
-    if j == k: # already at home
-      break
-    # backwards shift
-    factory.tab[i] = move(factory.tab[j])
-    i = j
+  let mask = factory.tab.len - 1
+  var j = -1
+  let keyh = factory.atomMap[u].hcache
+  for i, it in factory.tab.mtabPairs(keyh):
+    if it == u:
+      it = 0
+      j = i
+    elif j >= 0:
+      let k = factory.atomMap[it].hcache and mask
+      if i == k: # already at home
+        break
+      # backwards shift
+      factory.tab[j] = move(it)
+      j = i
 
-proc freeAtom*(atom: CAtom) =
+proc freeAtom(atom: CAtomRaw) =
   let u = uint32(atom)
   if u > uint32(StaticAtom.high):
     let factory = getFactory()
@@ -315,69 +268,68 @@ proc freeAtom*(atom: CAtom) =
     if desc.refc == 0:
       freeAtomImpl(u)
 
-proc freeAtoms*(atoms: openArray[CAtom]) =
-  for a in atoms:
-    freeAtom(a)
-
-proc dup*(atom: CAtom): CAtom =
+proc dup*(atom: CAtomRaw): CAtomRaw =
   let factory = getFactory()
   inc factory.atomMap[uint32(atom)].refc
   atom
 
-proc `=copy`*(x: var CAtomTraced; y: CAtomTraced) {.error.} =
-  discard
+type
+  CAtom* = distinct CAtomRaw
 
-proc `=destroy`*(atom: var CAtomTraced) =
-  freeAtom(CAtom(atom))
+const CAtomNull* = CAtom(CAtomNullRaw)
 
-template dup*(atom: CAtomTraced): CAtom =
-  CAtom(atom).dup()
+proc `==`*(a, b: CAtom): bool {.borrow.}
+proc cmp*(a, b: CAtom): int {.borrow.}
+proc hash*(atom: CAtom): Hash {.borrow.}
 
-template trace(atom: CAtom): CAtomTraced =
-  CAtomTraced(atom)
+proc `=destroy`(atom: var CAtom) =
+  freeAtom(cast[CAtomRaw](atom))
 
-template dupTrace*(atom: CAtom): CAtomTraced =
-  CAtomTraced(atom.dup())
+proc `=dup`(atom: CAtom): CAtom {.noinit.} =
+  cast[ptr CAtomRaw](addr result)[] = dup(cast[CAtomRaw](atom))
 
-template dupTrace*(atom: CAtomTraced): CAtomTraced =
-  CAtomTraced(CAtom(atom).dup())
+proc `=copy`(x: var CAtom; y: CAtom) =
+  if x != y:
+    `=destroy`(x)
+    cast[ptr CAtomRaw](addr x)[] = dup(cast[CAtomRaw](y))
 
-proc view*(atom: CAtom): lent CAtomTraced =
-  CAtomTraced(atom)
+proc `=sink`(x: var CAtom; y: CAtom) =
+  `=destroy`(x)
+  cast[ptr CAtomRaw](addr x)[] = cast[CAtomRaw](y)
 
-template view*(atom: CAtomTraced): CAtom =
+template trace(atom: CAtomRaw): CAtom =
   CAtom(atom)
+
+proc view*(atom: CAtomRaw): lent CAtom =
+  CAtom(atom)
+
+template view*(atom: CAtom): CAtomRaw =
+  CAtomRaw(atom)
 
 proc put0(factory: CAtomFactory; atom: uint32) =
   let mask = factory.tab.len - 1
-  var home = CAtom(atom).hash() and mask
-  var i = home
+  let hcache = CAtomRaw(atom).hash()
+  var home = hcache and mask
   var atom = atom
-  while true:
-    let it = factory.tab[i]
+  for i, it in factory.tab.mtabPairs(hcache):
     if it == 0:
-      factory.tab[i] = atom
+      it = atom
       break
-    if tabSwap(home, CAtom(it).hash(), i, mask): # displace
-      swap(factory.tab[i], atom)
-    i = (i + 1) and mask
+    if tabSwap(home, CAtomRaw(it).hash(), i, mask): # displace
+      swap(it, atom)
 
-proc get(factory: CAtomFactory; s: openArray[char]; h: Hash): CAtom =
-  let mask = (factory.tab.len - 1)
-  var i = h and mask
-  while true:
-    let atom = factory.tab[i]
+proc get(factory: CAtomFactory; s: openArray[char]; h: Hash): CAtomRaw =
+  for i, atom in factory.tab.tabPairs(h):
     if atom == 0:
       break
     if factory.atomMap[int(atom)].s == s:
-      return CAtom(atom)
-    i = (i + 1) and mask
-  return CAtomNull
+      return CAtomRaw(atom)
+  return CAtomNullRaw
 
 proc toAtomImpl(factory: CAtomFactory; s: openArray[char];
-    added: var bool): CAtom =
+    added: var bool): CAtomRaw =
   let h = s.hash()
-  if (let atom = factory.get(s, h); atom != CAtomNull):
+  if (let atom = factory.get(s, h); atom != CAtomNullRaw):
     inc factory.atomMap[int(atom)].refc
     return atom
   var u = factory.freeHead
@@ -393,16 +345,16 @@ proc toAtomImpl(factory: CAtomFactory; s: openArray[char];
   factory.atomMap[u] = AtomDesc(refc: 1, hcache: h)
   factory.put0(u)
   added = true
-  CAtom(u)
+  CAtomRaw(u)
 
-proc toAtom(factory: CAtomFactory; s: openArray[char]): CAtom =
+proc toAtomRaw(factory: CAtomFactory; s: openArray[char]): CAtomRaw =
   var added = false
   let atom = factory.toAtomImpl(s, added)
   if added:
     factory.atomMap[int(atom)].s = s.substr()
   atom
 
-proc toAtomView*(s: openArray[char]): CAtom =
+proc toAtomView*(s: openArray[char]): CAtomRaw =
   let h = s.hash()
   getFactory().get(s, h)
 
@@ -413,30 +365,28 @@ proc initCAtomFactory*() =
   factory.atomMap.add(AtomDesc())
   # StaticAtom includes TagType too.
   for sa in StaticAtom(1) .. StaticAtom.high:
-    discard factory.toAtom($sa)
+    let atom = factory.toAtomRaw($sa)
+    assert uint32(atom) == uint32(sa)
+
+proc toAtomRaw(s: openArray[char]): CAtomRaw =
+  return getFactory().toAtomRaw(s)
 
 proc toAtom*(s: openArray[char]): CAtom =
-  return getFactory().toAtom(s)
+  s.toAtomRaw().trace()
 
-proc toAtomTrace*(s: openArray[char]): CAtomTraced =
-  s.toAtom().trace()
-
-proc toAtomTrace*(s: DOMString): CAtomTraced =
-  s.toOpenArray().toAtomTrace()
+proc toAtom*(s: DOMString): CAtom =
+  s.toOpenArray().toAtom()
 
 proc toStaticAtom*(tagType: TagType): StaticAtom =
   assert tagType != ttUnknown
   StaticAtom(uint32(tagType))
 
-proc toAtom*(tagType: TagType): CAtom =
-  assert tagType != ttUnknown
-  return CAtom(tagType)
+template view*(tagType: TagType): CAtom =
+  let tmp = tagType
+  assert tmp != ttUnknown
+  CAtom(tmp)
 
-proc toAtom*(satom: StaticAtom): CAtom =
-  assert satom != satUnknown
-  return CAtom(satom)
-
-proc toAtomLower*(s: openArray[char]): CAtom =
+proc toAtomRawLower(s: openArray[char]): CAtomRaw =
   let factory = getFactory()
   var added = false
   var s = s.toLowerAscii()
@@ -445,67 +395,46 @@ proc toAtomLower*(s: openArray[char]): CAtom =
     factory.atomMap[int(atom)].s = move(s)
   atom
 
-proc toAtomTrace*(satom: StaticAtom): CAtomTraced =
-  satom.toAtom().trace()
+template view*(satom: StaticAtom): CAtom =
+  let tmp = satom
+  assert tmp != satUnknown
+  CAtom(CAtomRaw(uint32(tmp)))
 
-template view*(satom: StaticAtom): lent CAtomTraced =
-  satom.toAtom().view()
+proc `$`*(atom: CAtomRaw): lent string =
+  getFactory().atomMap[int(atom)].s
 
 proc `$`*(atom: CAtom): lent string =
-  return getFactory().atomMap[int(atom)].s
-
-proc `$`*(atom: CAtomTraced): lent string =
-  $CAtom(atom)
+  $CAtomRaw(atom)
 
 proc find*(atom: CAtom; c: char): int =
   ($atom).find(c)
 
-proc find*(atom: CAtomTraced; c: char): int =
-  CAtom(atom).find(c)
-
 proc len*(atom: CAtom): int =
   ($atom).len
-
-proc len*(atom: CAtomTraced): int =
-  CAtom(atom).len
 
 proc substr*(atom: CAtom; first, last: int): CAtom =
   let atomLen = atom.len
   if first >= atomLen:
-    return satUempty.toAtom()
+    return satUempty.view()
   let last = min(last, atomLen - 1)
   ($atom).toOpenArray(first, last).toAtom()
 
 proc substr*(atom: CAtom; first: int): CAtom =
   atom.substr(first, ($atom).high)
 
-proc substrTrace*(atom: CAtomTraced; first, last: int): CAtomTraced =
-  CAtom(atom).substr(first, last).trace()
-
-proc substrTrace*(atom: CAtomTraced; first: int): CAtomTraced =
-  CAtom(atom).substr(first).trace()
-
-proc contains*(atom: CAtomTraced; c: char): bool =
+proc contains*(atom: CAtom; c: char): bool =
   c in $atom
 
 proc contains*(atom: CAtom; cs: set[char]): bool =
   cs in $atom
 
-proc contains*(atom: CAtomTraced; cs: set[char]): bool {.borrow.}
-
 proc toLowerAscii*(a: CAtom): CAtom =
-  if AsciiUpperAlpha notin a:
-    return a.dup()
-  return ($a).toAtomLower()
-
-proc toLowerAscii*(a: CAtomTraced): CAtomTraced =
-  CAtom(a).toLowerAscii().trace()
+  if AsciiUpperAlpha notin $a:
+    return a
+  return ($a).toAtomRawLower().trace()
 
 proc equalsIgnoreCase*(a, b: CAtom): bool =
   a == b or ($a).equalsIgnoreCase($b)
-
-proc equalsIgnoreCase*(a: CAtomTraced; b: CAtom): bool =
-  a.view().equalsIgnoreCase(b)
 
 proc containsIgnoreCase*(aa: openArray[CAtom]; a: CAtom): bool =
   for it in aa:
@@ -513,34 +442,31 @@ proc containsIgnoreCase*(aa: openArray[CAtom]; a: CAtom): bool =
       return true
   return false
 
-proc toAtomLowerTrace*(s: openArray[char]): CAtomTraced =
-  s.toAtom().toLowerAscii().trace()
+proc toAtomLower*(s: openArray[char]): CAtom =
+  s.toAtomRawLower().trace()
 
-proc toAtomLowerTrace*(s: DOMString): CAtomTraced =
-  s.toOpenArray().toAtomLowerTrace()
+proc toAtomLower*(s: DOMString): CAtom =
+  s.toOpenArray().toAtomLower()
 
 proc containsIgnoreCase*(aa: openArray[CAtom]; a: StaticAtom): bool =
-  return aa.containsIgnoreCase(a.toAtom())
+  return aa.containsIgnoreCase(a.view())
 
 proc toTagType*(atom: CAtom): TagType =
-  let i = int(atom)
-  if i <= int(TagType.high):
+  let i = uint32(atom)
+  if i <= uint32(TagType.high):
     return TagType(i)
   return ttUnknown
 
-proc toTagType*(atom: CAtomTraced): TagType {.borrow.}
-
-proc toStaticAtom*(atom: CAtom): StaticAtom =
-  let i = int(atom)
-  if i <= int(StaticAtom.high):
+proc toStaticAtom(atom: CAtomRaw): StaticAtom =
+  let i = uint32(atom)
+  if i <= uint32(StaticAtom.high):
     return StaticAtom(i)
   return satUnknown
 
-proc toStaticAtom*(atom: CAtomTraced): StaticAtom {.borrow.}
+proc toStaticAtom*(atom: CAtom): StaticAtom {.borrow.}
 
-proc toStaticAtomLower*(atom: CAtomTraced): StaticAtom =
-  let atom = CAtom(atom).toLowerAscii().trace()
-  atom.toStaticAtom()
+proc toStaticAtomLower*(atom: CAtom): StaticAtom =
+  atom.toLowerAscii().toStaticAtom()
 
 proc toStaticAtom*(s: string): StaticAtom =
   let factory = getFactory()
@@ -567,45 +493,39 @@ proc toStaticAtom*(namespace: Namespace): StaticAtom =
   of nsXml: satNamespaceXML
   of nsXmlns: satNamespaceXMLNS
 
-proc `==`*(a, b: CAtomTraced): bool {.borrow.}
-
-proc `==`*(a: CAtom; b: StaticAtom): bool =
+proc `==`*(a: CAtomRaw; b: StaticAtom): bool =
   a.toStaticAtom() == b
 
-proc `==`*(a: StaticAtom; b: CAtom): bool =
+proc `==`*(a: StaticAtom; b: CAtomRaw): bool =
   a == b.toStaticAtom()
 
-proc `==`*(a: CAtomTraced; b: CAtom): bool =
-  CAtom(a) == b
+proc `==`*(a: CAtom; b: CAtomRaw): bool =
+  CAtomRaw(a) == b
 
-proc `==`*(a: CAtom; b: CAtomTraced): bool =
-  a == CAtom(b)
+proc `==`*(a: CAtomRaw; b: CAtom): bool =
+  a == CAtomRaw(b)
 
-proc `==`*(a: CAtomTraced; b: StaticAtom): bool =
-  CAtom(a) == b
+proc `==`*(a: CAtom; b: StaticAtom): bool =
+  CAtomRaw(a) == b
 
-proc `==`*(a: StaticAtom; b: CAtomTraced): bool =
-  a == CAtom(b)
+proc `==`*(a: StaticAtom; b: CAtom): bool =
+  a == CAtomRaw(b)
 
 proc contains*(a: openArray[CAtom]; b: StaticAtom): bool =
-  b.toAtom() in a
-
-proc contains*(a: openArray[CAtom]; b: CAtomTraced): bool =
   b.view() in a
 
 proc contains*(a: openArray[StaticAtom]; b: CAtom): bool =
   b.toStaticAtom() in a
 
-proc matchesLocalName*(qualifiedName: CAtom; localName: CAtomTraced): bool =
+proc matchesLocalName*(qualifiedName, localName: CAtom): bool =
   let i = qualifiedName.find(':') + 1
   if i == 0:
     return qualifiedName == localName
   return ($qualifiedName).toOpenArray(i, ($qualifiedName).high) == $localName
 
-proc fromJSImpl(ctx: JSContext; val: JSValueConst; res: var CAtom):
-    FromJSResult =
+proc fromJSImpl(ctx: JSContext; val: JSValueConst; res: var CAtomRaw): JSCode =
   if JS_IsNull(val):
-    res = CAtomNull
+    res = CAtomNullRaw
   else:
     var len: csize_t
     let cs = JS_ToCStringLen(ctx, len, val)
@@ -618,20 +538,19 @@ proc fromJSImpl(ctx: JSContext; val: JSValueConst; res: var CAtom):
     {.push overflowChecks: off.}
     let H = cast[int](len) - 1
     {.pop.}
-    res = cs.toOpenArray(0, H).toAtom()
+    res = cstring(cs).toOpenArray(0, H).toAtomRaw()
     JS_FreeCString(ctx, cs)
   fjOk
 
-proc fromJS*(ctx: JSContext; val: JSValueConst; res: var CAtomTraced):
-    FromJSResult =
-  var atom: CAtom
+proc fromJS*(ctx: JSContext; val: JSValueConst; res: var CAtom): JSCode =
+  var atom: CAtomRaw
   let status = ctx.fromJSImpl(val, atom)
   res = atom.trace()
   status
 
-proc fromJS*(ctx: JSContext; atom: JSAtom; res: var CAtomTraced): FromJSResult =
+proc fromJS*(ctx: JSContext; atom: JSAtom; res: var CAtom): JSCode =
   if atom == JS_ATOM_NULL:
-    res = CAtomNull.trace()
+    res = CAtomNullRaw.trace()
   else:
     let val = JS_AtomToString(ctx, atom)
     if JS_IsException(val):
@@ -639,9 +558,9 @@ proc fromJS*(ctx: JSContext; atom: JSAtom; res: var CAtomTraced): FromJSResult =
     ?ctx.fromJSFree(val, res)
   fjOk
 
-proc fromJSView*(ctx: JSContext; atom: JSAtom; res: var CAtom): FromJSResult =
+proc fromJSView*(ctx: JSContext; atom: JSAtom; res: var CAtomRaw): JSCode =
   if atom == JS_ATOM_NULL:
-    res = CAtomNull
+    res = CAtomNullRaw
   else:
     var len: csize_t
     let cs = JS_AtomToCStringLen(ctx, len, atom)
@@ -654,50 +573,20 @@ proc fromJSView*(ctx: JSContext; atom: JSAtom; res: var CAtom): FromJSResult =
     {.push overflowChecks: off.}
     let H = cast[int](len) - 1
     {.pop.}
-    res = cs.toOpenArray(0, H).toAtomView()
+    res = cstring(cs).toOpenArray(0, H).toAtomView()
     JS_FreeCString(ctx, cs)
   fjOk
 
-proc fromJS*(ctx: JSContext; val: JSValueConst; res: var seq[CAtom]):
-    FromJSResult =
-  var it: JSValue
-  var nextMethod: JSValue
-  ?ctx.fromJSSeqInit(val, it, nextMethod)
-  var status = fjOk
-  var tmp = newSeq[CAtom]()
-  while status.isOk:
-    var val: JSValue
-    case ctx.fromJSSeqIt(it, nextMethod, val)
-    of sirException:
-      status = fjErr
-      break
-    of sirDone:
-      res = move(tmp)
-      break
-    of sirContinue:
-      var atom = CAtomNull
-      status = ctx.fromJSImpl(val, atom)
-      tmp.add(atom)
-      JS_FreeValue(ctx, val)
-  freeAtoms(tmp)
-  JS_FreeValue(ctx, it)
-  JS_FreeValue(ctx, nextMethod)
-  status
-
 proc fromJS*(ctx: JSContext; vals: openArray[JSValueConst];
-    res: var seq[CAtom]): FromJSResult =
-  var tmp: seq[CAtom] = @[]
-  for val in vals:
-    var atom: CAtomTraced
-    if ctx.fromJS(val, atom).isErr:
-      freeAtoms(tmp)
-      return fjErr
-    tmp.add(atom.dup())
+    res: var seq[CAtom]): JSCode =
+  var tmp = newSeq[CAtom](vals.len)
+  for i in 0 ..< vals.len:
+    ?ctx.fromJS(vals[i], tmp[i])
   res = move(tmp)
   fjOk
 
-proc fromJS*(ctx: JSContext; val: JSAtom; res: var StaticAtom): FromJSResult =
-  var ca: CAtomTraced
+proc fromJS*(ctx: JSContext; val: JSAtom; res: var StaticAtom): JSCode =
+  var ca: CAtom
   ?ctx.fromJS(val, ca)
   res = ca.toStaticAtom()
   fjOk
@@ -726,7 +615,7 @@ proc fromIdx*(ctx: JSContext; atom: JSAtom; idx: var uint32;
   fiErr
 
 proc fromIdx*(ctx: JSContext; atom: JSAtom; idx: var uint32;
-    s: var CAtomTraced): FromIdxResult =
+    s: var CAtom): FromIdxResult =
   let res = ctx.fromIdx(atom, idx)
   if res != fiStr:
     return res
@@ -739,20 +628,133 @@ proc toJS*(ctx: JSContext; atom: CAtom): JSValue =
     return JS_NULL
   return ctx.toJS($atom)
 
-proc toJS*(ctx: JSContext; atom: CAtomTraced): JSValue =
-  ctx.toJS(CAtom(atom))
-
 when defined(test):
   proc testSetHash*(atom: CAtom; h: Hash) =
     getFactory().atomMap[uint32(atom)].hcache = h
 
   proc testGetIdx*(atom: CAtom): int =
-    let mask = getFactory().tab.high
-    var i = atom.hash() and mask
-    while true:
-      if factory.tab[i] == uint32(atom):
-        break
-      i = (i + 1) and mask
-    i
+    for i, it in factory.tab.tabPairs(atom.hash()):
+      if it == uint32(atom):
+        return i
+    -1
+
+# Backing buffer for DOMTokenList.
+# `nil` is a valid state for this object and simply means "empty".
+type
+  DOMTokenArrayBuffer = object
+    len: uint32
+    toks: UncheckedArray[CAtom]
+
+  DOMTokenArrayView* = distinct ptr DOMTokenArrayBuffer
+
+  DOMTokenArray* = distinct DOMTokenArrayView
+
+proc `==`(a, b: DOMTokenArrayView): bool {.borrow.}
+proc `==`(a: DOMTokenArrayView; b: typeof(nil)): bool {.borrow.}
+
+proc dup(this: DOMTokenArray): ptr DOMTokenArrayBuffer
+proc `==`(a, b: DOMTokenArray): bool {.borrow.}
+proc `==`(a: DOMTokenArray; b: typeof(nil)): bool {.borrow.}
+
+proc `=destroy`(this: var DOMTokenArray) =
+  if this != nil:
+    dealloc(cast[pointer](this))
+
+proc `=dup`(this: DOMTokenArray): DOMTokenArray {.noinit.} =
+  cast[ptr ptr DOMTokenArrayBuffer](addr result)[] = dup(this)
+
+proc `=copy`(x: var DOMTokenArray; y: DOMTokenArray) =
+  if x != y:
+    `=destroy`(x)
+    cast[ptr ptr DOMTokenArrayBuffer](addr x)[] = dup(y)
+
+proc `=sink`(x: var DOMTokenArray; y: DOMTokenArray) =
+  `=destroy`(x)
+  cast[ptr ptr DOMTokenArrayBuffer](addr x)[] =
+    cast[ptr DOMTokenArrayBuffer](y)
+
+proc len*(this: DOMTokenArrayView): uint32 =
+  if this == nil:
+    return 0
+  (ptr DOMTokenArrayBuffer)(this).len
+
+proc len*(this: DOMTokenArray): uint32 {.borrow.}
+
+proc `[]`*(this: DOMTokenArrayView; u: uint32): lent CAtom =
+  assert this != nil and u < this.len
+  (ptr DOMTokenArrayBuffer)(this).toks[u]
+
+proc `[]`*(this: DOMTokenArray; u: uint32): lent CAtom =
+  DOMTokenArrayView(this)[u]
+
+proc `[]=`*(this: DOMTokenArray; u: uint32; atom: sink CAtom) =
+  assert this != nil and u < this.len
+  (ptr DOMTokenArrayBuffer)(this).toks[u] = move(atom)
+
+iterator items*(a: DOMTokenArrayView): lent CAtom {.inline.} =
+  if a != nil:
+    var u = 0'u32
+    while u < a.len:
+      yield a[u]
+      inc u
+
+iterator pairs*(a: DOMTokenArrayView): tuple[key: uint32; value: lent CAtom]
+    {.inline.} =
+  if a != nil:
+    var u = 0'u32
+    while u < a.len:
+      yield (u, a[u])
+      inc u
+
+iterator items*(a: DOMTokenArray): lent CAtom {.inline.} =
+  for it in DOMTokenArrayView(a):
+    yield it
+
+iterator pairs*(a: DOMTokenArray): tuple[key: uint32; value: lent CAtom]
+    {.inline.} =
+  for u, tok in DOMTokenArrayView(a).pairs:
+    yield (u, tok)
+
+proc createDOMTokenArray(len: uint32): ptr DOMTokenArrayBuffer =
+  assert len < uint32(int32.high)
+  let size = sizeof(DOMTokenArrayBuffer) + cast[int](len) * sizeof(CAtom)
+  let this = cast[ptr DOMTokenArrayBuffer](alloc0(size))
+  this.len = len
+  this
+
+proc dup(this: DOMTokenArray): ptr DOMTokenArrayBuffer =
+  if this == nil:
+    return nil
+  let other = createDOMTokenArray(this.len)
+  for u, tok in this:
+    other.toks[u] = tok
+  other
+
+proc newDOMTokenArray*(toks: openArray[CAtom]): DOMTokenArray =
+  assert int64(toks.len) < int64(uint32.high)
+  if toks.len == 0:
+    return DOMTokenArray(nil)
+  let this = DOMTokenArray(createDOMTokenArray(uint32(toks.len)))
+  for i, tok in toks.mypairs:
+    this[uint32(i)] = tok
+  this
+
+proc contains*(this: DOMTokenArrayView; a: CAtom): bool =
+  for it in this:
+    if it == a:
+      return true
+  false
+
+proc contains*(this: DOMTokenArray; a: CAtom): bool =
+  DOMTokenArrayView(this).contains(a)
+
+proc containsIgnoreCase*(this: DOMTokenArray; a: CAtom): bool =
+  for it in this:
+    if it.equalsIgnoreCase(a):
+      return true
+  false
+
+proc containsIgnoreCase*(this: DOMTokenArray; a: StaticAtom): bool =
+  this.containsIgnoreCase(a.view())
 
 {.pop.} # raises: []

@@ -7,13 +7,13 @@ The *mailcap* file can be used to view other file formats using external
 commands, or to convert them to HTML/plain text before displaying them
 in Chawan.
 
-In addition, the *browsecap* file fulfills a similar purpose for URI scheme
-handling.  Browsecap can be used to override handling of any built-in
-scheme, or to add custom handlers (e.g. [**mutt**](man:mutt(1))(1) for
-*mailto*).  When combined with [**cha-cgi**](cgi.md)(5), *browsecap* also
-enables extending Chawan with user-specified schemes.
+The *browsecap* file fulfills a similar purpose for URI scheme handling.
+Browsecap can override handling of any built-in scheme, or to add custom
+handlers (e.g. [**mutt**](man:mutt(1))(1) for *mailto*).  When combined
+with [**cha-cgi**](cgi.md)(5), browsecap also enables extending Chawan
+with user-specified schemes.
 
-(*browsecap* is a more capable replacement for
+(Browsecap is a more capable replacement for
 [**cha-urimethodmap**](urimethodmap.md)(5); the latter is deprecated.)
 
 Note that Chawan's default mime.types file only recognizes a few file
@@ -51,13 +51,16 @@ Entries in auto-mailcap are automatically executed, so it is recommended
 to add your Chawan-specific entries there (or just set it to your
 personal mailcap file).
 
-For browsecap, there is only an automatic variant so far.
+For browsecap, there is only an automatic variant so far, stored at
+`external.auto-browsecap` which defaults to `~/.chawan/browsecap` (or
+`~/.config/chawan/browsecap` with XDG basedirs).
 
 ## Format
 
 Chawan adheres to the format described in RFC 1524, with a few extensions.
 
-`text/html` and `text/plain` entries are ignored.
+`text/html` and `text/plain` entries are ignored, except when the entry
+includes an `x-type` parameter.
 
 In browsecap, the MIME type field is treated as *protocol*/*method*.
 For example, `http/get` dispatches to GET requests to an HTTP scheme,
@@ -69,10 +72,10 @@ schemes.
 The command part of entries may include template strings which are
 substituted by the browser at execution.
 
-Templates do not have to be quoted; Chawan quotes them automatically.
-(This works with $(command substitutions) as well.)  However, other
-software may misbehave on such templates, so it may be better to assign
-them to a variable first, e.g.
+Templates do not have to be quoted; Chawan quotes them automatically.  (This
+works with $(command substitutions) as well.)  However, other software may
+misbehave on such templates, so it may be better to assign them to a variable
+first, e.g.
 
 ```
 text/x-example; s=%s cat "$s"; copiousoutput
@@ -80,31 +83,28 @@ text/x-example; s=%s cat "$s"; copiousoutput
 
 Following templates are supported:
 
-* `%s` expands to the path.  Specifying `%s` forces download of the
-  external resource *before* the entry is executed.  If `%s` is not
+* In mailcap, `%s` expands to the path.  Specifying `%s` forces download
+  of the external resource *before* the entry is executed.  If `%s` is not
   specified, the resource is instead piped to standard input.  (In this
   case, `needsterminal` does not apply.)
 
   In browsecap, `%s` expands to the path segment of the URI instead.
 
-* `%t` expands to the content type.  Named content type fields can also
-  be specified with the syntax `%{charset}`.  For example, in
-
-  ```
-  text/html; charset=utf-8
-  ```
-
-  `%t` would expand to the above string, while `%{charset}` would expand
-  to "utf-8".
+* In mailcap, `%t` expands to the content type.  Named content type fields
+  can also be specified with the syntax `%{charset}`.  e.g. for
+  `text/html; charset=utf-8`, `%t` expands to the entire string, and
+  `%{charset}` expands to "utf-8".
 
   In browsecap, `%t` expands to *protocol*/*method*, where the *method*
-  part is typically upper-cased.
+  part is ASCII lower-cased.  Named fields expand to URL search parameters,
+  so for the URL `https://example.org/search?q=blah`, `%{q}` expands to
+  "blah".
 
 * Non-standard templates for the resource's original URL: `%u` (from
-  Netscape) expands to the original URL of the resource, `%h` (from w3mmee)
-  expands to the hostname without the port, `%H` expands to the hostname
-  including the port, and `%?` (from w3mmee) expands to the query string
-  including the question mark.
+  Netscape) expands to the original URL of the resource, `%h` and `%p`
+  (from w3mmee) expands to the hostname and the port respectively, `%H`
+  expands to the hostname *and* the port, and `%?` (from w3mmee) expands to
+  the query string including the question mark.
 
   (w3mmee did not actually include the question mark in `%?`, but this
   was changed in Chawan because the other design could not express the
@@ -112,7 +112,8 @@ Following templates are supported:
 
 ### Fields
 
-Following fields are recognized.
+Following fields are recognized.  (In browsecap, the `x-` prefix for
+extension fields is optional; in mailcap, it is mandatory.)
 
 * Entries with the `test` named field are only used if the test command
   exits with 0.  For example, you can restrict entries that require X11 as
@@ -160,33 +161,41 @@ Following fields are recognized.
   used instead of the original type.  Such entries are only respected in
   `external.auto-mailcap`.
 
-  `x-type` has a higher priority than other entries, and applies even to
-  text/plain and text/html documents (which are normally excluded from
-  mailcap).  However, `x-type` entries do not apply if the content type
-  was forced (e.g. using the `-T` flag).
+  `x-type` applies even to text/plain and text/html documents (which are
+  normally excluded from mailcap).  However, `x-type` entries do not apply
+  if the content type was forced (e.g. using the `-T` flag).
 
-  (Note: `x-type` is experimental.  Future changes to its semantics are
-  to be expected.)
-
-* `x-match` (from w3mmee) restricts an entry's URI to the specified regex.
-  `x-nc-match` is the same, but it is case-insensitive.  For example,
-  `x-match=https?://example\.org/.*` restricts the entry to example.org
-  (note the backslash).
+* `x-match` (from w3mmee) restricts an entry's URI to a full match of the
+  specified regex.  `x-nc-match` is the same, but it is case-insensitive.
+  For example, `x-match=https?://example\.org/.*` restricts the entry to
+  example.org (note the backslash).
 
   When one of these fields is present together with `test`, the result is
   ANDed together.
+
+  Note: in w3mmee, `x-match` applied to URIs that *substring-matched*
+  the regex; this has been changed in Chawan to a *full match* to
+  reduce confusion.  (For example, in w3mmee, a user could have mistaken
+  `example\.org` for a regex that matches `example.org`, even though it
+  would also match `notexample.org`.  In Chawan, you'd have to use
+  `.*example\.org.*` for this to happen.)
 
 * `x-uri` (from w3mmee) substitutes matching URIs with the URI specified
   inside the command field after template expansion.  Like `x-type`, this
   does not execute a shell command.  `x-uri` entries are only accepted in
   `external.auto-browsecap`.
 
-  Unlike in w3mmee, `x-uri` does not actually redirect to the other URL;
-  instead, it transparently rewrites it in the background.
+  After substitution, the user is redirected to the new URI.
 
 * `x-resource` must be used in combination with `x-uri` or `x-cgioutput`.
   Such entries also apply to requests initiated by a buffer,
   e.g. downloading CSS, IMG tags, etc.
+
+  When used in combination with `x-uri`, the latter's semantics are changed
+  to *not* redirect the user.  So although another resource is fetched, the
+  base URI remains the same.  Further, entries preceding an entry with
+  `x-uri; x-resource` are not considered after the redirection (unlike with
+  `x-uri`, which restarts the request itself).
 
 * `x-netpath` (from w3mmee) restricts an entry to URIs which follow the
   `net_path` production of [RFC 2396](https://www.ietf.org/rfc/rfc2396.txt).
@@ -198,11 +207,24 @@ Following fields are recognized.
   The `file` scheme is special-cased such that it is never matched as
   `net_path`, even though it looks like one for legacy reasons.
 
-* `x-cgioutput` is only accepted in `external.auto-browsecap`, and applies
-  to all network requests.  The command part is interpreted as a CGI script
-  like in urimethodmap.
+* `x-internal` (from w3mmee) marks an entry as "internal".  This means that
+  it is impossible to navigate to this entry, or reach it from buffers
+  through XMLHttpRequest, fetch, etc.  In Chawan, it is used to implement
+  image support; refer to [**cha-image**](image.md)(7) for details.
 
-  TODO: we should allow passing parameters here.
+* `x-cgioutput` is only accepted in `external.auto-browsecap`, and applies
+  to all network requests.  The command part is parsed as a subset of POSIX
+  shell which accepts environment variables and parameters, but no shell
+  substitution or variable substitution.
+
+  For example, following are valid cgioutput browsecap entries.
+
+  ```
+  # /cgi-bin/ resolves to ~/.chawan/cgi-dir or ~/.config/chawan/cgi-dir
+  # (depending on where your config is)
+  example; url=%u /cgi-bin/path; cgioutput
+  example2; /cgi-bin/path %u; cgioutput
+  ```
 
 ## Mailcap examples
 
@@ -257,14 +279,17 @@ if you use XDG basedirs).
 # Use the `magnet.cgi' script to pass magnet links to Transmission.
 # (`magnet.cgi' can be found in the `bonus/' directory.  You can also
 # modify it to pass the links to your BitTorrent client of choice.)
-magnet/*;	/cgi-bin/magnet.cgi?%s; x-cgioutput
+# Since we are in browsecap, the `x-' prefix can be omitted.
+magnet/*;	/cgi-bin/magnet.cgi?%u; cgioutput
 
 # Open mailto: URIs using mutt.
 # (This is the same as mailto/*; the trailing `/*' can be freely omitted.)
 mailto;		mutt -- %s; needsterminal
 
 # Open YouTube URLs with mpv.  (GET method only.)
-https/get;	mpv -- %u; needsterminal; x-nc-match=https://youtube\.com/watch?v=.*
+# Like above, nc-match does not need the `x-' prefix because this is
+# browsecap (not mailcap).
+https/get;	mpv -- %u; needsterminal; nc-match=^https://(www\.)?youtube\.com/watch\?v=.*$
 ```
 
 ## See also

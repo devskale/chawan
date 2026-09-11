@@ -2,7 +2,6 @@
 
 import std/algorithm
 import std/math
-import std/sets
 
 import chame/tags
 import config/conftypes
@@ -12,17 +11,17 @@ import css/match
 import css/sheet
 import html/catom
 import html/dom
+import html/form
 import html/script
+import js/jsref
 import types/color
-import types/jscolor
 import types/opt
+import utils/chahash
 import utils/dtoawrap
 import utils/twtstr
 
 type
-  RuleListEntry = object
-    vals: array[CSSImportantFlag, seq[CSSComputedEntry]]
-    vars: array[CSSImportantFlag, seq[CSSVariable]]
+  RuleListEntry = seq[CSSRuleDef]
 
   LayeredRuleList = object
     unlayered: RuleListEntry
@@ -41,7 +40,7 @@ type
   AncestorCache = object
     last: Element
     quirks: bool
-    classes: HashSet[CAtom]
+    classes: array[64'u8, uint8] # bloom filter
 
   ToSorts = object
     map: array[PseudoElement, seq[RulePair]]
@@ -58,32 +57,64 @@ type
     window: Window
     old: CSSValues
     revertMap: RevertMap
-    varsSeen: array[20, CAtom]
+    varsSeen: array[20, CAtomRaw]
 
 # Forward declarations
 proc applyValues(ctx: var ApplyValueContext;
   entries: openArray[CSSComputedEntry]; revertType: RevertType)
 
+template size(ancestors: AncestorCache): uint =
+  uint(ancestors.classes.len) * 8
+
+proc contains(ancestors: AncestorCache; class: CAtom): bool =
+  let h1 = uint(hash(class)) mod ancestors.size
+  let idx1 = uint8(h1 div 8)
+  let bit1 = uint8(1 shl (h1 mod 8))
+  if (ancestors.classes[idx1] and bit1) == 0:
+    return false
+  let h2 = uint(hash(uint32(class))) mod ancestors.size
+  let idx2 = uint8(h2 div 8)
+  let bit2 = uint8(1 shl (h2 mod 8))
+  if (ancestors.classes[idx2] and bit2) == 0:
+    return false
+  let h3 = uint(hash(uint32(class) + 1)) mod ancestors.size
+  let idx3 = uint8(h3 div 8)
+  let bit3 = uint8(1 shl (h3 mod 8))
+  return (ancestors.classes[idx3] and bit3) != 0
+
+proc incl(ancestors: var AncestorCache; class: CAtom) =
+  let h1 = uint(hash(class)) mod ancestors.size
+  let idx1 = uint8(h1 div 8)
+  let bit1 = uint8(1 shl (h1 mod 8))
+  ancestors.classes[idx1] = ancestors.classes[idx1] or bit1
+  let h2 = uint(hash(uint32(class))) mod ancestors.size
+  let idx2 = uint8(h2 div 8)
+  let bit2 = uint8(1 shl (h2 mod 8))
+  ancestors.classes[idx2] = ancestors.classes[idx2] or bit2
+  let h3 = uint(hash(uint32(class) + 1)) mod ancestors.size
+  let idx3 = uint8(h3 div 8)
+  let bit3 = uint8(1 shl (h3 mod 8))
+  ancestors.classes[idx3] = ancestors.classes[idx3] or bit3
+
 proc hasClass(ancestors: var AncestorCache; class: CAtom): bool =
-  if class in ancestors.classes:
+  if class in ancestors:
     return true
   var found = false
   if ancestors.last != nil:
-    var ancestor = ancestors.last
+    var ancestor = move(ancestors.last)
     let quirks = ancestors.quirks
     while true:
-      if quirks:
-        for it in ancestor.classList:
-          found = found or it.equalsIgnoreCase(class)
-          ancestors.classes.incl(it.toLowerAscii())
-      else:
-        for it in ancestor.classList:
-          found = found or it == class
-          ancestors.classes.incl(it)
-      ancestor = ancestor.parentElement
+      for it in ancestor.classList:
+        if quirks and AsciiUpperAlpha in it:
+          # de-optimize; quirks mode compares classes case-insensitively
+          ancestors.last = move(ancestor)
+          return true
+        found = found or it == class
+        ancestors.incl(it)
+      ancestor = ancestor.asNode.parentElement
       if ancestor == nil or found:
         break
-    ancestors.last = ancestor
+    ancestors.last = move(ancestor)
   found
 
 proc calcRule(tosorts: var ToSorts; element: Element;
@@ -94,9 +125,8 @@ proc calcRule(tosorts: var ToSorts; element: Element;
       continue
     # skip an arbitrary class from the selector ancestors as an
     # optimization
-    let ancestorClass = sel.ancestorClass
-    if ancestorClass != CAtomNull and
-        not tosorts.cache.hasClass(ancestorClass):
+    if sel.ancestorClass != CAtomNull and
+        not tosorts.cache.hasClass(sel.ancestorClass):
       continue
     if element.matches(sel, depends):
       tosorts.map[sel.pseudo].add((sel.specificity, rule))
@@ -112,25 +142,26 @@ proc calcRules(tosorts: var ToSorts; element: Element;
   for rule in rules:
     tosorts.calcRule(element, depends, rule)
 
-proc add(entry: var RuleListEntry; rule: CSSRuleDef) =
-  for f in CSSImportantFlag: # normal, important
-    entry.vals[f].add(rule.vals[f])
-    entry.vars[f].add(rule.vars[f])
-
 proc calcRules(map: var RuleListMap; element: Element; sheet: CSSRuleMap;
     depends: var DependencyInfo) =
-  let parentElement = element.parentElement
-  let quirks = element.document.mode == qmQuirks
+  let parentElement = element.asNode.parentElement
+  let quirks = sheet.quirks
   var tosorts = ToSorts(
-    cache: AncestorCache(last: parentElement, quirks: sheet.quirks)
+    cache: AncestorCache(last: parentElement, quirks: quirks)
   )
   tosorts.calcRules(element, depends, sheet.tagTable, element.localName)
-  if element.id != satUempty:
-    let id = if quirks: element.id.toLowerAscii() else: element.id
-    tosorts.calcRules(element, depends, sheet.idTable, id)
-  for class in element.classList:
-    let class = if quirks: class.toLowerAscii() else: class
-    tosorts.calcRules(element, depends, sheet.classTable, class)
+  if quirks:
+    if element.id != satUempty:
+      let id = element.id.toLowerAscii()
+      tosorts.calcRules(element, depends, sheet.idTable, id)
+    for class in element.classList:
+      let class = class.toLowerAscii()
+      tosorts.calcRules(element, depends, sheet.classTable, class)
+  else:
+    if element.id != satUempty:
+      tosorts.calcRules(element, depends, sheet.idTable, element.id)
+    for class in element.classList:
+      tosorts.calcRules(element, depends, sheet.classTable, class)
   for attr in element.attrs:
     tosorts.calcRules(element, depends, sheet.attrTable, attr.name)
   if parentElement == nil:
@@ -167,7 +198,7 @@ proc addItems(ctx: var ApplyValueContext; toks: var seq[CSSToken];
   for item in items:
     case item.t
     of cvitVar:
-      let varName = item.name
+      let varName = item.name.view()
       var success = false
       for it in ctx.varsSeen.mitems:
         if it == varName:
@@ -257,17 +288,22 @@ proc applyValues(ctx: var ApplyValueContext;
   for entry in entries.ritems:
     ctx.applyValue(entry, revertType)
 
+proc applyValues(ctx: var ApplyValueContext; defs: openArray[CSSRuleDef];
+    flag: CSSImportantFlag; revertType: RevertType) =
+  for def in defs.ritems:
+    ctx.applyValues(def.vals[flag], revertType)
+
 proc applyNormalValues(ctx: var ApplyValueContext;
     list: LayeredRuleList; revertType: RevertType) =
-  ctx.applyValues(list.unlayered.vals[cifNormal], revertType)
+  ctx.applyValues(list.unlayered, cifNormal, revertType)
   for layer in list.layers.ritems:
-    ctx.applyValues(layer.vals[cifNormal], revertType)
+    ctx.applyValues(layer, cifNormal, revertType)
 
 proc applyImportantValues(ctx: var ApplyValueContext;
     list: LayeredRuleList; revertType: RevertType) =
   for layer in list.layers:
-    ctx.applyValues(layer.vals[cifImportant], revertType)
-  ctx.applyValues(list.unlayered.vals[cifImportant], revertType)
+    ctx.applyValues(layer, cifImportant, revertType)
+  ctx.applyValues(list.unlayered, cifImportant, revertType)
 
 proc applyPresHint(ctx: var ApplyValueContext; entry: CSSComputedEntry) =
   # This is a bit awkward: presentational hints are below author and
@@ -340,7 +376,7 @@ proc applyPresHints(ctx: var ApplyValueContext; element: Element) =
     ctx.applyColorHint(cptBackgroundColor, element.attr(satBgcolor))
   of ttCol:
     ctx.applyDimensionHint(cptWidth, element.attr(satWidth))
-  of ttImg, ttCanvas, ttSvg:
+  of ttImg, ttCanvas:
     ctx.applyDimensionHint(cptWidth, element.attr(satWidth))
     ctx.applyDimensionHint(cptHeight, element.attr(satHeight))
   of ttHtml:
@@ -352,17 +388,16 @@ proc applyPresHints(ctx: var ApplyValueContext; element: Element) =
     ctx.applyColorHint(cptBackgroundColor, element.attr(satBgcolor))
     ctx.applyColorHint(cptColor, element.attr(satText))
   of ttTextarea:
-    let textarea = HTMLTextAreaElement(element)
-    let cols = textarea.attrul(satCols).get(20)
-    let rows = textarea.attrul(satRows).get(1)
+    let cols = element.attrul(satCols).get(20)
+    let rows = element.attrul(satRows).get(1)
     ctx.applyLengthHint(cptWidth, cuCh, cols)
     ctx.applyLengthHint(cptHeight, cuEm, rows)
   of ttFont:
     ctx.applyColorHint(cptColor, element.attr(satColor))
   of ttInput:
-    let input = HTMLInputElement(element)
+    let input = element as HTMLInputElement
     if input.inputType in InputTypeWithSize:
-      let n = float32(element.attrulgz(satSize).get(20))
+      let n = float32(input.asElement.attrulgz(satSize).get(20))
       let length = resolveLength(cuCh, n, ctx.window.settings.attrsp[])
       ctx.applyPresHint(makeEntry(cptInputIntrinsicSize, length.npx))
   of ttProgress:
@@ -379,14 +414,18 @@ proc applyPresHints(ctx: var ApplyValueContext; element: Element) =
         let n = n - 1
         let val = CSSValue(
           v: cvtCounterSet,
-          counterSet: @[CSSCounterSet(name: satListItem.toAtom(), num: n)]
+          counterSet: newCSSCounterSetList(
+            [CSSCounterSet(name: satListItem.view(), num: n)]
+          )
         )
         ctx.applyPresHint(makeEntry(cptCounterReset, val))
   of ttLi:
     if n := element.attrl(satValue):
       let val = CSSValue(
         v: cvtCounterSet,
-        counterSet: @[CSSCounterSet(name: satListItem.toAtom(), num: n)]
+        counterSet: newCSSCounterSetList([
+          CSSCounterSet(name: satListItem.view(), num: n)
+        ])
       )
       ctx.applyPresHint(makeEntry(cptCounterSet, val))
   of ttHr:
@@ -395,15 +434,20 @@ proc applyPresHints(ctx: var ApplyValueContext; element: Element) =
         dim.npx = max(dim.npx, float32(ctx.window.settings.attrsp.ppc))
       ctx.applyPresHint(makeEntry(cptWidth, dim))
     ctx.applyColorHint(cptColor, element.attr(satColor))
+  elif element.tagType(satNamespaceSVG) == ttSvg:
+    ctx.applyDimensionHint(cptWidth, element.attr(satWidth))
+    ctx.applyDimensionHint(cptHeight, element.attr(satHeight))
   else: discard
 
-proc applyVars(ctx: var ApplyValueContext; vars: openArray[CSSVariable];
-    parentVars: CSSVariableMap) =
-  if vars.len > 0:
-    if ctx.vals.vars == nil:
-      ctx.vals.vars = newCSSVariableMap(parentVars)
-    for cvar in vars.ritems:
-      ctx.vals.vars.putIfAbsent(cvar)
+proc applyVars(ctx: var ApplyValueContext; defs: openArray[CSSRuleDef];
+    flag: CSSImportantFlag; parentVars: CSSVariableMap) =
+  var vars = move(ctx.vals.vars)
+  for def in defs.ritems:
+    for cvar in def.vars[flag].ritems:
+      if vars == nil:
+        vars = newCSSVariableMap(parentVars)
+      vars.putIfAbsent(cvar)
+  ctx.vals.vars = move(vars)
 
 proc applyDeclarations(rules: RuleList; pseudo: PseudoElement;
     parent, element: Element; window: Window; old: CSSValues): CSSValues =
@@ -416,12 +460,12 @@ proc applyDeclarations(rules: RuleList; pseudo: PseudoElement;
     parentVars = ctx.parentComputed.vars
   for origin in CSSOrigin:
     for layer in rules.a[origin].layers:
-      ctx.applyVars(layer.vars[cifImportant], parentVars)
-    ctx.applyVars(rules.a[origin].unlayered.vars[cifImportant], parentVars)
+      ctx.applyVars(layer, cifImportant, parentVars)
+    ctx.applyVars(rules.a[origin].unlayered, cifImportant, parentVars)
   for origin in countdown(CSSOrigin.high, CSSOrigin.low):
-    ctx.applyVars(rules.a[origin].unlayered.vars[cifNormal], parentVars)
+    ctx.applyVars(rules.a[origin].unlayered, cifNormal, parentVars)
     for layer in rules.a[origin].layers:
-      ctx.applyVars(layer.vars[cifNormal], parentVars)
+      ctx.applyVars(layer, cifNormal, parentVars)
   if result.vars == nil or result.vars.isSame(parentVars):
     result.vars = parentVars # inherit parent
   ctx.applyImportantValues(rules.a[coUserAgent], rtSet)
@@ -472,19 +516,21 @@ proc applyDeclarations(map: RuleListMap; pseudo: PseudoElement;
     parent, element: Element; window: Window; old: CSSValues): CSSValues =
   map[pseudo].applyDeclarations(pseudo, parent, element, window, old)
 
-proc applyStyle(element: Element) =
-  let document = element.document
+proc applyStyle(element: Element) {.exportc: "cha_$1".} =
+  let document = element.asNode.document
   let window = document.window
   var depends = DependencyInfo.default
   var map = RuleListMap.default
   map.calcRules(element, document.getRuleMap(), depends)
   let style = element.cachedStyle
   if window.settings.styling and style != nil:
+    #TODO store this in CSSStyleDeclaration
+    let def = CSSRuleDef(origin: coAuthor)
     for decl in style.decls:
       let f = decl.f
       case decl.t
       of cdtVariable:
-        map[peNone].a[coAuthor].unlayered.vars[f].add(CSSVariable(
+        def.vars[f].add(CSSVariable(
           name: decl.v,
           items: parseDeclWithVar1(decl.value)
         ))
@@ -492,26 +538,25 @@ proc applyStyle(element: Element) =
       of cdtProperty:
         if decl.hasVar:
           if entry := parseDeclWithVar(decl.p, decl.value):
-            map[peNone].a[coAuthor].unlayered.vals[f].add(entry)
+            def.vals[f].add(entry)
         else:
-          map[peNone].a[coAuthor].unlayered.vals[f].parseComputedValues(decl.p,
-            decl.value, window.settings.attrsp[])
+          def.vals[f].parseComputedValues(decl.p, decl.value,
+            window.settings.attrsp[])
+    map[peNone].a[coAuthor].unlayered.add(def)
   document.applyStyleDependencies(element, depends)
-  var computed = map.applyDeclarations(peNone, element.parentElement, element,
-    window, element.computed)
+  var computed = map.applyDeclarations(peNone, element.asNode.parentElement,
+    element, window, element.computed)
   element.computed = computed
   for pseudo in peBefore .. PseudoElement.high:
     if map[pseudo].hasValues or window.settings.scripting == smApp:
       let next = computed.next
       let old = if next != nil and next.pseudo == pseudo: next else: nil
-      let pcomputed = map.applyDeclarations(pseudo, element, nil, window, old)
+      let pcomputed = map.applyDeclarations(pseudo, element, Element(nil),
+        window, old)
       if pseudo == peMarker:
         pcomputed{"display"} = DisplayMarker
       computed.next = pcomputed
       computed = pcomputed
   element.computed = element.computed.atomize()
-
-# Forward declaration hack
-applyStyleImpl = applyStyle
 
 {.pop.} # raises: []

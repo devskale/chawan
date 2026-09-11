@@ -22,8 +22,9 @@ A list of supported standard properties, with notes on unimplemented values:
 * box-sizing
 * caption-side
 * clear
-* color (hex values and functions `rgb`, `rgba`, `hsl`, `hsla`, `oklab`,
-  `oklch`)
+* color (hex values, colors except system keywords, and functions `rgb`,
+  `rgba`, `hsl`, `hsla`, `oklab`, `oklch`; see limitations on relative
+  colors ("from" keyword) below)
 * content (string, (no-)open/close-quote, counter())
 * counter-increment
 * counter-reset
@@ -42,6 +43,7 @@ A list of supported standard properties, with notes on unimplemented values:
 * font-weight (numeric properties > 500 interpreted as bold, others
   as regular)
 * height
+* justify-content (flex only)
 * left
 * list-style-position
 * list-style-type (but no custom list styles)
@@ -82,6 +84,7 @@ Shorthands:
 * border, border-style, border-color, border-width (but see
   [borders](#borders))
 * background (only color and url; other components are skipped)
+* inset
 * list-style (list-style-image is skipped)
 * flex
 * flex-flow
@@ -89,22 +92,24 @@ Shorthands:
 
 Variables (the `var()` function) are fully supported.
 
-Values of `<length>` or `<color>` types fully support `calc()` expressions.
+Values of `<length>` or absolute `<color>` types support `calc()`
+expressions.  However, colors relative to `currentcolor`, as well as named
+color components in `calc` expressions (e.g. `hsl(from currentcolor 9 s l)`
+or `hsl(from hsl(20, 50, 50) calc(h + 9) s l)`) are not supported.
 
 Logical properties such as `margin-inline-start` etc. are currently *not*
 supported (and neither is `writing-mode`).  However, for compatibility,
-logical properties for `margin`, `padding`, `border` and `overflow` are
-treated as aliases to the respective physical properties with
-`writing-mode: horizontal-tb`.
+logical properties are treated as aliases to the respective physical
+properties with `writing-mode: horizontal-tb`.
 
 ## Selectors
 
-All selector types from CSS 2.1 are supported, except for namespaces.
+All selector types from CSS 2.1 are supported, except for XML namespaces.
 
 Following standard pseudo-classes are supported: `:first-child`,
 `:last-child`, `:only-child`, `:hover`, `:root`, `:nth-child()`,
 `:nth-last-child()`, `:checked`, `:focus`, `:is()`, `:not()`,
-`:where()`, `:lang()`, `:link`, `:target`, `:disabled`.
+`:where()`, `:lang()`, `:link`, `:target`, `:disabled`, `:empty`.
 
 `:visited` is parsed, but for now it is not matched.
 
@@ -163,7 +168,7 @@ Importing to layers is supported.
   opposite effect as `full-width`.
 
   This can be used in user style sheets to compress distracting ruby
-  text: `rt{text-transform: -cha-half-width}`.  Characters without
+  text: `rt { text-transform: -cha-half-width }`.  Characters without
   half-width counterparts are left intact, except hiragana is treated as
   katakana.
 
@@ -181,7 +186,7 @@ Importing to layers is supported.
 * In hints mode (by default, the `f` key) the markers are implemented by
   generating `::-cha-link-hint` on all applicable elements.  So you can
   change the marker background in your `user-style` (`[buffer]` section in
-  `config.toml`):
+  [**cha-config**](config.md)(5)):
 
   ```css
   ::-cha-link-hint { background: gainsboro }

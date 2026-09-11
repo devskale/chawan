@@ -32,8 +32,10 @@ caption\-side
 .IP \(bu 2
 clear
 .IP \(bu 2
-color (hex values and functions \f[CR]rgb\f[R], \f[CR]rgba\f[R],
-\f[CR]hsl\f[R], \f[CR]hsla\f[R], \f[CR]oklab\f[R], \f[CR]oklch\f[R])
+color (hex values, colors except system keywords, and functions
+\f[CR]rgb\f[R], \f[CR]rgba\f[R], \f[CR]hsl\f[R], \f[CR]hsla\f[R],
+\f[CR]oklab\f[R], \f[CR]oklch\f[R]; see limitations on relative colors
+(\(lqfrom\(rq keyword) below)
 .IP \(bu 2
 content (string, (no\-)open/close\-quote, counter())
 .IP \(bu 2
@@ -69,6 +71,8 @@ font\-weight (numeric properties > 500 interpreted as bold, others as
 regular)
 .IP \(bu 2
 height
+.IP \(bu 2
+justify\-content (flex only)
 .IP \(bu 2
 left
 .IP \(bu 2
@@ -145,6 +149,8 @@ border, border\-style, border\-color, border\-width (but see borders)
 .IP \(bu 2
 background (only color and url; other components are skipped)
 .IP \(bu 2
+inset
+.IP \(bu 2
 list\-style (list\-style\-image is skipped)
 .IP \(bu 2
 flex
@@ -155,18 +161,22 @@ overflow
 .PP
 Variables (the \f[CR]var()\f[R] function) are fully supported.
 .PP
-Values of \f[CR]<length>\f[R] or \f[CR]<color>\f[R] types fully support
-\f[CR]calc()\f[R] expressions.
+Values of \f[CR]<length>\f[R] or absolute \f[CR]<color>\f[R] types
+support \f[CR]calc()\f[R] expressions.
+However, colors relative to \f[CR]currentcolor\f[R], as well as named
+color components in \f[CR]calc\f[R] expressions
+(e.g.\ \f[CR]hsl(from currentcolor 9 s l)\f[R] or
+\f[CR]hsl(from hsl(20, 50, 50) calc(h + 9) s l)\f[R]) are not supported.
 .PP
 Logical properties such as \f[CR]margin\-inline\-start\f[R] etc.
 are currently \f[I]not\f[R] supported (and neither is
 \f[CR]writing\-mode\f[R]).
-However, for compatibility, logical properties for \f[CR]margin\f[R],
-\f[CR]padding\f[R], \f[CR]border\f[R] and \f[CR]overflow\f[R] are
-treated as aliases to the respective physical properties with
+However, for compatibility, logical properties are treated as aliases to
+the respective physical properties with
 \f[CR]writing\-mode: horizontal\-tb\f[R].
 .SS Selectors
-All selector types from CSS 2.1 are supported, except for namespaces.
+All selector types from CSS 2.1 are supported, except for XML
+namespaces.
 .PP
 Following standard pseudo\-classes are supported:
 \f[CR]:first\-child\f[R], \f[CR]:last\-child\f[R],
@@ -174,7 +184,8 @@ Following standard pseudo\-classes are supported:
 \f[CR]:nth\-child()\f[R], \f[CR]:nth\-last\-child()\f[R],
 \f[CR]:checked\f[R], \f[CR]:focus\f[R], \f[CR]:is()\f[R],
 \f[CR]:not()\f[R], \f[CR]:where()\f[R], \f[CR]:lang()\f[R],
-\f[CR]:link\f[R], \f[CR]:target\f[R], \f[CR]:disabled\f[R].
+\f[CR]:link\f[R], \f[CR]:target\f[R], \f[CR]:disabled\f[R],
+\f[CR]:empty\f[R].
 .PP
 \f[CR]:visited\f[R] is parsed, but for now it is not matched.
 .PP
@@ -240,7 +251,7 @@ parameter on the text.
 .RS 2
 .PP
 This can be used in user style sheets to compress distracting ruby text:
-\f[CR]rt{text\-transform: \-cha\-half\-width}\f[R].
+\f[CR]rt { text\-transform: \-cha\-half\-width }\f[R].
 Characters without half\-width counterparts are left intact, except
 hiragana is treated as katakana.
 .RE
@@ -264,7 +275,7 @@ In hints mode (by default, the \f[CR]f\f[R] key) the markers are
 implemented by generating \f[CR]::\-cha\-link\-hint\f[R] on all
 applicable elements.
 So you can change the marker background in your \f[CR]user\-style\f[R]
-(\f[CR][buffer]\f[R] section in \f[CR]config.toml\f[R]):
+(\f[CR][buffer]\f[R] section in \f[B]cha\-config\f[R](5)):
 .RS 2
 .IP
 .EX

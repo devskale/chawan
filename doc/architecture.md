@@ -11,6 +11,7 @@ This document describes some aspects of how Chawan works.
 	* [Loader](#loader)
 	* [Buffer](#buffer)
 * [Opening buffers](#opening-buffers)
+* [Terminal I/O](#terminal-io)
 * [Parsing HTML](#parsing-html)
 * [JavaScript](#javascript)
 	* [General](#general)
@@ -31,6 +32,7 @@ Explanation for the separate directories found in `src/`:
 * html: DOM building, the DOM itself, forms, misc. JS APIs, etc.  (The HTML
   parser itself resides in lib/chame0.)
 * io: code for IPC, interaction with the file system, etc.
+* js: JavaScript binding generator and related code.
 * local: code for the main process (i.e. the pager).
 * server: code for processes other than the main process: buffer,
   forkserver, loader.
@@ -46,7 +48,7 @@ Additionally, "adapters" of various protocols and file formats can be found in
   e.g. Markdown.
 * img: image decoders and encoders. In general, these just read and
   output RGBA data through standard I/O (which may actually be a cache
-  file; see the [image docs](image.md) for details).
+  file; see [**cha-image**](image.md)(7) for details).
 
 ## Process model
 
@@ -95,26 +97,25 @@ The loader process takes requests from the main process and the buffer
 processes.  Then, depending on the scheme, it performs one of the following
 steps:
 
-* `cgi-bin:` Start a CGI script, and read out its stdout into the
-  response body. In certain cases it also streams the response into
+* `http:`, `ftp:`, ...: Start a CGI script, and read out its stdout into
+  the response body.  In certain cases it also streams the response into
   the cache.
 
-  This is also used for schemes like http/s, ftp, etc. by internally
-  rewriting them into the appropriate `cgi-bin:` URL.
+  CGI scripts started like above are defined in terms of
+  [browsecap](mailcap.md).
 
-* `stream:` Do the same thing as above, but read from a file descriptor
-  passed to the loader beforehand.  This is used when stdin is a file,
-  e.g. `echo test | cha`. It is also used for mailcap entries with an
-  x-htmloutput field.
+* `stream:` Read from a file descriptor passed to the loader beforehand.
+  This is used when stdin is a file, e.g. `echo test | cha`.  It is also
+  used for mailcap entries with an x-htmloutput field.
 
 * `cache:` Read the file from the cache.  This is used by the pager for the
   "view source" operation, and by buffers in the rare situation where their
   initial character encoding guess proves to be incorrect and they need to
   rewind the source.
 
-* `data:` Decode a data URL.  This is done directly in the loader process
-  because very long data URLs wouldn't fit into the environment (and
-  because it's more efficient this way).
+* Some other internal schemes such as `data:` or `about:` are also
+  implemented directly in the loader, mainly for reasons of convenience
+  (and performance in case of `data:`).
 
 The loader process distinguishes between clients (i.e processes) through
 their control stream (one end of a socketpair created by loader).  This
@@ -132,32 +133,96 @@ socket is established between each buffer and the pager for IPC.
 
 ## Opening buffers
 
-Scenario: the user attempts to navigate to <https://example.org>.
+Scenario: the user executes the command `cha https://example.org`.
 
-1. pager creates a new buffer for the target URL.
-2. pager sends a request for "https://example.org" to the loader. Then,
-   it registers the file descriptor in its selector, and does something
-   else until poll() reports activity on the file descriptor.
-3. loader rewrites "https://example.org" into "cgi-bin:http". It then
-   runs the http CGI script with the appropriate environment variables
-   set to parts of this URL and request headers.
-4. The http CGI script opens a connection to example.org. When
-   connected, it starts writing headers it receives to stdout.
-5. loader parses these headers, and sends them to pager.
-6. pager reads in the headers, and decides what to do based on the
+1. The main process (henceforth "pager") forks the fork server, reads the
+   config, and relays relevant config options to the fork server.  Then,
+   the fork server forks the loader itself.
+
+2. Pager loads and evaluates the startup script (aka init.js) from ROM.
+   This sets up the JS API and the browser shell, which itself is mostly
+   implemented in JS.
+
+3. Pager queries the terminal about its cell size, whether it supports
+   images, etc.  This is fully async; in fact, it can happen that the
+   website loads faster than the terminal responds to the queries, and
+   then the pager will send a first approximation of how the website will
+   look like (usually without color) before reflowing the page.
+
+4. Pager sends a request for "https://example.org" to the loader.  Then,
+   it does something else (e.g., process input) until poll() reports
+   activity on the file descriptor.
+
+5. Loader looks up the browsecap handler for "http", and then asks the fork
+   server to launch the associated "http" program, passing the URL parts
+   as arguments.
+
+6. The "http" program opens a connection to example.org.  When connected,
+   it starts writing received headers (and then, the body) to stdout.
+   Loader parses these and relays them to pager.
+
+8. Pager receives the headers, and decides what to do based on the
    Content-Type:
+
 	* If Content-Type is found in mailcap, then the response body is
 	  piped into the command in that mailcap entry.  If the entry has
 	  x-htmloutput, then the command's stdout is taken instead of the
 	  response body, and Content-Type is set to text/html.	Otherwise,
 	  the buffer is discarded.
+
 	* If Content-Type is text/html, then a new "buffer process" is
 	  created, which then parses the response body as HTML.  If it is
 	  any `text/*` subtype, then the response is simply inserted into a
 	  `<plaintext>` tag.
+
 	* If Content-Type is not a `text/*` subtype, and no mailcap entry
 	  for it is found, then the user is prompted about where they wish
 	  to save the file.
+
+## Terminal I/O
+
+Readers of this section may also be interested in
+[**cha-terminal**](terminal.md)(7), which discusses more practical
+questions associated with terminal handling (compatibility etc.)
+
+As noted above, the terminal module is completely asynchronous.  This
+applies not only to terminal querying (as described in the previous
+section), but also to the output, for which we use double buffering.
+
+Normally, we write frames to the primary buffer.  If the terminal can
+process this before we start writing the next frame, all is good, no
+buffering happens.  But if the terminal is slower than Chawan, then we
+must sync our output to ensure the browser remains responsive:
+
+1. Copy the primary buffer to a secondary buffer.  This includes not just
+   the text to be written (which, in fact, is not directly copied, just
+   references to immutable buffers), but also the screen state.  E.g.,
+   which cells contain which text, where do we have images, scroll state,
+   etc.
+
+2. Wait for the next frame.  If a) the terminal reads the previous frame in
+   the meantime, then we "unbuffer": the secondary buffer is copied to the
+   place of the primary buffer.
+
+   But if b) we receive the next frame before the terminal reads the
+   previous one, then we drop the secondary frame, and start writing the
+   next frame in its place.  Repeat until the terminal catches up.
+
+This way, every time the terminal starts receiving a new frame, it is
+guaranteed that it's at most one frame behind.  Note that there is no
+backpressure here, which is not much of a problem right now, but it will be
+if we ever add something like animated GIFs (which could overwhelm the link
+with copious amounts of data).
+
+Input, meanwhile, is rather straightforward: we have a state machine
+(again, async), which parses the sequences a terminal might possibly
+respond with to our queries.  Once it is determined that the input is not
+such an escape sequence or another kind of input event (mouse, bracketed
+paste), we backtrack.
+
+*Then*, we decode the data using the display charset (this ordering is
+a faithful interpretation of ECMA-48), and finally, look up keybindings
+this might match.
 
 ## Cache
 
@@ -228,17 +293,15 @@ recursively.  (Debugging this is not very fun.)
 QuickJS is used by both the pager as a scripting language, and by
 buffers for running on-page scripts when JavaScript is enabled.
 
-The core JS related functionality has been separated out into the
-[Monoucha](https://git.sr.ht/~bptato/monoucha) library, so it can be
-used outside of Chawan too.  However, like with the other libraries, the
-separated out variant is no longer up to date.
+In the past, a standalone variant of Chawan's JS binding generator had
+existed as well, but that is abandoned now.
 
 ### General
 
 To avoid having to type out all the type conversion & error handling
 code manually, we have JS pragmas to automagically turn Nim procedures
 into JavaScript functions.  (For details on the specific pragmas, see the
-[manual](../lib/monoucha0/doc/manual.md).)
+[manual](jsguide.md).)
 
 Still, sometimes we have to deal with JSValues manually; in this case,
 the fromJS and toJS functions are used.  fromJS in particular returns a
@@ -256,24 +319,42 @@ There *is* an API, described at [api.md](api.md).  Web APIs are exposed
 to the pager too, but you cannot operate on the DOM itself from the pager,
 unless you create one yourself with DOMParser.parseFromString.
 
-[config.md](config.md) describes all commands that are used in the default
-config.
+[**cha-config**](config.md)(5) describes all commands that are used in the
+default config.
 
 ### JS in the buffer
 
 The DOM is implemented through the same wrappers as those in pager, except
 the pager modules are not exposed to buffer JS.
 
-Aside from the Node structure and document.write, it is mostly
-straightforward, and usually works OK, though many features are still
-missing.
+This is mostly straightforward, except for the implementation of
+`document.write` (don't ask) and `Node`.
 
-Some special attention is needed when dealing with the Node structure,
-which cramps a bunch of different pointers in a few internal slots to save
-memory.  See the source code comments for details.
+As common in browsers with a DOM, `Node` is a doubly-linked list, with a
+`firstChild` pointer allocated for node types that can hold children
+(`Element` etc.)  To reduce memory use, Chawan also applies these space
+optimizations:
 
-As for document.write: don't ask.  It works as far as I can tell, but I
-wouldn't know why.
+* Instead of `previousSibling`, a `Node` holds `internalPrev`, which is
+  either the previous node, or, if the node has no previous siblings, the
+  last child of the parent node.
+
+* `internalNext` holds either the next sibling, or if it is the last node,
+  the root of the tree it belongs to.  (Note: I'm not sure about this one,
+  the performance impact might not be worth the space gained...)
+
+* Event listeners and mutation observers are stored in the same singly
+  linked list (attached to `EventTarget`, from which `Node` is derived).
+
+* JS element accessors such as `classList`, `dataset`, `attributes`,
+  etc. are stored in a singly linked list pointed to by `Element`.
+
+* `HTMLCollection`s such as `children` are stored in a separate hash table
+  on the document, keyed on their originating node.
+
+* `shadowRoot` is stored as the first child element of its parent
+  (`internalFirst`).  This is then skipped by the `Node#firstChild` getter
+  (& similar).
 
 ## CSS
 
@@ -296,8 +377,8 @@ first glance.
 
 Cascading works OK.  To speed up selector matching, various properties
 are hashed to filter out irrelevant CSS rules.  In addition, class
-descendant selectors are optimized using a hash set, and identical style
-objects are hashed and shared with unrelated elements.
+descendant selectors are optimized using a Bloom filter, and identical
+style objects are hashed and shared with unrelated elements.
 
 Style calculation is incremental, and results are cached until an element's
 style is invalidated, so re-styles are quite fast.  (The invalidation logic

@@ -36,6 +36,8 @@ import css/cssparser
 import css/cssvalues
 import html/catom
 import html/dom
+import html/form
+import js/jsref
 import types/bitmap
 import types/color
 import types/refstring
@@ -103,7 +105,7 @@ when defined(debug):
     of stElement:
       if node.pseudo != peNone:
         return $node.element.tagType & "::" & $node.pseudo
-      return $node.element
+      return $node.element.asNode
     of stBr:
       return "#br"
     of stCounter:
@@ -130,8 +132,7 @@ proc setCounter(ctx: TreeContext; name: CAtom; n: int32; element: Element) =
   if not found: # instantiate a new counter
     ctx.counters.add(CSSCounter(name: name, n: n, element: element))
 
-proc resetCounter(ctx: TreeContext; name: CAtom; n: int32;
-    element: Element) =
+proc resetCounter(ctx: TreeContext; name: CAtom; n: int32; element: Element) =
   var found = false
   for counter in ctx.counters.mritems:
     if counter.name == name and counter.element.isPreviousSiblingOf(element):
@@ -299,12 +300,12 @@ proc addListItem(frame: var TreeFrame; node: sink StyledNode) =
   textComputed{"white-space"} = WhiteSpacePre
   textComputed{"content"} = markerComputed{"content"}
   textComputed = textComputed.atomize()
-  let markerText = if markerComputed{"content"}.len == 0:
+  let markerText = if markerComputed{"content"} == nil:
     StyledNode(
       t: stCounter,
       element: node.element,
       computed: textComputed,
-      counterName: satListItem.toAtom(),
+      counterName: satListItem.view(),
       counterStyle: node.computed{"list-style-type"},
       counterSuffix: true
     )
@@ -372,7 +373,7 @@ proc addPseudo(frame: var TreeFrame; pseudo: PseudoElement) =
       break
     computed = computed.next
   if computed != nil and computed{"display"} notin DisplayNoneLike and
-      computed{"content"}.len > 0:
+      computed{"content"} != nil:
     frame.add(StyledNode(
       t: stElement,
       pseudo: pseudo,
@@ -413,7 +414,7 @@ proc addImageOrAlt(frame: var TreeFrame; image: HTMLImageElement) =
   if bmp == nil or bmp.cacheId == -1:
     # Add a placeholder text if we have no bmp.
     # (If we have bmp, render will take care of it automatically.)
-    let alt = image.attr(satAlt)
+    let alt = image.asElement.attr(satAlt)
     if alt != "":
       frame.addText(alt)
     else:
@@ -427,7 +428,7 @@ proc addBr(frame: var TreeFrame) =
   ))
 
 proc addElementChildren(frame: var TreeFrame) =
-  for it in frame.parent.shadowChildList:
+  for it in frame.parent.asParentNode.shadowChildList:
     if it of Element:
       let element = Element(it)
       frame.addElement(element)
@@ -445,7 +446,7 @@ proc addInputChildren(frame: var TreeFrame; input: HTMLInputElement) =
     computed{"display"} = DisplayBlock
     computed{"width"} = cssLength(n)
     computed = computed.atomize()
-    var aframe = frame.ctx.initTreeFrame(input, computed)
+    var aframe = frame.ctx.initTreeFrame(input.asElement, computed)
     if cdata != nil:
       aframe.addText(cdata)
     frame.addAnon(computed, move(aframe.children))
@@ -454,7 +455,7 @@ proc addInputChildren(frame: var TreeFrame; input: HTMLInputElement) =
       frame.addText(cdata)
 
 proc addOptionChildren(frame: var TreeFrame; option: HTMLOptionElement) =
-  if option.select != nil and option.select.attrb(satMultiple):
+  if option.select != nil and option.select.asElement.attrb(satMultiple):
     frame.addText("[")
     let cdata = newRefString(if option.selected: "*" else: " ")
     var computed = option.computed.inheritProperties()
@@ -462,7 +463,7 @@ proc addOptionChildren(frame: var TreeFrame; option: HTMLOptionElement) =
     computed{"white-space"} = WhiteSpacePre
     computed = computed.atomize()
     block anon:
-      var aframe = frame.ctx.initTreeFrame(option, computed)
+      var aframe = frame.ctx.initTreeFrame(option.asElement, computed)
       aframe.addText(cdata)
       frame.addAnon(computed, move(aframe.children))
     frame.addText("]")
@@ -559,14 +560,14 @@ proc newBoxOrTakeCached(cached: CSSBox; display: CSSDisplay; node: StyledNode):
     return InlineBox(
       t: t,
       computed: node.computed,
-      element: node.element,
+      elementPtr: cast[ptr ElementObj](node.element),
       pseudo: node.pseudo
     )
   else:
     return BlockBox(
       t: t,
       computed: node.computed,
-      element: node.element,
+      elementPtr: cast[ptr ElementObj](node.element),
       pseudo: node.pseudo
     )
 
@@ -670,7 +671,7 @@ proc applyCounters(ctx: TreeContext; styledNode: StyledNode;
     liSeen = liSeen or counter.name == satListItem
     ctx.incCounter(counter.name, counter.num, styledNode.element)
   if not liSeen and styledNode.computed{"display"} in DisplayListItemLike:
-    ctx.incCounter(satListItem.toAtom(), 1, styledNode.element)
+    ctx.incCounter(satListItem.view(), 1, styledNode.element)
   for counter in styledNode.computed{"counter-set"}:
     ctx.setCounter(counter.name, counter.num, styledNode.element)
 
@@ -775,7 +776,7 @@ proc build(ctx: TreeContext; cached: CSSBox; styledNode: StyledNode;
     return InlineTextBox(
       t: cbtText,
       computed: styledNode.computed,
-      element: styledNode.element,
+      elementPtr: cast[ptr ElementObj](styledNode.element),
       text: styledNode.text,
       len: styledNode.text.len
     )
@@ -785,7 +786,7 @@ proc build(ctx: TreeContext; cached: CSSBox; styledNode: StyledNode;
     return InlineNewLineBox(
       t: cbtText,
       computed: styledNode.computed,
-      element: styledNode.element
+      elementPtr: cast[ptr ElementObj](styledNode.element)
     )
   of stCounter:
     let counter = ctx.counter(styledNode.counterName)
@@ -800,7 +801,7 @@ proc build(ctx: TreeContext; cached: CSSBox; styledNode: StyledNode;
     return InlineTextBox(
       t: cbtText,
       computed: styledNode.computed,
-      element: styledNode.element,
+      elementPtr: cast[ptr ElementObj](styledNode.element),
       text: styledNode.counterStyle.listMarker(counter, addSuffix,
         ctx.linkHintChars[])
     )
@@ -821,13 +822,13 @@ proc buildTree*(element: Element; cached: CSSBox; markLinks: bool; nhints: int;
     stackItem: stack,
     linkHintChars: linkHintChars,
   )
-  ctx.resetCounter(satDashChaLinkCounter.toAtom(), 0, element)
+  ctx.resetCounter(satDashChaLinkCounter.view(), 0, element)
   let hintHigh = max(linkHintChars[].high, 0)
   let hintOffset = if hintHigh > 0:
     min(int(int32.high), ((nhints + hintHigh - 1) div hintHigh) - 1)
   else:
     hintHigh
-  ctx.resetCounter(satDashChaHintCounter.toAtom(), int32(hintOffset), element)
+  ctx.resetCounter(satDashChaHintCounter.view(), int32(hintOffset), element)
   let root = BlockBox(ctx.build(cached, styledNode, forceZ = false,
     root = true))
   stack.box = root

@@ -2,12 +2,13 @@
 
 import config/conftypes
 import html/catom
-import monoucha/jsutils
-import monoucha/quickjs
+import js/jsopaque
+import js/jsref
+import js/jsutils
+import js/quickjs
+import server/headers
 import types/opt
-import types/referrer
 import types/url
-import types/winattrs
 import utils/twtstr
 
 type
@@ -50,6 +51,7 @@ type
 
 type
   EnvironmentSettings* = ref object
+    ctx*: JSContext
     attrsp*: ptr WindowAttributes
     # In app mode, attrsp == scriptAttrsp.
     # In lite mode, scriptAttrsp == addr dummyAttrs.
@@ -64,12 +66,11 @@ type
     contentType*: CAtom
 
   Script* = ref object
-    #TODO setings
+    settings: EnvironmentSettings
     baseURL*: URL
     options*: ScriptOptions
     mutedErrors*: bool
     #TODO parse error/error to rethrow
-    rt*: JSRuntime
     record*: JSValue
 
   ScriptOptions* = object
@@ -102,18 +103,12 @@ type
 
 # Forward declaration hack
 # set in html/dom
-var errorImpl*: proc(ctx: JSContext; ss: varargs[string]) {.
-  nimcall, raises: [].}
-var getEnvSettingsImpl*: proc(ctx: JSContext): EnvironmentSettings {.
-  nimcall, raises: [].}
+proc consoleError(ctx: JSContext; ss: varargs[string]) {.importc: "cha_$1".}
 
 proc free*(script: Script) =
   let record = script.record
-  let rt = script.rt
-  assert rt != nil
   script.record = JS_UNINITIALIZED
-  script.rt = nil
-  JS_FreeValueRT(rt, record)
+  JS_FreeValueRT(globalRuntime, record)
 
 proc clear*(moduleMap: var ModuleMap; rt: JSRuntime) =
   for it in moduleMap.mitems:
@@ -134,8 +129,7 @@ proc clone(script: Script): Script =
     options: script.options,
     mutedErrors: script.mutedErrors,
     #TODO parse error/error to rethrow
-    rt: script.rt,
-    record: JS_DupValueRT(script.rt, script.record)
+    record: JS_DupValueRT(globalRuntime, script.record)
   )
 
 proc clone*(value: ScriptResult): ScriptResult =
@@ -147,17 +141,26 @@ proc clone*(value: ScriptResult): ScriptResult =
   of srtImportMapParse:
     return ScriptResult(t: srtImportMapParse)
 
+proc mark*(rt: JSRuntime; value: ScriptResult; markFunc: JS_MarkFunc) =
+  if value.t == srtScript:
+    JS_MarkValue(rt, value.script.record, markFunc)
+    rt.markObj(value.script.baseURL, markFunc)
+
+proc mark*(rt: JSRuntime; moduleMap: ModuleMap; markFunc: JS_MarkFunc) =
+  for it in moduleMap:
+    rt.mark(it.value, markFunc)
+
 proc get*(moduleMap: ModuleMap; url: URL; moduleType: ModuleType):
     ScriptResult =
   let i = moduleMap.find(url, moduleType)
-  if i == -1:
+  if i < 0:
     return nil
   return moduleMap[i].value.clone()
 
 proc put*(moduleMap: var ModuleMap; url: URL; moduleType: ModuleType;
     value: ScriptResult) =
   let i = moduleMap.find(url, moduleType)
-  if i != -1:
+  if i >= 0:
     let ovalue = moduleMap[i].value
     if ovalue.t == srtScript:
       ovalue.script.free()
@@ -174,12 +177,13 @@ proc moduleTypeToRequestDest*(moduleType: ModuleType;
   return default
 
 proc newClassicScript*(ctx: JSContext; source: string; baseURL: URL;
-    options: ScriptOptions; mutedErrors = false): ScriptResult =
+    options: ScriptOptions; settings: EnvironmentSettings;
+    mutedErrors = false): ScriptResult =
   let record = ctx.compileScript(source, $baseURL)
   return ScriptResult(
     t: srtScript,
     script: Script(
-      rt: JS_GetRuntime(ctx),
+      settings: settings,
       record: record,
       baseURL: baseURL,
       options: options,
@@ -188,12 +192,12 @@ proc newClassicScript*(ctx: JSContext; source: string; baseURL: URL;
   )
 
 proc newJSModuleScript*(ctx: JSContext; source: string; baseURL: URL;
-    options: ScriptOptions): ScriptResult =
+    options: ScriptOptions; settings: EnvironmentSettings): ScriptResult =
   let record = ctx.compileModule(source, $baseURL)
   return ScriptResult(
     t: srtScript,
     script: Script(
-      rt: JS_GetRuntime(ctx),
+      settings: settings,
       record: record,
       baseURL: baseURL,
       options: options
@@ -205,8 +209,8 @@ proc setImportMeta*(ctx: JSContext; funcVal: JSValue; isMain: bool) =
   let moduleNameAtom = JS_GetModuleName(ctx, m)
   let metaObj = JS_GetImportMeta(ctx, m)
   doAssert ctx.definePropertyCWE(metaObj, "url",
-    JS_AtomToValue(ctx, moduleNameAtom)) == dprSuccess
-  doAssert ctx.definePropertyCWE(metaObj, "main", JS_FALSE) == dprSuccess
+    JS_AtomToValue(ctx, moduleNameAtom)) == fjOk
+  doAssert ctx.definePropertyCWE(metaObj, "main", JS_FALSE) == fjOk
   JS_FreeValue(ctx, metaObj)
   JS_FreeAtom(ctx, moduleNameAtom)
 
@@ -221,16 +225,6 @@ proc finishLoadModule*(ctx: JSContext; source, name: string): JSModuleDef =
   JS_FreeValue(ctx, funcVal)
 
 proc logException*(ctx: JSContext) =
-  ctx.errorImpl(ctx.getExceptionMsg())
-
-proc getEnvSettings*(ctx: JSContext): EnvironmentSettings =
-  return ctx.getEnvSettingsImpl()
-
-proc addReflectFunction*(ctx: JSContext; proto: JSValueConst; name: cstring;
-    get: JSGetterMagicFunction; set: JSSetterMagicFunction; magic: cint):
-    Opt[void] =
-  if ctx.definePropertyGetSetCE(proto, name, get, set, magic) == dprException:
-    return err()
-  ok()
+  ctx.consoleError(ctx.getExceptionMsg())
 
 {.pop.} # raises: []

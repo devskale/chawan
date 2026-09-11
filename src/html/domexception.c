@@ -1,7 +1,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#include "qjs/quickjs.h"
+#include "../../lib/quickjs/quickjs.h"
 
 #define COUNTOF(x) (sizeof(x) / sizeof(*(x)))
 
@@ -115,7 +115,6 @@ static JSValue js_domexception_constructor(JSContext *ctx, JSValueConst new_targ
 static JSValue js_domexception_get_name(JSContext *ctx, JSValueConst this_val)
 {
     JSDOMExceptionData *s;
-    JSValue *valp;
 
     s = JS_GetOpaque2(ctx, this_val, js_class_dom_exception);
     if (!s)
@@ -169,8 +168,7 @@ static const JSCFunctionListEntry js_domexception_proto_funcs[] = {
 };
 
 static const JSClassDef js_domexception_class_def = {
-    "DOMException", js_domexception_finalizer, js_domexception_mark, NULL, NULL,
-    NULL /* can_destroy */
+    "DOMException", js_domexception_finalizer, js_domexception_mark, NULL, NULL
 };
 
 JSValue JS_ThrowDOMException(JSContext *ctx, const char *name,

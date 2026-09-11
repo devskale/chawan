@@ -4,6 +4,7 @@ import std/os
 import std/posix
 
 import config/config
+import config/conftypes
 import config/mailcap
 import encoding/charset
 import io/chafile
@@ -11,14 +12,19 @@ import io/dynstream
 import io/packetreader
 import io/packetwriter
 import io/poll
+import js/fromjs
+import js/jsbind
+import js/jsref
+import js/quickjs
 import server/buffer
 import server/bufferiface
-import server/connectionerror
+import server/headers
 import server/loader
 import server/loaderiface
+import server/request
+import types/blob
 import types/opt
 import types/url
-import types/winattrs
 import utils/myposix
 import utils/proctitle
 import utils/sandbox
@@ -105,9 +111,10 @@ else:
   template myProveInit(x: untyped): untyped =
     x
 
-proc forkLoader(ctx: var ForkServerContext; config: LoaderConfig;
-    loaderStream: PosixStream; pagerPid: int; pagerConfig: LoaderClientConfig;
-    browsecap: Mailcap): (int, PosixStream) {.myProveInit.} =
+proc forkLoader(ctx: var ForkServerContext; rt: JSRuntime;
+    config: LoaderConfig; loaderStream: PosixStream; pagerPid: int;
+    pagerConfig: LoaderClientConfig; browsecap: Mailcap): (int, PosixStream)
+    {.myProveInit.} =
   # loaderStream is a connection between main process <-> loader, but we
   # also need a connection between fork server <-> loader.
   # The naming here is very confusing, sorry about that.
@@ -123,7 +130,7 @@ proc forkLoader(ctx: var ForkServerContext; config: LoaderConfig;
     discard close(sv[0])
     let forkStream = newPosixStream(sv[1])
     setProcessTitle("cha loader")
-    runFileLoader(config, loaderStream, forkStream, pagerPid, pagerConfig,
+    runFileLoader(rt, config, loaderStream, forkStream, pagerPid, pagerConfig,
       browsecap)
     exitnow(1)
   else:
@@ -131,7 +138,8 @@ proc forkLoader(ctx: var ForkServerContext; config: LoaderConfig;
     loaderStream.sclose()
     return (int(pid), newPosixStream(sv[0]))
 
-proc forkBuffer(ctx: var ForkServerContext; r: var PacketReader): int =
+proc forkBuffer(ctx: var ForkServerContext; r: var PacketReader;
+    rt: JSRuntime): int =
   var config: BufferConfig
   var url: URL
   var attrs: WindowAttributes
@@ -165,11 +173,15 @@ proc forkBuffer(ctx: var ForkServerContext; r: var PacketReader): int =
     do: # EOF in pager; give up
       quit(1)
     let loader = newFileLoader(pid, loaderStream)
+    let stdout = cast[ChaFile](stdout)
+    discard stdout.flush()
+    discard dup2(STDERR_FILENO, STDOUT_FILENO) # QJS logs errors to stdout
+    setbuf(stdout, nil)
     # SIGPIPE remains ignored, because we don't want the buffer to signal
     # just because the pager unregistered it (this can also happen when a
     # buffer is cloned)
     enterBufferSandbox()
-    launchBuffer(config, url, attrs, ishtml, charsetStack, loader, pstream,
+    launchBuffer(rt, config, url, attrs, ishtml, charsetStack, loader, pstream,
       istream, urandom, cacheId, contentType, move(ctx.linkHintChars),
       move(ctx.schemes))
     doAssert false
@@ -186,8 +198,10 @@ proc forkCGI(ctx: var ForkServerContext; r: var PacketReader): int {.noinit.} =
   r.sread(hasOstreamOut2)
   let ostreamOut2 = if hasOstreamOut2: newPosixStream(r.recvFd()) else: nil
   var env: seq[tuple[name, value: string]]
+  var argv: seq[string]
   var cmd: string
   r.sread(env)
+  r.sread(argv)
   r.sread(cmd)
   let pid = fork()
   if pid == 0: # child
@@ -205,8 +219,8 @@ proc forkCGI(ctx: var ForkServerContext; r: var PacketReader): int {.noinit.} =
     discard myposix.signal(SIGCHLD, myposix.SIG_DFL)
     # let's also reset SIGPIPE, which we ignored on init
     discard myposix.signal(SIGPIPE, myposix.SIG_DFL)
-    const ExecErrorMsg = "Cha-Control: ConnectionError " &
-      $int(ceFailedToExecuteCGIScript)
+    const ExecErrorMsg =
+      "Cha-Control: ConnectionError InternalError failed to execute CGI script"
     let stdout = cast[ChaFile](stdout)
     env.add(("SCRIPT_FILENAME", cmd))
     for it in env:
@@ -220,7 +234,11 @@ proc forkCGI(ctx: var ForkServerContext; r: var PacketReader): int {.noinit.} =
         " failed to set working directory")
       exitnow(1)
     cmd[i] = '/'
-    discard execl(cstring(cmd), cast[cstring](addr cmd[i + 1]), nil)
+    var cargv = newSeq[cstring](argv.len + 2)
+    cargv[0] = cast[cstring](addr cmd[i + 1])
+    for i in 0 ..< argv.len:
+      cargv[i + 1] = cstring(argv[i])
+    discard execv(cstring(cmd), cast[cstringArray](addr cargv[0]))
     let es = $strerror(errno)
     discard stdout.writeLine(ExecErrorMsg & ' ' & es.deleteChars({'\n', '\r'}))
     exitnow(1)
@@ -248,31 +266,43 @@ proc setupForkServerEnv(config: LoaderConfig): Opt[void] =
   ok()
 
 const DefaultBrowsecap = """
-http;			http;		x-cgioutput; x-resource; x-netpath
-https;			http;		x-cgioutput; x-resource; x-netpath
-finger/get;		finger;		x-cgioutput; x-resource; x-netpath
-gemini;			gemini;		x-cgioutput; x-resource; x-netpath
-file;			file;		x-cgioutput; x-resource
-ftp/get;		ftp;		x-cgioutput; x-resource; x-netpath
-sftp/get;		sftp;		x-cgioutput; x-resource; x-netpath
-gopher/get;		gopher;		x-cgioutput; x-resource; x-netpath
-spartan;		spartan;	x-cgioutput; x-resource; x-netpath
-man/get;		man;		x-cgioutput; x-resource
-man-k/get;		man;		x-cgioutput; x-resource
-man-l/get;		man;		x-cgioutput; x-resource
-img-codec+png;		stbi;		x-cgioutput; x-resource
-img-codec+jpeg;		stbi;		x-cgioutput; x-resource
-img-codec+gif;		stbi;		x-cgioutput; x-resource
-img-codec+bmp;		stbi;		x-cgioutput; x-resource
-img-codec+x-unknown;	stbi;		x-cgioutput; x-resource
-img-codec+webp;		jebp;		x-cgioutput; x-resource
-img-codec+x-sixel;	sixel;		x-cgioutput; x-resource
-img-codec+x-cha-canvas;	canvas;		x-cgioutput; x-resource
-img-codec+svg+xml;	nanosvg;	x-cgioutput; x-resource
+http;			http %h %p %s %?;	cgioutput; resource; netpath
+https;			https %h %p %s %?;	cgioutput; resource; netpath
+finger/get;		finger %h %p %s;	cgioutput; resource; netpath
+gemini;			gemini %h %p %s %?;	cgioutput; resource; netpath
+file;			file %s;		cgioutput; resource
+ftp/get;		ftp %h %p %s;		cgioutput; resource; netpath
+sftp/get;		sftp %h %p %s;		cgioutput; resource; netpath
+gopher/get;		gopher %h %p %s %?;	cgioutput; resource; netpath
+spartan;		spartan %h %p %s %?;	cgioutput; resource; netpath
+man/get;		man -r %s;		cgioutput; resource
+man-k/get;		man -k %s;		cgioutput; resource
+man-l/get;		man -l %s;		cgioutput; resource
+cgi-bin;		%s%?;			cgioutput; resource
+img-codec+png;		stbi png %s;		cgioutput; resource; internal
+img-codec+jpeg;		stbi jpeg %s;		cgioutput; resource; internal
+img-codec+gif;		stbi gif %s;		cgioutput; resource; internal
+img-codec+bmp;		stbi bmp %s;		cgioutput; resource; internal
+img-codec+x-unknown;	stbi x-unknown %s;	cgioutput; resource; internal
+img-codec+webp;		jebp %s;		cgioutput; resource; internal
+img-codec+x-sixel;	sixel %s;		cgioutput; resource; internal
+img-codec+x-cha-canvas;	canvas %s;		cgioutput; resource; internal
+img-codec+svg+xml;	nanosvg %s;		cgioutput; resource; internal
 """
 
-proc runForkServer*(controlStream, loaderStream: PosixStream; pagerPid: int) =
+proc runForkServer*(controlStream, loaderStream: PosixStream; pagerPid: int;
+    rt: JSRuntime) =
   setProcessTitle("cha forkserver")
+  let jsctx = rt.newDummyContext()
+  if jsctx == nil:
+    quit(2)
+  # init JS classes needed in forkserver & loader
+  if jsctx.addURLModule().isErr or
+      jsctx.addHeadersModule().isErr or
+      jsctx.addBlobModule().isErr or
+      jsctx.addRequestModule().isErr:
+    quit(2)
+  JS_FreeContext(jsctx)
   var ctx = ForkServerContext(stream: controlStream)
   discard myposix.signal(SIGCHLD, myposix.SIG_IGN)
   discard myposix.signal(SIGPIPE, myposix.SIG_IGN)
@@ -295,20 +325,19 @@ proc runForkServer*(controlStream, loaderStream: PosixStream; pagerPid: int) =
     var warnings: seq[string]
     var browsecap: Mailcap
     block:
-      let res = browsecap.parseMailcap(autoBrowsecapPath)
+      let res = browsecap.parseMailcap(autoBrowsecapPath, lenient = true)
       if res.isErr:
         warnings.add(res.error)
     for path in urimethodmapPaths:
-      if file := chafile.fopen(path, "r"):
+      if file := chafile.afopen(path, "r"):
         discard browsecap.parseURIMethodMap(file)
-        discard file.close()
     browsecap.parseBuiltin(DefaultBrowsecap)
     for t in browsecap.mainTypes:
       ctx.schemes.add(t)
     # returns a new stream that connects fork server <-> loader and
     # gives away main process <-> loader
-    var (pid, loaderStream) = ctx.forkLoader(config, loaderStream, pagerPid,
-      clientConfig, browsecap)
+    var (pid, loaderStream) = ctx.forkLoader(rt, config, loaderStream,
+      pagerPid, clientConfig, browsecap)
     ctx.stream.withPacketWriter w:
       w.swrite(pid)
       w.swrite(warnings)
@@ -329,7 +358,7 @@ proc runForkServer*(controlStream, loaderStream: PosixStream; pagerPid: int) =
         if (event.revents and POLLIN) != 0:
           if event.fd == ctx.stream.fd:
             ctx.stream.withPacketReader r:
-              let pid = ctx.forkBuffer(r)
+              let pid = ctx.forkBuffer(r, rt)
               ctx.stream.withPacketWriter w:
                 w.swrite(pid)
               do:

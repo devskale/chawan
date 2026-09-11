@@ -9,13 +9,13 @@
 
 globalThis.cmd = {
     copyURL: () => {
-        if (pager.clipboardWrite(pager.url))
+        if (pager.clipboardWrite(buffer.url))
             pager.alert("Copied URL to clipboard.");
         else
             pager.alert("Error; please install xsel or adjust external.copy-cmd");
     },
     copyCursorLink: () => {
-        const link = pager.hoverLink;
+        const link = buffer.hoverLink;
         if (!link)
             pager.alert("Please move the cursor above a link and try again.");
         else if (pager.clipboardWrite(link))
@@ -24,7 +24,7 @@ globalThis.cmd = {
             pager.alert("Error; please install xsel or adjust external.copy-cmd");
     },
     copyCursorImage: () => {
-        const link = pager.buffer.hoverImage;
+        const link = buffer.hoverImage;
         if (!link)
             pager.alert("Please move the cursor above an image and try again.");
         else if (pager.clipboardWrite(link))
@@ -46,8 +46,8 @@ globalThis.cmd = {
     loadEmpty: () => pager.load(""),
     webSearch: () => pager.load("br:"),
     addBookmark: () => {
-        const url = encodeURIComponent(pager.url);
-        const title = encodeURIComponent(pager.title);
+        const url = encodeURIComponent(buffer.url);
+        const title = encodeURIComponent(buffer.title);
         pager.gotoURL(`cgi-bin:chabookmark?url=${url}&title=${title}`);
     },
     openBookmarks: () => {
@@ -61,11 +61,11 @@ globalThis.cmd = {
         });
     },
     reloadBuffer: () => pager.reload(),
-    discardBufferPrev: () => pager.discardBuffer(pager.buffer, "prev"),
-    discardBufferNext: () => pager.discardBuffer(pager.buffer, "next"),
+    discardBufferPrev: () => pager.discardBuffer(buffer, "prev"),
+    discardBufferNext: () => pager.discardBuffer(buffer, "next"),
     enterCommand: () => pager.command(),
     toggleCommandMode: () => {
-        if ((pager.commandMode = pager.pinned.console != pager.buffer)) {
+        if ((pager.commandMode = pager.pinned.console != buffer)) {
             if (!line)
                 pager.command();
             console.show();
@@ -78,8 +78,8 @@ globalThis.cmd = {
             pager.click();
     },
     rightClick: async () => {
-        if (!pager.menu && pager.buffer != null) {
-            const canceled = await pager.buffer.contextMenu();
+        if (!pager.menu && buffer != null) {
+            const canceled = await buffer.contextMenu();
             if (!canceled)
                 return pager.openMenu()
         } else
@@ -89,16 +89,16 @@ globalThis.cmd = {
     viewImage: (_, save) => {
         let contentType = null;
         let url = null;
-        if (pager.buffer.hoverCachedImage) {
-            [url, contentType] = pager.buffer.hoverCachedImage.split(' ');
-            url = 'file:' + pager.getCacheFile(url, pager.buffer.process);
-        } else if (pager.buffer.hoverImage)
-            url = new Request(pager.buffer.hoverImage, {headers: {Accept: "*/*"}});
+        if (buffer.hoverCachedImage) {
+            [url, contentType] = buffer.hoverCachedImage.split(' ');
+            url = 'file:' + pager.getCacheFile(url, buffer.process);
+        } else if (buffer.hoverImage)
+            url = new Request(buffer.hoverImage, {headers: {Accept: "*/*"}});
         if (url)
             pager.gotoURL(url, {contentType: contentType, save: save});
     },
     toggleScripting: () => {
-        const buffer = pager.buffer;
+        const buffer = globalThis.buffer;
         const buffer2 = pager.gotoURL(buffer.url, {
             contentType: buffer.init.contentType,
             history: buffer.init.history,
@@ -110,7 +110,7 @@ globalThis.cmd = {
             buffer2.init.copyCursorPos(buffer.iface ?? buffer.init)
     },
     toggleCookie: () => {
-        const buffer = pager.buffer;
+        const buffer = globalThis.buffer;
         const buffer2 = pager.gotoURL(buffer.url, {
             contentType: buffer.init.contentType,
             history: buffer.init.history,
@@ -122,23 +122,23 @@ globalThis.cmd = {
             buffer2.init.copyCursorPos(buffer.iface ?? buffer.init)
     },
     /* vi G */
-    gotoLineOrEnd: n => pager.gotoLine(n ?? pager.buffer.numLines),
+    gotoLineOrEnd: n => pager.gotoLine(n ?? buffer.numLines),
     /* vim gg */
     gotoLineOrStart: n => pager.gotoLine(n ?? 1),
     /* vi | */
-    gotoColumnOrBegin: n => pager.buffer.setCursorXCenter((n ?? 1) - 1),
+    gotoColumnOrBegin: n => buffer.setCursorXCenter((n ?? 1) - 1),
     gotoColumnOrEnd: n =>
-        n ? pager.buffer.setCursorXCenter(n - 1) : pager.buffer.cursorLineEnd(),
+        n ? buffer.setCursorXCenter(n - 1) : buffer.cursorLineEnd(),
     selectOrCopy: n => {
         if (pager.currentSelection)
             cmd.buffer.copySelection();
         else
-            pager.buffer.cursorToggleSelection(n)
+            buffer.cursorToggleSelection(n)
     },
     cursorToggleSelectionLine:
-        n => pager.buffer.cursorToggleSelection(n, {selectionType: "line"}),
+        n => buffer.cursorToggleSelection(n, {selectionType: "line"}),
     cursorToggleSelectionBlock:
-        n => pager.buffer.cursorToggleSelection(n, {selectionType: "block"}),
+        n => buffer.cursorToggleSelection(n, {selectionType: "block"}),
     saveImage: () => cmd.buffer.viewImage(1, true),
     mark: async () => {
         const c = await pager.askChar('m');
@@ -160,7 +160,7 @@ globalThis.cmd = {
             feedNext();
             return;
         }
-        const text = await pager.buffer.getSelectionText();
+        const text = await buffer.getSelectionText();
         const s = text.length != 1 ? "s" : "";
         if (pager.clipboardWrite(text))
             pager.alert(`Copied ${text.length} character${s}.`);
@@ -200,6 +200,17 @@ globalThis.cmd = {
             else
                 return line.cancel();
         }
+    },
+    select: {
+        /* TODO might want to define these on select separately */
+        /* vi G */
+        gotoLineOrEnd: n => pager.gotoLine(n ?? select.numLines),
+        /* vim gg */
+        gotoLineOrStart: n => pager.gotoLine(n ?? 1),
+        searchNext: n => pager.searchNext(n),
+        searchPrev: n => pager.searchPrev(n),
+        searchForward: () => pager.searchForward(),
+        searchBackward: () => pager.searchBackward()
     }
 }
 
@@ -218,9 +229,19 @@ globalThis.feedNext = function() {
     pager.feedNext = true;
 }
 
-/* private */
+/* public */
 globalThis.__defineGetter__("line", function() {
     return pager.lineEdit;
+});
+
+/* public */
+globalThis.__defineGetter__("buffer", function() {
+    return pager.tab.current;
+});
+
+/* public */
+globalThis.__defineGetter__("select", function() {
+    return pager.menu ?? buffer?.select;
 });
 
 /* buffer, precnum */
@@ -232,35 +253,37 @@ for (const it of ["cursorLeft", "cursorDown", "cursorUp", "cursorRight",
         "cursorNextParagraph", "cursorTop", "cursorBottom",
         "halfPageDown", "halfPageUp", "halfPageLeft", "halfPageRight",
         "pageDown", "pageUp", "pageLeft", "pageRight", "scrollDown", "scrollUp",
-        "scrollLeft", "scrollRight", "click", "searchPrev", "searchNext",
-        "centerLineBegin", "raisePageBegin", "lowerPageBegin", "nextPageBegin",
+        "scrollLeft", "scrollRight", "click", "centerLineBegin",
+        "raisePageBegin", "lowerPageBegin", "nextPageBegin",
         "previousPageBegin", "centerLine", "raisePage", "lowerPage",
         "cursorToggleSelection", "cursorNthLink", "cursorRevNthLink"]) {
-    cmd[it] = n => pager[it](n);
-}
-
-/* pager, no precnum */
-for (const it of ["redraw", "cancel", "toggleSource", "nextBuffer",
-        "prevBuffer", "lineInfo", "discardBuffer", "discardBufferTree",
-        "searchForward", "searchBackward", "isearchForward", "isearchBackward",
-        "discardTree", "dupeBuffer", "load", "loadCursor", "saveLink",
-        "toggleImages", "writeInputBuffer", "showFullAlert", "toggleLinkHints",
-        "peek", "peekCursor", "quit", "suspend"]) {
-    cmd[it] = () => pager[it]();
+    cmd[it] = n => buffer[it](n);
 }
 
 /* buffer, no precnum */
 for (const it of ["cursorLineBegin", "cursorLineTextStart", "cursorLineEnd",
-        "cursorMiddleColumn", "cursorLeftEdge", "cursorRightEdge",
-        "cursorMiddle"]) {
+        "cancel", "cursorMiddleColumn", "cursorLeftEdge", "cursorRightEdge",
+        "cursorMiddle", "markURL", "reshape", "editScreen", "editSource",
+        "saveLink", "saveScreen", "saveSource", "toggleImages"]) {
+    cmd[it] = () => buffer[it]();
+}
+
+/* pager, no precnum */
+for (const it of ["redraw", "toggleSource", "nextBuffer", "prevBuffer",
+        "lineInfo", "discardBuffer", "discardBufferTree", "searchForward",
+        "searchBackward", "isearchForward", "isearchBackward", "discardTree",
+        "dupeBuffer", "load", "loadCursor", "saveLink", "toggleImages",
+        "writeInputBuffer", "showFullAlert", "toggleLinkHints", "peek",
+        "peekCursor", "quit", "suspend", "searchPrev", "searchNext"]) {
     cmd[it] = () => pager[it]();
 }
 
-/* buffer, unshared with select
- * (really select should have adifferent keymap) */
-for (const it of ["markURL", "reshape", "editScreen", "editSource",
-        "saveLink", "saveScreen", "saveSource", "toggleImages"]) {
-    cmd[it] = () => pager.buffer[it]();
+/* select */
+for (const it of ["cursorDown", "cursorUp", "cursorTop", "cursorBottom",
+        "cursorMiddle", "halfPageDown", "halfPageUp", "halfPageLeft",
+        "halfPageRight", "pageDown", "pageUp", "pageLeft", "pageRight",
+        "scrollDown", "scrollUp", "click", "cancel"]) {
+    cmd.select[it] = n => select[it](n);
 }
 
 /* line */
@@ -312,6 +335,46 @@ function addDefaultOmniRule(name, match, url) {
     config.addOmniRule(name, match, fun);
 }
 
+/*
+ * Some properties defined on Buffer are also reflected on Pager.
+ * This is for backwards compatibility only, and it should not be
+ * extended anymore; instead, users should use `buffer' directly.
+ */
+for (const it of ["cursorUp", "cursorDown", "cursorLeft", "cursorRight",
+        "cursorLineBegin", "cursorLineEnd", "cursorLineTextStart",
+        "cursorNextWord", "cursorNextViWord", "cursorNextBigWord",
+        "cursorPrevWord", "cursorPrevViWord", "cursorPrevBigWord",
+        "cursorWordEnd", "cursorViWordEnd", "cursorBigWordEnd",
+        "cursorWordBegin", "cursorViWordBegin", "cursorBigWordBegin",
+        "getCurrentWord", "cursorNextLink", "cursorPrevLink",
+        "cursorLinkNavDown", "cursorLinkNavUp", "cursorNextParagraph",
+        "cursorPrevParagraph", "cursorNthLink", "cursorRevNthLink",
+        "pageUp", "pageDown", "pageLeft", "pageRight", "halfPageUp",
+        "halfPageDown", "halfPageLeft", "halfPageRight", "scrollUp",
+        "scrollDown", "scrollLeft", "scrollRight", "click", "cursorFirstLine",
+        "cursorLastLine", "cursorTop", "cursorMiddle", "cursorBottom",
+        "lowerPage", "lowerPageBegin", "centerLine", "centerLineBegin",
+        "raisePage", "raisePageBegin", "nextPageBegin", "cursorLeftEdge",
+        "cursorMiddleColumn", "cursorRightEdge", "centerColumn",
+        "findPrevMark", "findNextMark", "setMark", "clearMark", "gotoMark",
+        "gotoMarkY", "getMarkPos", "cursorToggleSelection", "getSelectionText",
+        "markURL", "showLinkHints", "toggleImages", "saveLink", "saveSource",
+        "setCursorX", "setCursorY", "setCursorXY", "setCursorXCenter",
+        "setCursorYCenter", "setCursorXYCenter", "setFromX", "setFromY",
+        "setFromXY", "find", "cancel", "reshape"]) {
+    Pager.prototype[it] = function(...args) {
+        return buffer[it](...args);
+    }
+}
+
+for (const it of ["url", "hoverTitle", "hoverLink", "hoverImage", "cursorx",
+        "cursory", "fromx", "fromy", "numLines", "width", "height", "process",
+        "title", "next", "prev", "select", "currentSelection"]) {
+    Pager.prototype.__defineGetter__(it, function() {
+        return buffer[it];
+    });
+}
+
 /* private */
 Pager.prototype.init = function(pages, contentType, charset, history, pipe) {
     globalThis.pager = this;
@@ -338,7 +401,8 @@ Pager.prototype.init = function(pages, contentType, charset, history, pipe) {
         "https://en.wikipedia.org/wiki/Special:Search?search=");
     addDefaultOmniRule("wd", /^wd:/,
         "https://en.wiktionary.org/w/index.php?title=Special:Search&search=");
-    addDefaultOmniRule("mo", /^mo:/, "https://mojeek.com/search?q=");
+    addDefaultOmniRule("ms", /^ms:/,
+        "https://old-search.marginalia.nu/search?query=");
     this.runStartupScript();
     if (pipe) {
         this.loadSubmit("stream:-", {
@@ -374,7 +438,7 @@ Pager.prototype.init = function(pages, contentType, charset, history, pipe) {
 /* public */
 console.hide = function() {
     const pager = globalThis.pager;
-    if (pager.consoleCacheId != -1 && pager.buffer == pager.pinned.console)
+    if (pager.consoleCacheId != -1 && buffer == pager.pinned.console)
         pager.setBuffer(pager.pinned.prev);
 }
 
@@ -516,7 +580,6 @@ Pager.prototype.searchNext = async function(n = 1) {
         }
         const fun = reverse ? "cursorPrevMatch" : "cursorNextMatch";
         const wrap = config.search.wrap;
-        /* TODO probably we should add a separate keymap for menu/select */
         if (this.menu)
             return this.menu[fun](this.regex, wrap, true, n);
         const buffer = this.buffer;
@@ -556,10 +619,7 @@ Pager.prototype.searchBackward = function() {
 /* public */
 Pager.prototype.isearchForward = async function(reverse = false) {
     const buffer = this.buffer;
-    if (this.menu || buffer?.select) {
-        /* isearch doesn't work in menus. */
-        this.searchForward(reverse)
-    } else if (buffer != null) {
+    if (buffer != null) {
         const cx = buffer.cursorx;
         const cy = buffer.cursory;
         const fx = buffer.fromx;
@@ -579,7 +639,7 @@ Pager.prototype.isearchForward = async function(reverse = false) {
                 }
                 const re = this.iregex;
                 if (re instanceof RegExp) {
-                    buffer.highlight = true; /* TODO private variable */
+                    buffer.highlight = true;
                     let wrap = config.search.wrap;
                     const iface = buffer.iface;
                     if (iface != null) {
@@ -965,7 +1025,7 @@ Pager.prototype.command = async function() {
 /* public */
 Pager.prototype.gotoLine = async function(n) {
     const buffer = this.buffer;
-    const target = this.menu ?? buffer?.select ?? buffer;
+    const target = globalThis.select ?? buffer;
     if (!target)
         return;
     if (n === undefined) {
@@ -1096,15 +1156,15 @@ const MenuMap = [
     ["Discard buffer           (D)", cmd.discardBuffer],
     null,
     ["Copy page URL          (M-y)", cmd.copyURL],
-    ["Copy link               (yu)", cmd.copyCursorLink],
+    ["Copy link              (y u)", cmd.copyCursorLink],
     ["View image               (I)", cmd.viewImage],
-    ["Copy image link         (yI)", cmd.copyCursorImage],
+    ["Copy image link        (y I)", cmd.copyCursorImage],
     ["Reload                   (U)", cmd.reloadBuffer],
     null,
-    ["Save link             (sC-m)", cmd.saveLink],
+    ["Save link            (s RET)", cmd.saveLink],
     ["View source              (\\)", cmd.toggleSource],
-    ["Edit source             (sE)", cmd.sourceEdit],
-    ["Save source             (sS)", cmd.saveSource],
+    ["Edit source            (s E)", cmd.sourceEdit],
+    ["Save source            (s S)", cmd.saveSource],
     null,
     ["Linkify URLs             (:)", cmd.markURL],
     ["Toggle images          (M-i)", cmd.toggleImages],
@@ -1114,6 +1174,8 @@ const MenuMap = [
     ["Bookmark page          (M-a)", cmd.addBookmark],
     ["Open bookmarks         (M-b)", cmd.openBookmarks],
     ["Open history           (C-h)", cmd.openHistory],
+    null,
+    ["Force-quit browser       (q)", cmd.quit],
 ];
 
 /* public */
@@ -1346,19 +1408,19 @@ Pager.prototype.handleMouseInput = async function(input) {
                  */
                 if (!inside) {
                     mouse.blockTillRelease = true;
-                    select.cursorLeft();
+                    select.cancel();
                 }
             } else if (input.t == "release") {
                 if (inside && (input.x != pressedX || input.y != pressedY))
                     select.click();
                 else if (outside)
-                    select.cursorLeft();
+                    select.cancel();
             }
         } else if (button == "left") {
             if (input.t == "press") {
                 if (outside) { /* clicked outside the select */
                     mouse.blockTillRelease = true;
-                    select.cursorLeft();
+                    select.cancel();
                 }
             } else if (input.t == "release") {
                 if (input.x == pressedX && input.y == pressedY && inside) {
@@ -1370,16 +1432,10 @@ Pager.prototype.handleMouseInput = async function(input) {
         } else if (input.t == "press") {
             switch (button) {
             case "wheelUp":
-                this.scrollUp(config.input.wheelScroll);
+                select.scrollUp(config.input.wheelScroll);
                 break;
             case "wheelDown":
-                this.scrollDown(config.input.wheelScroll);
-                break;
-            case "wheelLeft":
-                this.scrollLeft(config.input.sideWheelScroll);
-                break;
-            case "wheelRight":
-                this.scrollRight(config.input.sideWheelScroll);
+                select.scrollDown(config.input.wheelScroll);
                 break;
             }
         }
@@ -1558,7 +1614,7 @@ Pager.prototype.handleInput = async function(t, mouseInput) {
         } else if (this.updateNumericPrefix()) {
             this.queueStatusUpdate();
         } else {
-            const map = config.page;
+            const map = globalThis.select ? config.select : config.page;
             const p = this.evalInputAction(map, this.arg0);
             /*
              * We must queue the status update before the await in order to
@@ -1674,7 +1730,7 @@ Pager.prototype.deleteBuffer = function(buffer, setTarget = null) {
 const ReWordStart = /(?<!\w)\w/gu;
 /* kana, han, hangul, other alpha & non-alpha (symbol) */
 const ReViWordStart = new RegExp(
-    String.raw`((?<!\p{sc=Hira})\p{sc=Hira})|((?<!\p{sc=Kana})\p{sc=Kana})|((?<!\p{sc=Han})\p{sc=Han})|((?<!\p{sc=Hang})\p{sc=Hang})|((?<!\w)\w)|((?<![^\p{L}\p{Z}\p{N}])[^\p{L}\p{Z}\p{N}])`,
+    String.raw`((?<!\p{sc=Hira})\p{sc=Hira})|((?<!\p{sc=Kana})\p{sc=Kana})|((?<!\p{sc=Han})\p{sc=Han})|((?<!\p{sc=Hang})\p{sc=Hang})|((?<!\w)\w)|((?<![^\p{L}\p{Z}\p{N}_])[^\p{L}\p{Z}\p{N}_])`,
     "gu"
 );
 const ReBigWordStart = /(?<!\S)\S/gu;
@@ -1682,7 +1738,7 @@ const ReBigWordStart = /(?<!\S)\S/gu;
 const ReWordEnd = /\w(?!\w)/gu;
 /* kana, han, hangul, other alpha & non-alpha (symbol) */
 const ReViWordEnd = new RegExp(
-    String.raw`(\p{sc=Hira}(?!\p{sc=Hira}))|(\p{sc=Kana}(?!\p{sc=Kana}))|(\p{sc=Han}(?!\p{sc=Han}))|(\p{sc=Hang}(?!\p{sc=Hang}))|(\w(?!\w))|([^\p{L}\p{Z}\p{N}](?![^\p{L}\p{Z}\p{N}]))`,
+    String.raw`(\p{sc=Hira}(?!\p{sc=Hira}))|(\p{sc=Kana}(?!\p{sc=Kana}))|(\p{sc=Han}(?!\p{sc=Han}))|(\p{sc=Hang}(?!\p{sc=Hang}))|(\w(?!\w))|([^\p{L}\p{Z}\p{N}_](?![^\p{L}\p{Z}\p{N}_]))`,
     "gu"
 );
 const ReBigWordEnd = /\S(?!\S)/gu;
@@ -1701,6 +1757,7 @@ const ReTextStart = /\S/gu;
     /* private BufferInterface */ iface = null;
     /* private BufferInit */ init;
     /* private Tab */ tab;
+    /* private bool */ highlight = false;
 
     /* private */ constructor(init, tab, iface = null) {
         if (!(init instanceof BufferInit) || !(tab instanceof Tab))
@@ -1713,15 +1770,15 @@ const ReTextStart = /\S/gu;
             init.connected = this.#connected.bind(this);
     }
 
-    /* private */ get acursorx() {
+    /* public */ get acursorx() {
         return this.iface?.acursorx ?? 0;
     }
 
-    /* private */ get acursory() {
+    /* public */ get acursory() {
         return this.iface?.acursory ?? 0;
     }
 
-    /* private */ async #connected(res, arg0) {
+    async #connected(res, arg0, force) {
         const pager = globalThis.pager;
         switch (res) {
         case "connected": {
@@ -1740,7 +1797,7 @@ const ReTextStart = /\S/gu;
                         return;
                     }
                     if (!(Util.HttpLike.includes(bufferProto) &&
-                          Util.HttpLike.includes(requestProto))) {
+                          Util.HttpLike.includes(requestProto)) && !force) {
                         const x =
                             await pager.ask("Warning: switch protocols? " +
                                             url);
@@ -1841,12 +1898,13 @@ const ReTextStart = /\S/gu;
             pager.deleteBuffer(this, this.find("any"));
             pager.queueStatusUpdate();
             for (;;) {
-                const text = await pager.setLineEdit("download",
-                                                     "(Download)Save file to: ",
-                {
-                    current: buf,
-                    hide: false
-                });
+                let text = buf;
+                if (arg0.askDownloadDir) {
+                    const options = {current: buf, hide: false};
+                    text = await pager.setLineEdit("download",
+                                                   "(Download)Save file to: ",
+                                                   options);
+                }
                 if (text == null)
                     return this.init.closeMailcap();
                 path = Util.unquote(text, Util.getcwd());
@@ -1980,7 +2038,7 @@ const ReTextStart = /\S/gu;
         titlePromise = this.iface.getTitle().then(title => {
             if (title != "") {
                 this.init.title = title;
-                if (pager.buffer == this) {
+                if (globalThis.buffer == this) {
                     if (this.iface != null && this.iface.loadState != "loading")
                         pager.queueStatusUpdate();
                     pager.updateTitle(this.init);
@@ -2111,7 +2169,7 @@ const ReTextStart = /\S/gu;
             /* TODO this is horrible UX, async actions shouldn't block input */
             const hover = URL.parse(this.hoverLink);
             let open = false;
-            if (pager.buffer != this ||
+            if (globalThis.buffer != this ||
                 !save && (hover == null ||
                           !Util.isSameAuthOrigin(hover, url))) {
                 const x = await pager.ask("Open pop-up? " + url);
@@ -2965,7 +3023,7 @@ const ReTextStart = /\S/gu;
     }
 
     /* public */ editSource() {
-        const url = pager.url;
+        const url = buffer.url;
         const path = url.protocol == "file:" ?
             decodeURIComponent(url.pathname) :
             pager.cacheFile;

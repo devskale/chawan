@@ -1,19 +1,21 @@
 {.push raises: [].}
 
 import html/script
+import io/dynstream
 import io/packetreader
 import io/packetwriter
-import monoucha/fromjs
-import monoucha/jsbind
-import monoucha/jstypes
-import monoucha/quickjs
-import monoucha/tojs
+import js/fromjs
+import js/jsbind
+import js/jsref
+import js/jstypes
+import js/jsutils
+import js/quickjs
+import js/tojs
 import server/headers
 import types/blob
-import types/formdata
-import types/jsopt
 import types/opt
 import types/url
+import utils/twtstr
 
 type
   HttpMethod* = enum
@@ -62,6 +64,21 @@ type
   RequestBodyType* = enum
     rbtNone, rbtString, rbtBlob, rbtMultipart, rbtOutput, rbtCache
 
+  FormDataEntry* = object
+    name*: string
+    filename*: string
+    case isstr*: bool
+    of true:
+      svalue*: string
+    of false:
+      value*: Blob
+
+  FormDataObj* = object
+    entries*: seq[FormDataEntry]
+    boundary*: string
+
+  FormData* = JSRef[FormDataObj]
+
   RequestBody* = object
     case t*: RequestBodyType
     of rbtNone:
@@ -81,35 +98,87 @@ type
     rqfToCache # save the result to the cache
     rqfUrlCredentials # whether to use user/pass in URL
     rqfReferrer # use Referer header (if not set, use client base URL)
+    rqfInternal # may use internal browsecap entries (e.g. image codecs)
 
   RawRequest* = object
     url*: URL
     headers*: seq[HTTPHeader]
     body*: RequestBody
-    httpMethod* {.jsget: "method".}: HttpMethod
+    httpMethod*: HttpMethod
     flags: set[RequestFlag]
-    credentials* {.jsget: "credentials".}: CredentialsMode
+    credentials*: CredentialsMode
 
-  Request* = ref object
+  RequestObj* = object
     # RawRequest
     url*: URL
-    headers* {.jsget.}: Headers
+    headers*: Headers
     body*: RequestBody
-    httpMethod* {.jsget: "method".}: HttpMethod
+    httpMethod*: HttpMethod
     flags: set[RequestFlag]
-    credentials* {.jsget: "credentials".}: CredentialsMode
+    credentials*: CredentialsMode
     # client-specific
-    mode* {.jsget.}: RequestMode
-    destination* {.jsget.}: RequestDestination
+    mode*: RequestMode
+    destination*: RequestDestination
     origin*: RequestOrigin
     window*: RequestWindow
     client*: EnvironmentSettings
 
-jsDestructor(Request)
+  Request* = JSRef[RequestObj]
+
+# Forward declarations
+proc getClassID(t: typedesc[Request]): JSClassID
+proc getClassID*(t: typedesc[FormData]): JSClassID
 
 # Forward declaration hack
-var getAPIBaseURLImpl*: proc(ctx: JSContext): URL {.nimcall, raises: [].}
-var getOriginImpl*: proc(ctx: JSContext): Origin {.nimcall, raises: [].}
+proc getAPIBaseURL(ctx: JSContext): URL {.importc: "cha_$1".}
+proc getOrigin(ctx: JSContext): Origin {.importc: "cha_$1".}
+proc newFormDataImpl(ctx: JSContext; argv: varargs[JSValueConst]):
+  Opt[FormData] {.importc: "cha_$1".}
+
+# Iterators
+iterator items*(this: FormData): lent FormDataEntry {.inline.} =
+  for entry in this.entries:
+    yield entry
+
+proc swrite*(w: var PacketWriter; part: FormDataEntry) =
+  w.swrite(part.isstr)
+  w.swrite(part.name)
+  w.swrite(part.filename)
+  if part.isstr:
+    w.swrite(part.svalue)
+  else:
+    w.swrite(part.value)
+
+proc sread*(r: var PacketReader; part: var FormDataEntry) =
+  var isstr: bool
+  r.sread(isstr)
+  if isstr:
+    part = FormDataEntry(isstr: true)
+  else:
+    part = FormDataEntry(isstr: false)
+  r.sread(part.name)
+  r.sread(part.filename)
+  if part.isstr:
+    r.sread(part.svalue)
+  else:
+    r.sread(part.value)
+
+proc swrite*(w: var PacketWriter; formData: FormData) =
+  w.swrite(formData != nil)
+  if formData != nil:
+    w.swrite(formData.entries)
+    w.swrite(formData.boundary)
+
+proc sread*(r: var PacketReader; formData: var FormData) =
+  var has: bool
+  r.sread(has)
+  if has:
+    var obj: FormDataObj
+    r.sread(obj.entries)
+    r.sread(obj.boundary)
+    formData = jsNew obj
+  else:
+    formData = FormData(nil)
 
 proc swrite*(w: var PacketWriter; o: RequestBody) =
   w.swrite(o.t)
@@ -153,6 +222,166 @@ proc sread*(r: var PacketReader; o: var RawRequest) =
   r.sread(o.flags)
   r.sread(o.credentials)
 
+# FormData
+proc writeEntry(stream: PosixStream; entry: FormDataEntry; boundary: string):
+    Opt[void] =
+  var buf = "--" & boundary & "\r\n"
+  let name = percentEncode(entry.name, {'"', '\r', '\n'})
+  if entry.isstr:
+    buf &= "Content-Disposition: form-data; name=\"" & name & "\"\r\n\r\n"
+    # try to merge the write call for small entries
+    if entry.svalue.len < 4096:
+      buf &= entry.svalue
+      ?stream.writeLoop(buf)
+    else:
+      ?stream.writeLoop(buf)
+      ?stream.writeLoop(entry.svalue)
+  else:
+    buf &= "Content-Disposition: form-data; name=\"" & name & "\";"
+    let filename = percentEncode(entry.filename, {'"', '\r', '\n'})
+    buf &= " filename=\"" & filename & "\"\r\n"
+    let blob = entry.value
+    let contentType = if blob.contentType == "":
+      "application/octet-stream"
+    else:
+      blob.contentType
+    buf &= "Content-Type: "
+    if blob.contentType == "":
+      buf &= "application/octet-stream"
+    else:
+      buf &= contentType
+    buf &= "\r\n\r\n"
+    ?stream.writeLoop(buf)
+    if (let file = blob as WebFile; file != nil and file.fd != -1):
+      let ps = newPosixStream(file.fd)
+      if ps != nil:
+        var buf {.noinit.}: array[4096, uint8]
+        while true:
+          let n = ps.read(buf)
+          if n <= 0:
+            break
+          ?stream.writeLoop(buf.toOpenArray(0, n - 1))
+    else:
+      ?stream.writeLoop(blob.buffer, blob.size)
+  stream.writeLoop("\r\n")
+
+proc write*(stream: PosixStream; formData: FormData): Opt[void] =
+  for entry in formData.entries:
+    ?stream.writeEntry(entry, formData.boundary)
+  stream.writeLoop("--" & formData.boundary & "--\r\n")
+
+proc generateBoundary(urandom: PosixStream): string =
+  var s {.noinit.}: array[33, uint8]
+  if urandom.readLoop(s).isErr:
+    return ""
+  # 33 * 4 / 3 = 44 + prefix string is 22 bytes = 66 bytes
+  return "----WebKitFormBoundary" & btoa(s)
+
+proc newFormData0*(urandom: PosixStream): FormData =
+  var boundary = urandom.generateBoundary()
+  if boundary.len == 0:
+    return FormData(nil)
+  return jsNew FormDataObj(boundary: move(boundary))
+
+proc add*(list: var seq[FormDataEntry], entry: tuple[name, value: string]) =
+  list.add(FormDataEntry(
+    name: entry.name,
+    isstr: true,
+    svalue: entry.value
+  ))
+
+proc toNameValuePairs*(list: seq[FormDataEntry]):
+    seq[tuple[name, value: string]] =
+  result = @[]
+  for entry in list:
+    if entry.isstr:
+      result.add((entry.name, entry.svalue))
+    else:
+      result.add((entry.name, entry.name))
+
+proc calcLength*(this: FormData): int =
+  result = 0
+  for entry in this.entries:
+    result += "--\r\n".len + this.boundary.len # always have boundary
+    #TODO maybe make CRLF for name first?
+    result += entry.name.len # always have name
+    # these must be percent-encoded, with 2 char overhead:
+    result += entry.name.count({'\r', '\n', '"'}) * 2
+    if entry.isstr:
+      result += "Content-Disposition: form-data; name=\"\"\r\n".len
+      result += entry.svalue.len
+    else:
+      result += "Content-Disposition: form-data; name=\"\";".len
+      # file name
+      result += " filename=\"\"\r\n".len
+      result += entry.filename.len
+      # dquot must be quoted with 2 char overhead
+      result += entry.filename.count('"') * 2
+      # content type
+      result += "Content-Type: \r\n".len
+      result += entry.value.contentType.len
+      result += entry.value.getSize()
+    result += "\r\n".len # header is always followed by \r\n
+    result += "\r\n".len # value is always followed by \r\n
+  result += "--".len + this.boundary.len + "--\r\n".len
+
+proc getContentType*(this: FormData): string =
+  return "multipart/form-data; boundary=" & this.boundary
+
+jsClassPublicDef(FormData):
+  proc newFormData(ctx: JSContext; argv: varargs[JSValueConst]): Opt[FormData]
+      {.jsctor.} =
+    newFormDataImpl(ctx, argv)
+
+  proc append*(ctx: JSContext; this: FormData; name: string; val: JSValueConst;
+      rest: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+    var blob: Blob
+    if ctx.fromJS(val, blob).isOk:
+      var filename = "blob"
+      if rest.len > 0:
+        ?ctx.fromJS(rest[0], filename)
+      elif blob of WebFile:
+        filename = WebFile(blob).name
+      this.entries.add(FormDataEntry(
+        name: name,
+        isstr: false,
+        value: blob,
+        filename: filename
+      ))
+      ok()
+    elif rest.len > 0:
+      err()
+    else:
+      var s: string
+      ?ctx.fromJS(val, s)
+      this.entries.add(FormDataEntry(name: name, isstr: true, svalue: s))
+      ok()
+
+  proc delete(this: FormData; name: string) {.jsfunc.} =
+    for i in countdown(this.entries.high, 0):
+      if this.entries[i].name == name:
+        this.entries.delete(i)
+
+  proc get(ctx: JSContext; this: FormData; name: string): JSValue {.jsfunc.} =
+    for entry in this.entries:
+      if entry.name == name:
+        if entry.isstr:
+          return ctx.toJS(entry.svalue)
+        else:
+          return ctx.toJS(entry.value)
+    return JS_NULL
+
+  proc getAll(ctx: JSContext; this: FormData; name: string): seq[JSValue]
+      {.jsfunc.} =
+    result = newSeq[JSValue]()
+    for entry in this.entries:
+      if entry.name == name:
+        if entry.isstr:
+          result.add(ctx.toJS(entry.svalue))
+        else:
+          result.add(ctx.toJS(entry.value))
+
+# Request
 proc contentLength*(body: RequestBody): int =
   case body.t
   of rbtString: return body.s.len
@@ -166,19 +395,11 @@ proc tocache*(this: RawRequest): bool =
 proc urlCredentials*(this: RawRequest): bool =
   rqfUrlCredentials in this.flags
 
-proc jsUrl(this: Request): string {.jsfget: "url".} =
-  return $this.url
-
-proc referrer(ctx: JSContext; this: Request): JSValue {.jsfget.} =
-  if rqfReferrer notin this.flags:
-    return ctx.toJS("")
-  let res = this.headers.getFirst("Referer")
-  if res != "":
-    return ctx.toJS(res)
-  return ctx.toJS("about:client")
-
 proc hasReferrer*(this: RawRequest): bool =
   rqfReferrer in this.flags
+
+proc internal*(this: RawRequest): bool =
+  rqfInternal in this.flags
 
 proc hasReferrer*(this: Request): bool =
   rqfReferrer in this.flags
@@ -187,7 +408,7 @@ proc getReferrer*(this: Request): URL =
   return parseURL0(this.headers.getFirst("Referer"))
 
 proc setReferrer*(this: Request; value: string) =
-  this.flags.excl(rqfReferrer)
+  this.flags.incl(rqfReferrer)
   this.headers["Referer"] = value
 
 proc unsetReferrer*(this: Request) =
@@ -195,9 +416,9 @@ proc unsetReferrer*(this: Request) =
   this.headers.removeAll("Referer")
 
 proc newRequest*(url: URL; httpMethod = hmGet; headers = newHeaders(hgRequest);
-    body = RequestBody(); hasReferrer = true; referrer: URL = nil;
-    tocache = false; credentials = cmSameOrigin; urlCredentials = false;
-    destination = rdNone; mode = rmNoCors;
+    body = RequestBody(); hasReferrer = true; referrer = URL(nil);
+    tocache = false; credentials = cmSameOrigin; internal = false;
+    urlCredentials = false; destination = rdNone; mode = rmNoCors;
     window = RequestWindow(t: rwtNoWindow)): Request =
   assert url != nil
   if referrer != nil:
@@ -209,7 +430,9 @@ proc newRequest*(url: URL; httpMethod = hmGet; headers = newHeaders(hgRequest);
     flags.incl(rqfUrlCredentials)
   if hasReferrer:
     flags.incl(rqfReferrer)
-  return Request(
+  if internal:
+    flags.incl(rqfInternal)
+  return jsNew RequestObj(
     url: url,
     httpMethod: httpMethod,
     headers: headers,
@@ -223,13 +446,13 @@ proc newRequest*(url: URL; httpMethod = hmGet; headers = newHeaders(hgRequest);
 proc newRequest*(raw: RawRequest): Request =
   return newRequest(raw.url, raw.httpMethod, newHeaders(hgRequest, raw.headers),
     raw.body, tocache = raw.tocache, credentials = raw.credentials,
-    urlCredentials = raw.urlCredentials)
+    internal = raw.internal, urlCredentials = raw.urlCredentials)
 
 proc newRequest*(s: string; httpMethod = hmGet; headers = newHeaders(hgRequest);
-    body = RequestBody(); hasReferrer = true; referrer: URL = nil;
-    tocache = false; credentials = cmSameOrigin): Request =
+    body = RequestBody(); hasReferrer = true; referrer = URL(nil);
+    tocache = false; credentials = cmSameOrigin; internal = false): Request =
   return newRequest(parseURL0(s), httpMethod, headers, body, hasReferrer,
-    referrer, tocache, credentials)
+    referrer, tocache, credentials, internal)
 
 proc createPotentialCORSRequest*(url: URL; destination: RequestDestination;
     cors: CORSAttribute; fallbackFlag = false): Request =
@@ -260,17 +483,17 @@ type
       s: string
 
   RequestInit = object of JSDict
-    `method` {.jsdefault: JS_UNDEFINED.}: JSValueConst
+    `method` {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
     headers {.jsdefault.}: HeadersInit
     body {.jsdefault.}: BodyInit
-    referrer {.jsdefault: JS_UNDEFINED.}: JSValueConst
-    referrerPolicy {.jsdefault: JS_UNDEFINED.}: JSValueConst
-    credentials {.jsdefault: JS_UNDEFINED.}: JSValueConst
-    mode {.jsdefault: JS_UNDEFINED.}: JSValueConst
-    window {.jsdefault: JS_UNDEFINED.}: JSValueConst
+    referrer {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
+    referrerPolicy {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
+    credentials {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
+    mode {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
+    window {.jsdefault: trace(JS_UNDEFINED).}: JSValueTraced
 
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var BodyInit):
-    FromJSResult =
+    JSCode =
   if JS_IsNull(val):
     res = BodyInit(t: bitNull)
     return fjOk
@@ -301,104 +524,11 @@ proc extract*(init: BodyInit; body: var RequestBody): string =
     return "application/x-www-form-urlencoded;charset=UTF-8"
   of bitBlob:
     body = RequestBody(t: rbtBlob, blob: init.blob)
-    return init.blob.ctype
+    return init.blob.contentType
 
 proc safeExtract*(init: BodyInit; body: var RequestBody): string =
   #TODO check for ReadableStream once we have it
   init.extract(body)
-
-proc newRequest*(ctx: JSContext; resource: JSValueConst;
-    jsInit: JSValueConst = JS_UNDEFINED): Opt[Request] {.jsctor.} =
-  var init: RequestInit
-  ?ctx.fromJS(jsInit, init)
-  var headers = newHeaders(hgRequest)
-  var window = RequestWindow(t: rwtClient)
-  var body = RequestBody()
-  var credentials = cmSameOrigin
-  var httpMethod = hmGet
-  var referrerStr = ""
-  if not JS_IsUndefined(init.referrer):
-    ?ctx.fromJS(init.referrer, referrerStr)
-  if not JS_IsUndefined(init.credentials):
-    ?ctx.fromJS(init.credentials, credentials)
-  if not JS_IsUndefined(init.`method`):
-    #TODO the spec allows this to be any string :(
-    ?ctx.fromJS(init.method, httpMethod)
-  var hasReferrer = true
-  var referrer: URL = nil
-  var url: URL = nil
-  var mode = rmNoCors
-  if not JS_IsUndefined(init.mode):
-    ?ctx.fromJS(init.mode, mode)
-  let apiBaseURL = ctx.getAPIBaseURLImpl()
-  let origin = ctx.getOriginImpl()
-  if (var res: Request; ctx.fromJS(resource, res).isOk):
-    url = res.url
-    if JS_IsUndefined(init.`method`):
-      httpMethod = res.httpMethod
-    headers[] = res.headers[]
-    if JS_IsUndefined(jsInit):
-      hasReferrer = rqfReferrer in res.flags
-      referrer = res.getReferrer()
-      mode = res.mode
-    if JS_IsUndefined(init.mode):
-      mode = res.mode
-      if not JS_IsUndefined(jsInit) and mode == rmNavigate:
-        mode = rmSameOrigin
-    if JS_IsUndefined(init.credentials):
-      credentials = res.credentials
-    body = res.body
-    window = res.window
-  else:
-    var s: string
-    ?ctx.fromJS(resource, s)
-    url = ?ctx.parseJSURL(s, apiBaseURL)
-    if JS_IsUndefined(init.mode):
-      mode = rmCors
-  if url.username != "" or url.password != "":
-    JS_ThrowTypeError(ctx, "input URL contains a username or password")
-    return err()
-  let destination = rdNone
-  #TODO origin, window
-  if not JS_IsUndefined(init.window):
-    if not JS_IsNull(init.window):
-      JS_ThrowTypeError(ctx, "expected window to be null")
-      return err()
-    window = RequestWindow(t: rwtNoWindow)
-  #TODO flags
-  if not JS_IsUndefined(init.referrer):
-    if referrerStr == "":
-      hasReferrer = false
-    else:
-      referrer = ?ctx.parseJSURL(referrerStr, apiBaseURL)
-      if referrer.schemeType == stAbout and referrer.pathname == "client" or
-          not referrer.origin.isSameOrigin(origin):
-        referrer = nil
-  #TODO referrerPolicy
-  if mode == rmNavigate:
-    JS_ThrowTypeError(ctx, "request mode must not be `navigate'")
-    return err()
-  if init.body.t != bitNull and httpMethod in {hmGet, hmHead}:
-    JS_ThrowTypeError(ctx, "HEAD or GET requests cannot have a body")
-    return err()
-  ?ctx.fill(headers, init.headers)
-  let contentType = init.body.extract(body)
-  if contentType != "":
-    headers.addIfNotFound("Content-Type", contentType)
-  if mode == rmNoCors:
-    headers.guard = hgRequestNoCors
-  ok(newRequest(
-    url,
-    httpMethod,
-    headers,
-    body,
-    hasReferrer,
-    referrer,
-    credentials = credentials,
-    mode = mode,
-    destination = destination,
-    window = window
-  ))
 
 proc credentials*(attribute: CORSAttribute): CredentialsMode =
   case attribute
@@ -407,8 +537,125 @@ proc credentials*(attribute: CORSAttribute): CredentialsMode =
   of caUseCredentials:
     return cmInclude
 
-proc addRequestModule*(ctx: JSContext): Opt[void] =
-  ?ctx.registerType(Request)
-  ok()
+jsClassDef(Request):
+  jsget Request, headers
+  jsget Request, httpMethod, "method"
+  jsget Request, credentials
+  jsget Request, mode
+  jsget Request, destination
+
+  proc jsUrl(this: Request): string {.jsfget: "url".} =
+    return $this.url
+
+  proc referrer(ctx: JSContext; this: Request): JSValue {.jsfget.} =
+    if rqfReferrer notin this.flags:
+      return ctx.toJS("")
+    let res = this.headers.getFirst("Referer")
+    if res != "":
+      return ctx.toJS(res)
+    return ctx.toJS("about:client")
+
+  proc newRequest*(ctx: JSContext; resource: JSValueConst;
+      jsInit: JSValueConst = JS_UNDEFINED): Opt[Request] {.jsctor.} =
+    var init: RequestInit
+    ?ctx.fromJS(jsInit, init)
+    var headers = newHeaders(hgRequest)
+    var window = RequestWindow(t: rwtClient)
+    var body = RequestBody()
+    var credentials = cmSameOrigin
+    var httpMethod = hmGet
+    var referrerStr = ""
+    if not JS_IsUndefined(init.referrer):
+      ?ctx.fromJS(init.referrer, referrerStr)
+    if not JS_IsUndefined(init.credentials):
+      ?ctx.fromJS(init.credentials, credentials)
+    if not JS_IsUndefined(init.`method`):
+      var s: DOMString
+      ?ctx.fromJS(init.`method`, s)
+      #TODO the spec allows this to be any string :(
+      let res = parseEnumNoCase[HttpMethod](s.toOpenArray())
+      if res.isErr:
+        JS_ThrowTypeError(ctx, "unexpected HTTP method %s", s.p)
+        return err()
+      httpMethod = res.get
+    var hasReferrer = true
+    var referrer: URL
+    var url: URL
+    var mode = rmNoCors
+    if not JS_IsUndefined(init.mode):
+      ?ctx.fromJS(init.mode, mode)
+    let apiBaseURL = ctx.getAPIBaseURL()
+    let origin = ctx.getOrigin()
+    if (var res: Request; ctx.fromJS(resource, res).isOk):
+      url = res.url
+      if JS_IsUndefined(init.`method`):
+        httpMethod = res.httpMethod
+      headers[] = res.headers[]
+      if JS_IsUndefined(jsInit):
+        hasReferrer = rqfReferrer in res.flags
+        referrer = res.getReferrer()
+        mode = res.mode
+      if JS_IsUndefined(init.mode):
+        mode = res.mode
+        if not JS_IsUndefined(jsInit) and mode == rmNavigate:
+          mode = rmSameOrigin
+      if JS_IsUndefined(init.credentials):
+        credentials = res.credentials
+      body = res.body
+      window = res.window
+    else:
+      var s: string
+      ?ctx.fromJS(resource, s)
+      url = ?ctx.parseJSURL(s, apiBaseURL)
+      if JS_IsUndefined(init.mode):
+        mode = rmCors
+    if url.username != "" or url.password != "":
+      JS_ThrowTypeError(ctx, "input URL contains a username or password")
+      return err()
+    let destination = rdNone
+    #TODO origin, window
+    if not JS_IsUndefined(init.window):
+      if not JS_IsNull(init.window):
+        JS_ThrowTypeError(ctx, "expected window to be null")
+        return err()
+      window = RequestWindow(t: rwtNoWindow)
+    #TODO flags
+    if not JS_IsUndefined(init.referrer):
+      if referrerStr == "":
+        hasReferrer = false
+      else:
+        referrer = ?ctx.parseJSURL(referrerStr, apiBaseURL)
+        if referrer.schemeType == stAbout and referrer.pathname == "client" or
+            not referrer.origin.isSameOrigin(origin):
+          referrer = URL(nil)
+    #TODO referrerPolicy
+    if mode == rmNavigate:
+      JS_ThrowTypeError(ctx, "request mode must not be `navigate'")
+      return err()
+    if init.body.t != bitNull and httpMethod in {hmGet, hmHead}:
+      JS_ThrowTypeError(ctx, "HEAD or GET requests cannot have a body")
+      return err()
+    ?ctx.fill(headers, init.headers)
+    let contentType = init.body.extract(body)
+    if contentType != "":
+      headers.addIfNotFound("Content-Type", contentType)
+    if mode == rmNoCors:
+      headers.guard = hgRequestNoCors
+    ok(newRequest(
+      url,
+      httpMethod,
+      headers,
+      body,
+      hasReferrer,
+      referrer,
+      credentials = credentials,
+      mode = mode,
+      destination = destination,
+      window = window
+    ))
+
+proc addRequestModule*(ctx: JSContext): JSCode =
+  ?ctx.registerClass(RequestDef)
+  ctx.registerClass(FormDataDef)
 
 {.pop.} # raises: []
