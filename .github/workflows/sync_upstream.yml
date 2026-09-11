@@ -6,17 +6,23 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch: # Allows manual triggering
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       # Step 1: Checkout your repository
+      # Uses the automatic GITHUB_TOKEN (not a PAT) to push changes back to
+      # this repo. GITHUB_TOKEN is stateless and unaffected by the GitHub App
+      # installation-token format/length change (ghs_...), so this workflow
+      # has no hardcoded token-length assumptions.
       - name: Checkout Target Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          # Use a Personal Access Token (PAT) with 'workflow' scope
-          # to allow pushing changes, especially if workflows are involved.
-          token: ${{ secrets.GH_PAT }}
+          # Automatic token can read/write this same repository.
+          token: ${{ github.token }}
           # Fetch all history for all branches and tags
           fetch-depth: 0
 
@@ -49,10 +55,10 @@ jobs:
           git merge upstream/master --no-edit --allow-unrelated-histories
 
       # Step: Push Changes to GitHub
+      # GITHUB_TOKEN is used automatically for the push to this repo.
       - name: Push Changes to GitHub
         run: |
           git push origin main --tags
-
 
       # Optional Step 5: Handle Conflicts or Reset (Alternative to Merge)
       # If you prefer a strict mirror and don't want to deal with merge conflicts,
