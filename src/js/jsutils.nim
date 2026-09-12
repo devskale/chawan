@@ -4,6 +4,7 @@
 
 import js/dtoa
 import js/jsopaque
+import js/jstypes
 import js/quickjs
 
 type JSCode* = enum
@@ -159,7 +160,8 @@ proc newArrayFrom*(ctx: JSContext; vals: varargs[JSValue]): JSValue =
     inc u
   return obj
 
-proc newPromiseCapability*(ctx: JSContext; funs: array[2, JSValue]): JSValue =
+proc newPromiseCapability*(ctx: JSContext; funs: var array[2, JSValue]):
+    JSValue =
   return JS_NewPromiseCapability(ctx, funs.toJSValueArray())
 
 proc enqueueJob*(ctx: JSContext; fun: JSJobFunc;
@@ -480,5 +482,20 @@ proc addReflectFunction*(ctx: JSContext; proto: JSValueConst; name: cstring;
   if ctx.definePropertyGetSetCE(proto, name, get, set, magic) == fjErr:
     return fjErr
   fjOk
+
+proc callUserObject*(ctx: JSContext; callback: JSObject; name: JSStrRef;
+    this, arg: JSValue): JSValue =
+  #TODO switch the context as the spec mandates
+  # must dup the callback first, otherwise the function might delete the
+  # callback itself
+  let callback = JS_DupValue(ctx, callback.value)
+  let ret = if JS_IsFunction(ctx, callback):
+    ctx.call(callback, this, arg)
+  else:
+    ctx.invoke(callback, ctx.getOpaque().strRefs[name], arg)
+  JS_FreeValue(ctx, callback)
+  JS_FreeValue(ctx, this)
+  JS_FreeValue(ctx, arg)
+  ret
 
 {.pop.} # raises

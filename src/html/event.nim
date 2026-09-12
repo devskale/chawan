@@ -49,12 +49,12 @@ type
   Event* = JSRef[EventObj]
 
   CustomEventObj {.pure, final.} = object of EventObj
-    detail: JSValue
+    detail: JSValueTraced
 
   CustomEvent = JSRef[CustomEventObj]
 
   MessageEventObj {.pure, final.} = object of EventObj
-    data: JSValue
+    data: JSValueTraced
     origin: string
 
   MessageEvent = JSRef[MessageEventObj]
@@ -157,9 +157,9 @@ type
   AbortSignal = JSRef[AbortSignalObj]
 
   AbortSignalObj {.pure, final.} = object of EventTargetObj
-    reason: JSValue
+    reason: JSValueTraced
     aborted: bool
-    abortSteps: seq[JSValue]
+    abortSteps: seq[JSObject]
     #TODO source/dependent signals
 
   AbortControllerObj = object
@@ -330,11 +330,12 @@ jsClassDef(CustomEvent):
   jsget CustomEvent, detail
 
   proc newCustomEvent*(ctx: JSContext; eventType: CAtom;
-      eventInitDict = CustomEventInit(detail: trace(JS_NULL))): CustomEvent
-      {.jsctor.} =
+      eventInitDict: sink CustomEventInit = CustomEventInit(
+        detail: trace(JS_NULL)
+      )): CustomEvent {.jsctor.} =
     let event = jsNew CustomEventObj(
       eventType: eventType,
-      detail: JS_DupValue(ctx, eventInitDict.detail.v)
+      detail: move(eventInitDict.detail)
     )
     if event != nil:
       event.asEvent.innerEventCreationSteps(EventInit(eventInitDict))
@@ -343,17 +344,17 @@ jsClassDef(CustomEvent):
   proc initCustomEvent(ctx: JSContext; this: CustomEvent; eventType: CAtom;
       bubbles, cancelable: bool; detail: JSValueConst) {.jsfunc.} =
     if efDispatch notin this.flags:
-      if efInitialized notin this.flags:
-        JS_FreeValue(ctx, this.detail)
-      this.detail = JS_DupValue(ctx, detail)
+      this.detail = ctx.dupTrace(detail)
       this.asEvent.initialize(eventType, bubbles, cancelable)
 
 # MessageEvent
 proc newMessageEvent*(ctx: JSContext; eventType: CAtom;
-    eventInit = MessageEventInit(data: trace(JS_NULL))): MessageEvent =
+    eventInit: sink MessageEventInit = MessageEventInit(
+      data: trace(JS_NULL)
+    )): MessageEvent =
   let event = jsNew MessageEventObj(
     eventType: eventType,
-    data: JS_DupValue(ctx, eventInit.data.v),
+    data: move(eventInit.data),
     origin: eventInit.origin
   )
   if event != nil:
@@ -699,22 +700,7 @@ proc invoke(ctx: JSContext; listener: EventListener; event: Event): JSValue =
   if JS_IsException(jsEvent):
     JS_FreeValue(ctx, jsTarget)
     return JS_EXCEPTION
-  var ret = JS_UNINITIALIZED
-  #TODO user object operation
-  let callback = JS_DupValue(ctx, listener.callback.value)
-  if JS_IsFunction(ctx, callback):
-    # Apparently it's a bad idea to call a function that can then delete
-    # the reference it was called from (hence the dup).
-    ret = ctx.call(callback, jsTarget, jsEvent)
-  else:
-    assert JS_IsObject(callback)
-    ret = JS_GetPropertyStr(ctx, callback, "handleEvent")
-    if not JS_IsException(ret):
-      ret = ctx.callFree(ret, callback, jsEvent)
-  JS_FreeValue(ctx, callback)
-  JS_FreeValue(ctx, jsTarget)
-  JS_FreeValue(ctx, jsEvent)
-  return ret
+  ctx.callUserObject(listener.callback, jstHandleEvent, jsTarget, jsEvent)
 
 proc removeEventListenerData(ctx: JSContext; _: JSValueConst;
     argc: cint; argv: JSValueConstArray; magic: cint;
@@ -764,7 +750,7 @@ proc addEventListener(ctx: JSContext; target: EventTarget; eventType: CAtom;
       ctx.freeValues(data)
       if JS_IsException(fun):
         return err()
-      signal.abortSteps.add(fun)
+      signal.abortSteps.add(traceObj(fun))
   ok()
 
 proc flatten(ctx: JSContext; options: JSValueConst): Opt[bool] =
@@ -986,9 +972,7 @@ jsClassPublicDef(EventTarget):
       return JS_ThrowDOMException(ctx, "InvalidStateError",
         "event is not initialized")
     event.flags.excl(efTrusted)
-    if ctx.dispatch(this, event):
-      return JS_FALSE
-    return JS_TRUE
+    ctx.toJS(not ctx.dispatch(this, event))
 
 proc addEventGetSetImpl*(ctx: JSContext; obj: JSValueConst; id: JSClassID;
     atoms: openArray[StaticAtom]; get: JSGetterMagicFunction;
@@ -1038,11 +1022,11 @@ template addEventGetSet*(ctx: JSContext; id: JSClassID;
   res
 
 # AbortSignal
-proc toSignalReason(ctx: JSContext; reason: JSValueConst): JSValue =
+proc toSignalReason(ctx: JSContext; reason: JSValueConst): JSValueTraced =
   if not JS_IsUndefined(reason):
-    return JS_DupValue(ctx, reason)
+    return ctx.dupTrace(reason)
   JS_ThrowDOMException(ctx, "AbortError", "aborted (core not dumped)")
-  return JS_GetException(ctx)
+  return trace(JS_GetException(ctx))
 
 jsClassDef(AbortSignal):
   jsextends EventTargetDef
@@ -1052,9 +1036,6 @@ jsClassDef(AbortSignal):
 
   jsget AbortSignal, reason
   jsget AbortSignal, aborted
-
-  proc finalize(rt: JSRuntime; this: AbortSignal) {.jsfin.} =
-    rt.freeValues(this.abortSteps)
 
   proc mark(rt: JSRuntime; this: AbortSignal; markFun: JS_MarkFunc) {.
       jsmark.} =
@@ -1068,7 +1049,7 @@ jsClassDef(AbortSignal):
   proc throwIfAborted(ctx: JSContext; signal: AbortSignal): JSValue
       {.jsfunc.} =
     if signal.aborted:
-      return JS_Throw(ctx, JS_DupValue(ctx, signal.reason))
+      return JS_Throw(ctx, JS_DupValue(ctx, signal.reason.v))
     return JS_UNDEFINED
 
   #TODO _any
@@ -1078,7 +1059,7 @@ jsClassDef(AbortController):
   jsget AbortController, signal
 
   proc newAbortController(ctx: JSContext): AbortController {.jsctor.} =
-    let signal = jsNew AbortSignalObj(reason: JS_UNDEFINED)
+    let signal = jsNew AbortSignalObj(reason: trace(JS_UNDEFINED))
     if signal == nil:
       return AbortController(nil)
     jsNew AbortControllerObj(signal: signal)
@@ -1090,7 +1071,7 @@ jsClassDef(AbortController):
       signal.reason = ctx.toSignalReason(reason)
       #TODO dependent signals
       for step in signal.abortSteps:
-        let res = ctx.call(step, JS_UNDEFINED)
+        let res = ctx.call(step.value, JS_UNDEFINED)
         if JS_IsException(res):
           return res
         JS_FreeValue(ctx, res)

@@ -273,10 +273,6 @@ type
 
   NodeIterator = JSRef[NodeIteratorObj]
 
-  TreeWalkerObj {.pure, final.} = object of NodeIteratorLikeObj
-
-  TreeWalker = JSRef[TreeWalkerObj]
-
   NodeListObj* {.pure.} = object of CollectionObj
 
   NodeList = JSRef[NodeListObj]
@@ -774,7 +770,6 @@ proc getClassID(t: typedesc[ProcessingInstruction]): JSClassID
 proc getClassID(t: typedesc[RootNode]): JSClassID
 proc getClassID(t: typedesc[ShadowRoot]): JSClassID
 proc getClassID(t: typedesc[SheetElement]): JSClassID
-proc getClassID(t: typedesc[TreeWalker]): JSClassID
 proc getClassID(t: typedesc[XMLDocument]): JSClassID
 proc getClassID*(t: typedesc[Document]): JSClassID
 proc getClassID*(t: typedesc[Element]): JSClassID
@@ -817,6 +812,8 @@ proc getElementForm(element: Element): HTMLElement {.importc: "cha_$1".}
 proc getFormMethodAttr(element: Element; name: StaticAtom): string {.
   importc: "cha_$1".}
 proc newHTMLElementForm(tagType: TagType): HTMLElement {.importc: "cha_$1".}
+
+var TreeWalkerDef {.global, noinit.}: ChaClassDef
 
 const VoidElements = {
   ttArea, ttBase, ttBr, ttCol, ttEmbed, ttHr, ttImg, ttInput,
@@ -4187,11 +4184,11 @@ jsClassPublicDef(Document):
       JSValue {.jsfunc.} =
     if not JS_IsObject(filter) and not JS_IsNull(filter):
       return JS_ThrowTypeError(ctx, "filter is not an object")
-    let this = jsNew TreeWalkerObj(
+    let this = jsNewOf(NodeIteratorLikeObj(
       root: root,
       currentNode: root,
       whatToShow: whatToShow
-    )
+    ), TreeWalkerDef.id)
     if this != nil and not JS_IsNull(filter):
       this.filter = ctx.dupTraceObj(filter)
     ctx.toJSNew(this)
@@ -4318,14 +4315,7 @@ proc filter(ctx: JSContext; this: NodeIteratorLike; node: Node): Opt[uint32] =
   if JS_IsException(node):
     return err()
   this.active = true
-  #TODO call user object's operation (prepare etc.)
-  let filter = JS_DupValue(ctx, this.filter.value)
-  let val = if JS_IsFunction(ctx, filter):
-    ctx.callSink(filter, JS_UNDEFINED, node)
-  else:
-    let atom = ctx.getOpaque().strRefs[jstAcceptNode]
-    ctx.invokeSink(filter, atom, node)
-  JS_FreeValue(ctx, filter)
+  let val = ctx.callUserObject(this.filter, jstAcceptNode, JS_UNDEFINED, node)
   if JS_IsException(val):
     this.active = false
     return err()
@@ -4339,9 +4329,6 @@ proc filter(ctx: JSContext; this: NodeIteratorLike; node: Node): Opt[uint32] =
 template asNodeIteratorLike*[T: NodeIteratorLikeObj](x: JSRef[T]):
     NodeIteratorLike =
   NodeIteratorLike(x)
-
-template filter(ctx: JSContext; this: NodeIterator; node: Node): Opt[uint32] =
-  ctx.filter(this.asNodeIteratorLike, node)
 
 proc adjustForRemovalImpl(iter: NodeIterator; node: Node;
     referenceNode: var Node; before: var bool) =
@@ -4384,7 +4371,7 @@ jsClassDef(NodeIterator):
         if this.iterNode == nil:
           return ok(Node(nil))
       resultNode = this.iterNode
-      let res = ctx.filter(this, resultNode)
+      let res = ctx.filter(this.asNodeIteratorLike, resultNode)
       if res.isErr:
         this.iterNode = Node(nil)
         return err()
@@ -4398,18 +4385,16 @@ jsClassDef(NodeIterator):
     discard
 
 # TreeWalker
-template filter(ctx: JSContext; this: TreeWalker; node: Node): Opt[uint32] =
-  ctx.filter(this.asNodeIteratorLike, node)
-
-jsClassDef(TreeWalker):
+jsClassRawForward(TreeWalkerDef, "TreeWalker"):
   jsextends NodeIteratorLikeDef
 
-  jsget TreeWalker, root
-  jsget TreeWalker, whatToShow
-  jsget TreeWalker, filter
-  jsgetset TreeWalker, currentNode
+  jsget NodeIteratorLike, root
+  jsget NodeIteratorLike, whatToShow
+  jsget NodeIteratorLike, filter
+  jsgetset NodeIteratorLike, currentNode
 
-  proc parentNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
+  proc parentNode(ctx: JSContext; this: NodeIteratorLike): Opt[Node] {.
+      jsfunc.} =
     var node = this.currentNode
     while node != nil and node != this.root:
       node = node.parentNode.asNode
@@ -4418,8 +4403,8 @@ jsClassDef(TreeWalker):
         return ok(node)
     ok(Node(nil))
 
-  proc traverse(ctx: JSContext; this: TreeWalker; last: bool): Opt[Node] {.
-      jsmfunc("firstChild", false), jsmfunc("lastChild", true).} =
+  proc traverse(ctx: JSContext; this: NodeIteratorLike; last: bool): Opt[Node]
+      {.jsmfunc("firstChild", false), jsmfunc("lastChild", true).} =
     let currentNode = this.currentNode
     var node = if last: currentNode.lastChild else: currentNode.firstChild
     while node != nil:
@@ -4444,8 +4429,9 @@ jsClassDef(TreeWalker):
           node = parent
     ok(Node(nil))
 
-  proc traverseSibling(ctx: JSContext; this: TreeWalker; next: bool): Opt[Node]
-      {.jsmfunc("previousSibling", false), jsmfunc("nextSibling", true).} =
+  proc traverseSibling(ctx: JSContext; this: NodeIteratorLike; next: bool):
+      Opt[Node] {.jsmfunc("previousSibling", false),
+      jsmfunc("nextSibling", true).} =
     var node = this.currentNode
     if node != this.root:
       while true:
@@ -4465,7 +4451,7 @@ jsClassDef(TreeWalker):
           return ok(Node(nil))
     ok(Node(nil))
 
-  proc nextNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
+  proc nextNode(ctx: JSContext; this: NodeIteratorLike): Opt[Node] {.jsfunc.} =
     var node = this.currentNode.nextDescendant(this.root)
     while node != nil:
       let res = ?ctx.filter(this, node)
@@ -4476,7 +4462,8 @@ jsClassDef(TreeWalker):
       node = node.nextDescendant(this.root, skip)
     ok(Node(nil))
 
-  proc previousNode(ctx: JSContext; this: TreeWalker): Opt[Node] {.jsfunc.} =
+  proc previousNode(ctx: JSContext; this: NodeIteratorLike): Opt[Node]
+      {.jsfunc.} =
     var node = this.currentNode
     while node != this.root:
       while (let sibling = node.previousSibling; sibling != nil):
@@ -7224,17 +7211,16 @@ proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
     destination: RequestDestination; onComplete: OnCompleteProc) =
   let window = element.asNode.document.window
   let ctx = window.jsctx
-  let record = script.record
+  let record = moveJSValue(script.record)
   if JS_ResolveModule(ctx, record) < 0:
     window.logException(script.baseURL)
-    script.free()
-    return
-  ctx.setImportMeta(record, true)
-  script.record = JS_UNINITIALIZED
-  let res = JS_EvalFunction(ctx, record) # consumes record
-  if JS_IsException(res):
-    window.logException(script.baseURL)
-  JS_FreeValue(ctx, res)
+    JS_FreeValue(ctx, record)
+  else:
+    ctx.setImportMeta(record, true)
+    let res = JS_EvalFunction(ctx, record) # consumes record
+    if JS_IsException(res):
+      window.logException(script.baseURL)
+    JS_FreeValue(ctx, res)
 
 type
   FetchModuleEnv* {.final.} = ref object of BlobOpaque
@@ -7369,8 +7355,7 @@ proc execute*(element: HTMLScriptElement) =
       let ctx = window.jsctx
       if window.settings.scripting != smFalse:
         element.prepare(ctx)
-        let record = script.record
-        script.record = JS_UNINITIALIZED
+        let record = moveJSValue(script.record)
         let ret = JS_EvalFunction(ctx, record) # consumes record
         if JS_IsException(ret):
           window.logException(script.baseURL)
@@ -7521,12 +7506,6 @@ proc prepare*(element: HTMLScriptElement; ctx: JSContext) =
 
 jsClassPublicDef(HTMLScriptElement):
   jsextends HTMLElementDef
-
-  proc finalize(rt: JSRuntime; element: HTMLScriptElement) {.jsfin.} =
-    if element.scriptResult != nil and element.scriptResult.t == srtScript:
-      let script = element.scriptResult.script
-      if not JS_IsUninitialized(script.record):
-        script.free()
 
   proc mark(rt: JSRuntime; element: HTMLScriptElement; markFunc: JS_MarkFunc)
       {.jsmark.} =
@@ -7872,9 +7851,7 @@ proc newHTMLElementInternal(tagType: TagType; document: Document):
     HTMLElementDef.id
   else:
     HTMLUnknownElementDef.id
-  var p: HTMLElement
-  jsNew0(cast[ptr pointer](addr p), classid, csize_t(sizeof(HTMLElementObj)))
-  move(p)
+  jsNewOf(HTMLElementObj(), classid)
 
 #TODO custom elements
 proc newElement(document: Document;

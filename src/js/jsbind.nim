@@ -327,7 +327,7 @@ proc setGlobal*[T](ctx: JSContext; obj: JSRef[T]) =
     let obj = cast[pointer](obj)
     let rt = JS_GetRuntime(ctx)
     let dummy = JS_NewObjectClass(ctx, ctxOpaque.gclass)
-    JS_SetForeignOpaque(rt, obj, dummy)
+    JS_SetForeignOpaque(rt, obj, JS_DupValue(ctx, dummy))
     JS_SetOpaque(dummy, obj)
     ctxOpaque.globalObj = JS_DupForeignObject(rt, obj)
     let sym = ctx.call(ctxOpaque.valRefs[jsvSymbol], JS_UNDEFINED)
@@ -1228,7 +1228,8 @@ proc jsClassTypeRecurse(markList, finList, recList: NimNode) =
             JS_FreeValueRT(rt, this.`varNode`)
           )
         elif inst.sameType(JSObject.getType()) or
-            inst.sameType(JSCallback.getType()):
+            inst.sameType(JSCallback.getType()) or
+            inst.sameType(JSValueTraced.getType()):
           markList.add(quote do:
             JS_MarkValue(rt, this.`varNode`, markFunc)
           )
@@ -1615,12 +1616,15 @@ macro jsClassImpl(def: untyped; jsname: static string; typ: typed;
     )
   stmts
 
-template jsClassRaw*(def: untyped; jsname: string; body: untyped) =
-  # why Nim insists on zero-initing global variables is an eternal mystery.
-  var def {.global, noinit, inject.}: ChaClassDef
+template jsClassRawForward*(def: untyped; jsname: string; body: untyped) =
   def.flags.incl(ccfRaw)
   discard JS_NewClassID(def.id)
   jsClassImpl(def, jsname, nil, body)
+
+template jsClassRaw*(def: untyped; jsname: string; body: untyped) =
+  # why Nim insists on zero-initing global variables is an eternal mystery.
+  var def {.global, noinit, inject.}: ChaClassDef
+  jsClassRawForward(def, jsname, body)
 
 template jsClassNameDef*(nimt: typedesc; jsname: string; body: untyped) =
   var `nimt Def` {.global, noinit, inject.}: ChaClassDef
