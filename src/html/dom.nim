@@ -1676,7 +1676,7 @@ jsClassDef(CustomElementRegistry):
       return JS_ThrowDOMException(ctx, "NotSupportedError",
         "recursive custom element definition is not allowed")
     this.inDefine = true
-    let proto = JS_GetPropertyStr(ctx, ctor, "prototype")
+    let proto = ctx.getProperty(ctor, jstPrototype)
     if JS_IsException(proto):
       this.inDefine = false
       return JS_EXCEPTION
@@ -1926,16 +1926,11 @@ proc mutationJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
     let records = move(observer.records)
     #TODO remove transient registered observers for observer.nodes
     if records.len > 0:
-      let records = ctx.toJS(records)
-      if JS_IsException(records):
-        return records
-      let this = ctx.toJS(observer) # cannot fail
+      let records = ?trace(ctx.toJS(records))
+      let this = trace(ctx.toJS(observer)) # cannot fail
       #TODO invoke (with all the ceremony that entails)
       let callback = JS_DupValue(ctx, observer.callback.value)
-      let res = ctx.callSinkThisFree(callback, this, records)
-      if JS_IsException(res):
-        return res
-      JS_FreeValue(ctx, res)
+      discard ?trace(ctx.callFree(callback, this.v, records.v))
   return JS_UNDEFINED
 
 proc queueMutationJob(ctx: JSContext) =
@@ -3084,14 +3079,9 @@ proc getElementById*(this: RootNode; id: CAtom): Element =
 
 proc getElementById(this: RootNode; ctx: JSContext; val: JSValueConst):
     JSValue =
-  let atom = JS_ValueToAtom(ctx, val)
-  if atom == JS_ATOM_NULL:
-    return JS_EXCEPTION
+  let atom = ?JS_ValueToAtom(ctx, val)
   var id: CAtomRaw
-  let status = ctx.fromJSView(atom, id)
-  JS_FreeAtom(ctx, atom)
-  if status == fjErr:
-    return JS_EXCEPTION
+  ?ctx.fromJSView(atom, id)
   ctx.toJS(this.getElementById(id.view()))
 
 proc removeElementId(this: RootNode; element: Element) =
@@ -3635,16 +3625,14 @@ proc getEventTarget(element: Element; name: StaticAtom): EventTarget =
 proc reflectEvent(document: Document; target: EventTarget;
     name, eventType: StaticAtom; value: string) =
   let ctx = document.window.jsctx
-  let fun = ctx.newFunction(["event"], value)
+  let fun = trace(ctx.newFunction(["event"], value))
   assert ctx != nil
-  if JS_IsException(fun):
+  if JS_IsException(fun.v):
     document.window.logException(document.baseURL)
   else:
-    let res = ctx.eventReflectSetImpl(target, fun, eventType)
+    let res = trace(ctx.eventReflectSetImpl(target, fun.v, eventType))
     if JS_IsException(res):
       document.window.logException(document.baseURL)
-    JS_FreeValue(ctx, res)
-    JS_FreeValue(ctx, fun)
 
 proc applyUASheet*(document: Document) =
   const ua = staticRead"res/ua.css"
@@ -3888,15 +3876,12 @@ jsClassPublicDef(Document):
   proc location(ctx: JSContext; document: Document): JSValue {.jsuffget.} =
     if document.window == nil:
       return JS_NULL
-    return JS_GetPropertyStr(ctx, ctx.getOpaque().global, "location")
+    return ctx.getProperty(ctx.getOpaque().global, jstLocation)
 
   proc setLocation*(ctx: JSContext; document: Document; s: string): JSValue
       {.jsfset: "location".} =
-    let obj = ctx.location(document)
-    if JS_IsException(obj):
-      return obj
-    let res = JS_SetPropertyStr(ctx, obj, "href", ctx.toJS(s))
-    JS_FreeValue(ctx, obj)
+    let obj = ?trace(ctx.location(document))
+    let res = JS_SetProperty(ctx, obj.v, ctx.getAtom(jstHref), ctx.toJS(s))
     if res < 0:
       return JS_EXCEPTION
     return JS_UNDEFINED
@@ -4311,11 +4296,10 @@ proc filter(ctx: JSContext; this: NodeIteratorLike; node: Node): Opt[uint32] =
     return ok(uint32(nfrSkip))
   if this.filter == nil:
     return ok(uint32(nfrAccept))
-  let node = ctx.toJS(node)
-  if JS_IsException(node):
-    return err()
+  let node = ?trace(ctx.toJS(node))
   this.active = true
-  let val = ctx.callUserObject(this.filter, jstAcceptNode, JS_UNDEFINED, node)
+  let val = ctx.callUserObject(this.filter, jstAcceptNode, JS_UNDEFINED,
+    node.v)
   if JS_IsException(val):
     this.active = false
     return err()
@@ -6756,15 +6740,11 @@ proc hyperlinkGet(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
     {.cdecl.} =
   var element: Element
   ?ctx.fromJS(this, element)
-  let sa = StaticAtom(magic)
+  let magic = JSStrRef(magic)
   if url := element.reinitURL():
-    let href = ctx.toJS(url)
-    if JS_IsException(href):
-      return JS_EXCEPTION
-    let res = JS_GetPropertyStr(ctx, href, cstring($sa))
-    JS_FreeValue(ctx, href)
-    return res
-  if sa == satProtocol:
+    let href = ?trace(ctx.toJS(url))
+    return ctx.getProperty(href.v, magic)
+  if magic == jstProtocol:
     return ctx.toJS(":")
   return ctx.toJS("")
 
@@ -6772,8 +6752,8 @@ proc hyperlinkSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
     {.cdecl.} =
   var element: Element
   ?ctx.fromJS(this, element)
-  let sa = StaticAtom(magic)
-  if sa == satHref:
+  let magic = JSStrRef(magic)
+  if magic == jstHref:
     var s: DOMString
     if ctx.fromJS(val, s).isOk:
       element.setAttr(ctx, satHref, s)
@@ -6781,7 +6761,10 @@ proc hyperlinkSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
     return JS_EXCEPTION
   if url := element.reinitURL():
     let href = ctx.toJS(url)
-    let res = JS_SetPropertyStr(ctx, href, cstring($sa), JS_DupValue(ctx, val))
+    if JS_IsException(href):
+      return JS_EXCEPTION
+    let res = JS_SetProperty(ctx, href, ctx.getAtom(magic),
+      JS_DupValue(ctx, val))
     if res < 0:
       return JS_EXCEPTION
     var ds: DOMString
@@ -6854,12 +6837,9 @@ proc onFinishToBlob(response: Response; success: bool) =
     JS_FreeContext(ctx)
     return
   let window = this.asNode.document.window
-  let res = ctx.callSink(callback.value, JS_UNDEFINED, jsBlob)
+  let res = trace(ctx.callSink(callback.value, JS_UNDEFINED, jsBlob))
   if JS_IsException(res):
-    window.console.error("Exception in canvas toBlob:",
-      ctx.getExceptionMsg())
-  else:
-    JS_FreeValue(ctx, res)
+    window.console.error("Exception in canvas toBlob:", ctx.getExceptionMsg())
   JS_FreeContext(ctx)
 
 proc toBlob1(opaque: RootRef; response: Response) =
@@ -7356,10 +7336,9 @@ proc execute*(element: HTMLScriptElement) =
       if window.settings.scripting != smFalse:
         element.prepare(ctx)
         let record = moveJSValue(script.record)
-        let ret = JS_EvalFunction(ctx, record) # consumes record
+        let ret = trace(JS_EvalFunction(ctx, record)) # consumes record
         if JS_IsException(ret):
           window.logException(script.baseURL)
-        JS_FreeValue(ctx, ret)
     document.currentScript = oldCurrentScript
   else: discard #TODO
   if needsInc:
@@ -7882,23 +7861,18 @@ proc newElement(document: Document;
 proc addHTMLElementReflection(ctx: JSContext): Opt[void] =
   if ctx.getOpaque() == nil:
     return ok()
-  let proto = JS_GetClassProto(ctx, HTMLElementDef.id)
+  let proto = trace(JS_GetClassProto(ctx, HTMLElementDef.id))
   for i in SuperGlobalAttrs:
-    if ctx.addReflectFunction(proto, cstring($ReflectMap[i].attrname),
-        jsReflectGet, jsReflectSet, cint(i)).isErr:
-      JS_FreeValue(ctx, proto)
-      return err()
+    ?ctx.definePropertyGetSetCE(proto.v, cstring($ReflectMap[i].attrname),
+      jsReflectGet, jsReflectSet, cint(i))
   for (name, eventType) in ScriptEventMap:
-    if ctx.definePropertyGetSetCE(proto, cstring($name), jsReflectEventGet,
-        jsReflectEventSet, cint(eventType)).isErr:
-      JS_FreeValue(ctx, proto)
-      return err()
-  JS_FreeValue(ctx, proto)
+    ?ctx.definePropertyGetSetCE(proto.v, cstring($name), jsReflectEventGet,
+      jsReflectEventSet, cint(eventType))
   ok()
 
 proc reflectAttributes*(ctx: JSContext; class: JSClassID;
     attrs: varargs[ReflectedAttr]): Opt[void] =
-  let proto = JS_GetClassProto(ctx, class)
+  let proto = trace(JS_GetClassProto(ctx, class))
   let diff = (uint16(class) - uint16(HTMLElementDef.id)) shl 9
   for i in attrs:
     let name = ReflectMap[i].attrname
@@ -7916,15 +7890,12 @@ proc reflectAttributes*(ctx: JSContext; class: JSClassID;
     of satIsmap: cstring"isMap"
     of satUsemap: cstring"useMap"
     else: cstring(nameStr)
-    if ctx.addReflectFunction(proto, nameCStr, jsReflectGet, jsReflectSet,
-        cint(diff or uint16(i))).isErr:
-      JS_FreeValue(ctx, proto)
-      return err()
-  JS_FreeValue(ctx, proto)
+    ?ctx.definePropertyGetSetCE(proto.v, nameCStr, jsReflectGet, jsReflectSet,
+      cint(diff or uint16(i)))
   ok()
 
 proc addConstructorAlias*(ctx: JSContext; fun: JSCFunction; class: JSClassID;
-    name: cstring): Opt[void] =
+    name: cstring): JSCode =
   let val = JS_NewCFunction2(ctx, fun, cstringConst(name), 0,
     JS_CFUNC_constructor, 0)
   if JS_IsException(val):
@@ -7933,21 +7904,17 @@ proc addConstructorAlias*(ctx: JSContext; fun: JSCFunction; class: JSClassID;
   if ctx.defineProperty(val, "prototype", proto).isErr:
     JS_FreeValue(ctx, val)
     return err()
-  ?ctx.definePropertyCW(ctx.getOpaque().global, name, val)
-  ok()
+  ctx.definePropertyCW(ctx.getOpaque().global, name, val)
 
 proc addHyperlinkUtils*(ctx: JSContext; class: JSClassID): Opt[void] =
   const atoms = [
-    satHref, satOrigin, satProtocol, satUsername, satPassword, satHost,
-    satHostname, satPort, satPathname, satSearch, satHash
+    jstHref, jstOrigin, jstProtocol, jstUsername, jstPassword, jstHost,
+    jstHostname, jstPort, jstPathname, jstSearch, jstHash
   ]
-  let proto = JS_GetClassProto(ctx, class)
+  let proto = trace(JS_GetClassProto(ctx, class))
   for atom in atoms:
-    if ctx.definePropertyGetSetCE(proto, cstring($atom), hyperlinkGet,
-        hyperlinkSet, cint(atom)).isErr:
-      JS_FreeValue(ctx, proto)
-      return err()
-  JS_FreeValue(ctx, proto)
+    ?ctx.definePropertyGetSetCE(proto.v, cstring($atom), hyperlinkGet,
+      hyperlinkSet, cint(atom))
   ok()
 
 proc registerElements(ctx: JSContext): Opt[void] =

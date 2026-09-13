@@ -81,8 +81,8 @@ jsClassDef(Storage):
     return true
 
 proc storageAutoInitGetter(ctx: JSContext; this: JSValueConst; argc: cint;
-    argv: JSValueConstArray; magic: cint; func_data: JSValueConstArray):
-    JSValue {.cdecl.} =
+    argv: JSValueConstArray; magic: cint; func_data: JSValueArray): JSValue
+    {.cdecl.} =
   let ctxOpaque = ctx.getOpaque()
   if not ctx.strictEquals(this, ctxOpaque.global):
     return JS_ThrowTypeErrorInvalidClass(ctx, ctxOpaque.gclass)
@@ -102,10 +102,8 @@ proc registerAutoInitStorage(ctx: JSContext; name: cstring): JSCode =
   if JS_IsException(getter):
     return fjErr
   let prop = JS_NewAtom(ctx, cstringConst(name))
-  let code = JS_DefinePropertyGetSet(ctx, ctxOpaque.global, prop, getter,
-    JS_UNDEFINED, cint(JS_PROP_CONFIGURABLE or JS_PROP_ENUMERABLE))
-  JS_FreeAtom(ctx, prop)
-  if code < 0:
+  if JS_DefinePropertyGetSet(ctx, ctxOpaque.global, prop, getter,
+      JS_UNDEFINED, cint(JS_PROP_CONFIGURABLE or JS_PROP_ENUMERABLE)) < 0:
     return fjErr
   fjOk
 
