@@ -19,8 +19,8 @@ import js/jstypes
 import js/jsutils
 import js/quickjs
 import js/tojs
-import types/refstring
-import types/url
+import utils/refstring
+import server/url
 import utils/twtstr
 
 # DOMBuilder implementation for Chawan.
@@ -86,9 +86,10 @@ proc finish(builder: ChaDOMBuilder) =
 
 proc restart*(wrapper: HTML5ParserWrapper; charset: Charset) =
   let builder = wrapper.builder
-  let oldDocument = builder.document
+  let oldDocument = move(builder.document)
   let document = newDocument(oldDocument.url)
   document.charset = charset
+  oldDocument.setActiveParser(nil)
   document.setActiveParser(wrapper)
   document.contentType = satTextHtml
   let window = oldDocument.window
