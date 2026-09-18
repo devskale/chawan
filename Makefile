@@ -87,6 +87,8 @@ embed_script =
 scripts = init.jsb
 script_target = $(OUTDIR_LIBEXEC)/%.jsb
 endif
+# used because past versions installed init.jsb for release builds too
+scripts_uninstall = init.jsb
 
 ssl_link = http https gemini sftp
 tohtml_link = gopher2html md2html ansi2html gmi2html dirlist2html img2html
@@ -150,9 +152,9 @@ endif
 twtstr = src/utils/twtstr.nim src/utils/opt.nim
 dynstream = src/io/dynstream.nim
 chafile = src/io/chafile.nim $(dynstream)
-myposix = src/utils/myposix.nim
+chaos = src/utils/chaos.nim
 connectionerror = src/server/connectionerror.nim
-lcgi = $(myposix) $(chafile) $(twtstr) $(sandbox) $(connectionerror) \
+lcgi = $(chaos) $(chafile) $(twtstr) $(sandbox) $(connectionerror) \
 	adapter/protocol/lcgi.nim
 lcgi_ssl = $(lcgi) adapter/protocol/lcgi_ssl.nim
 sandbox = src/utils/sandbox.nim $(chaseccomp)
@@ -203,12 +205,12 @@ $(OUTDIR_CGI_BIN)/canvas: src/html/path.nim src/io/packetreader.nim \
 $(OUTDIR_CGI_BIN)/resize: adapter/img/stb_image_resize.h $(lcgi)
 $(OUTDIR_CGI_BIN)/nanosvg: adapter/img/nanosvg.nim adapter/img/nanosvg.h \
 	adapter/img/nanosvgrast.h $(lcgi)
-$(OUTDIR_LIBEXEC)/urlenc: $(twtstr) $(chafile)
+$(OUTDIR_LIBEXEC)/urlenc: $(twtstr) $(chafile) $(chaos)
 $(OUTDIR_LIBEXEC)/nc: $(lcgi)
 $(OUTDIR_LIBEXEC)/tohtml: adapter/format/ansi2html.nim adapter/format/dirlist2html.nim \
 	adapter/format/gmi2html.nim adapter/format/gopher2html.nim \
 	adapter/format/md2html.nim adapter/format/img2html.nim \
-	$(twtstr) $(chafile) $(dynstream) src/css/color.nim
+	$(twtstr) $(chafile) $(dynstream) $(chaos) src/css/color.nim
 
 $(foreach it,$(ssl_link),$(OUTDIR_CGI_BIN)/$(it)): $(OUTDIR_CGI_BIN)/ssl
 	(cd "$(OUTDIR_CGI_BIN)" && ln -sf ssl $(notdir $@))
@@ -322,7 +324,7 @@ uninstall:
 	rm -f "$(DESTDIR)$(PREFIX)/bin/mancha"
 # intentionally not quoted
 	for f in $(protocols); do rm -f $(LIBEXECDIR_CHAWAN)/cgi-bin/$$f; done
-	for f in $(converters) $(tools) $(scripts); do rm -f $(LIBEXECDIR_CHAWAN)/$$f; done
+	for f in $(converters) $(tools) $(scripts_uninstall); do rm -f $(LIBEXECDIR_CHAWAN)/$$f; done
 # We only want to uninstall binaries that the main distribution
 # includes or has ever included, but not those that the user might have
 # added.  Some of these cannot be directly derived from our variables:

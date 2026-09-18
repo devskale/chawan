@@ -1,15 +1,11 @@
 {.push raises: [].}
 
-import std/os
 import std/posix
 
 import lcgi
 
 proc my_strftime(s: cstring; slen: csize_t; format: cstring;
   tm: ptr Tm): csize_t {.importc: "strftime", header: "<time.h>".}
-
-proc my_readlink(path: cstring; buf: cstring; buflen: csize_t):
-  int {.importc: "readlink", header: "<unistd.h>".}
 
 proc loadDir(path, opath: string): Opt[void] =
   let title = ("Directory list of " & path).mimeQuote()
@@ -59,11 +55,10 @@ proc loadDir(path, opath: string): Opt[void] =
     line &= file
     if S_ISLNK(stats.st_mode):
       let len = int(stats.st_size)
-      var target = newString(len)
-      let n = my_readlink(cstring(fullpath), cstring(target), csize_t(len))
-      if n == len and stat(cstring(target), stats) == 0:
-        if S_ISDIR(stats.st_mode) and (target.len == 0 or target[^1] != '/'):
-          target &= '/'
+      var target = readLink(fullpath)
+      if stat(cstring(target), stats) == 0 and S_ISDIR(stats.st_mode) and
+          (target.len <= 0 or target[^1] != '/'):
+        target &= '/'
       line &= " -> " & target
     ?stdout.writeLine(line)
   ok()
@@ -87,9 +82,9 @@ proc loadFile(os, ps: PosixStream; stats: Stat) =
     start = 0
 
 proc main() =
-  if paramCount() < 1:
+  if getArgvCount() < 2:
     cgiDie(ceInternalError, "path expected")
-  let opath = paramStr(1)
+  let opath = getArgv(1)
   let path = percentDecode(opath)
   let os = newPosixStream(STDOUT_FILENO)
   var stats: Stat

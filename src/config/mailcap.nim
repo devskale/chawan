@@ -11,7 +11,7 @@ import js/jsref
 import js/libregexp
 import server/url
 import utils/lrewrap
-import utils/myposix
+import utils/chaos
 import utils/opt
 import utils/tabutil
 import utils/twtstr
@@ -184,7 +184,7 @@ proc consumeTypeField(state: var MailcapParser; line: openArray[char];
     return state.err("semicolon not found")
   ok(n + 1)
 
-proc consumeCommand(state: var MailcapParser; line: string;
+proc consumeCommand(state: var MailcapParser; line: openArray[char];
     outs: var string; n: int): Opt[int] =
   var n = line.skipBlanks(n)
   var quoted = false
@@ -233,7 +233,7 @@ proc allowField(state: MailcapParser; standard: bool; i: int): bool =
   # only in mailcap
   return standard or state.lenient
 
-proc consumeField(state: var MailcapParser; line: string;
+proc consumeField(state: var MailcapParser; line: openArray[char];
     entry: MailcapEntry; n: int; fieldsTail: var NamedField): Opt[int] =
   var n = line.skipBlanks(n)
   var s = ""
@@ -267,7 +267,7 @@ proc consumeField(state: var MailcapParser; line: string;
       entry.flags.incl(x)
   return ok(n)
 
-proc parseEntry*(state: var MailcapParser; line: string;
+proc parseEntry*(state: var MailcapParser; line: openArray[char];
     entry: MailcapEntry; t: var string): Opt[void] =
   var n = ?state.consumeTypeField(line, t)
   n = ?state.consumeCommand(line, entry.cmd, n)
@@ -334,7 +334,7 @@ type UnquoteResult* = object
 type QuoteState* = enum
   qsNormal, qsDoubleQuoted, qsSingleQuoted
 
-proc quoteFile*(file: string; qs: QuoteState): string =
+proc quoteFile*(file: openArray[char]; qs: QuoteState): string =
   var s = ""
   for c in file:
     case c
@@ -354,7 +354,7 @@ proc quoteFile*(file: string; qs: QuoteState): string =
     s &= c
   move(s)
 
-proc unquoteCommand*(ecmd, contentType, outpath: string; url: URL;
+proc unquoteCommand*(ecmd, contentType, outpath: openArray[char]; url: URL;
     canpipe: var bool; line = -1; uriparams = false; shellQuote = true):
     string =
   var cmd = ""
@@ -628,7 +628,7 @@ proc checkEntry(entry: MailcapEntry; contentType: string; url: URL;
         closeStdin()
         closeStdout()
         closeStderr()
-        discard myposix.signal(SIGINT, myposix.SIG_IGN)
+        discard chaos.signal(SIGINT, chaos.SIG_IGN)
         discard execl("/bin/sh", "sh", "-c", cstring(cmd), nil)
         exitnow(127)
       else:
