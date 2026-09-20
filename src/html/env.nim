@@ -167,13 +167,43 @@ jsClassRaw(NotificationDef, "Notification"):
       return res
     let code = ctx.enqueueJob(resolveToDenied, funs[0], callback)
     ctx.freeValues(funs)
-    if code < 0:
+    if code == fjErr:
       JS_FreeValue(ctx, res)
       return JS_EXCEPTION
     return res
 
+# PermissionStatus
+type
+  PermissionState = enum
+    psDenied = "denied"
+    psGranted = "granted"
+    psPrompt = "prompt"
+
+  PermissionStatusObj = object of EventTargetObj
+    state: PermissionState
+    name: string
+    #TODO onchange
+
+  PermissionStatus = JSRef[PermissionStatusObj]
+
+jsClassDef(PermissionStatus):
+  jsextends EventTargetDef
+
+  jsget PermissionStatus, state
+  jsget PermissionStatus, name
+
 # Permissions
-# See above.
+proc denyPermissionJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
+    JSValue {.cdecl.} =
+  assert argc == 2
+  var name: string
+  ?ctx.fromJS(argv[1], name)
+  let obj = ?trace(ctx.toJSNew(jsNew PermissionStatusObj(
+    name: move(name),
+    state: psDenied
+  )))
+  return ctx.call(argv[0], JS_UNDEFINED, obj.v)
+
 jsClassRaw(PermissionsDef, "Permissions"):
   proc finalizePermissions(rt: JSRuntime; this: pointer) {.jsfin.} =
     JS_FreeForeignObject(rt, this)
@@ -182,15 +212,21 @@ jsClassRaw(PermissionsDef, "Permissions"):
       {.jsmark.} =
     JS_MarkForeignObject(rt, this, markFunc)
 
-  proc query(ctx: JSContext; this: JSValueConst; desc: JSValueConst): JSValue
-      {.jsfunc.} =
-    let name = ctx.getProperty(desc, jstName)
-    if JS_IsException(name):
-      return name
-    JS_FreeValue(ctx, name)
-    # reject immediately
-    JS_ThrowTypeError(ctx, "permissions are not supported")
-    return ctx.newRejectedPromise()
+  proc query(ctx: JSContext; this, desc: JSValueConst): JSValue {.jsfunc.} =
+    let jsName = ctx.getProperty(desc, jstName)
+    if JS_IsException(jsName):
+      return JS_EXCEPTION
+    var name: DOMString
+    ?ctx.fromJSFree(jsName, name)
+    let jsName2 = ?trace(ctx.toJS(name))
+    var funs {.noinit.}: array[2, JSValue]
+    var res = ?trace(ctx.newPromiseCapability(funs))
+    #TODO permission task source
+    let code = ctx.enqueueJob(denyPermissionJob, funs[0], jsName2.v)
+    ctx.freeValues(funs)
+    if code == fjErr:
+      return JS_EXCEPTION
+    moveJSValue(res)
 
 # Screen
 jsClassRaw(ScreenDef, "Screen"):
@@ -310,7 +346,8 @@ jsClassRaw(LocationDef, "Location"):
     return location.url.serialize()
 
   proc setHref(ctx: JSContext; location: Location; s: string): JSValue {.
-      jsfset: "href", jsuffunc: "assign", jsuffunc: "replace".} =
+      jsuffunc: "open", jsfset: "href", jsuffunc: "assign",
+      jsuffunc: "replace".} =
     let window = location.window
     return ctx.setLocation(window, s)
 
@@ -492,6 +529,7 @@ proc registerAutoInitGetSet(ctx: JSContext; namespace: JSValueConst;
 
 proc addNavigatorModule*(ctx: JSContext): Opt[void] =
   ?ctx.registerClass(NotificationDef)
+  ?ctx.registerClass(PermissionStatusDef)
   let ctxOpaque = ctx.getOpaque()
   if ctxOpaque == nil:
     return ok()
@@ -705,9 +743,7 @@ jsClassDef(Window):
   proc fetch(ctx: JSContext; window: Window; input: JSValueConst;
       init: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
     let input = ?newRequest(ctx, input, init)
-    if input.url.schemeType != stData and
-        not window.isSameOrigin(input.url.origin):
-      # reject immediately
+    if not window.checkCORSRequest(input):
       discard ctx.throwNetworkError()
       return ctx.newRejectedPromise()
     var funs {.noinit.}: array[2, JSValue]
@@ -836,8 +872,7 @@ jsClassDef(Window):
 
   proc queueMicrotask(ctx: JSContext; window: Window; fun: JSCallback):
       JSValue {.jsfunc.} =
-    if ctx.enqueueJob(microtaskJob, fun.value) < 0:
-      return JS_EXCEPTION
+    ?ctx.enqueueJob(microtaskJob, fun.value)
     return JS_UNDEFINED
 
   proc matchMedia(window: Window; s: CSSOMString): MediaQueryList {.jsnfunc.} =
@@ -872,15 +907,23 @@ proc loadJSModule(ctx: JSContext; moduleName: cstringConst; opaque: pointer):
   if url == nil or not window.isSameOrigin(url.origin):
     JS_ThrowTypeError(ctx, "invalid URL: %s", moduleName)
     return nil
-  let request = newRequest(url)
-  let response = window.loader.doRequest(request)
-  if response.stream == nil:
-    JS_ThrowTypeError(ctx, "Failed to load module %s", moduleName)
-    return nil
-  window.loader.resume(response)
-  let source = response.stream.readAll()
-  window.loader.close(response)
-  return ctx.finishLoadModule(source, name)
+  var module = window.settings.moduleMap.get(url, mtJavascript)
+  if module == nil:
+    let request = newRequest(url)
+    let response = window.loader.doRequest(request)
+    if response.stream == nil:
+      JS_ThrowTypeError(ctx, "Failed to load module %s", moduleName)
+      return nil
+    window.loader.resume(response)
+    let source = response.stream.readAll()
+    window.loader.close(response)
+    #TODO ScriptOptions
+    module = ctx.newJSModuleScript(source, url, ScriptOptions(),
+      window.settings)
+    if JS_IsException(module.script.record):
+      return nil
+    window.settings.moduleMap.put(url, mtJavascript, module)
+  return ctx.finishLoadModule(JS_DupValue(ctx, module.script.record), name)
 
 proc rejectionHandler(ctx: JSContext; promise, reason: JSValueConst;
     isHandled: JS_BOOL; opaque: pointer) {.cdecl.} =

@@ -1064,13 +1064,48 @@ proc isSameOrigin*(window: Window; origin: Origin): bool =
     return true
   return window.settings.origin.isSameOrigin(origin)
 
+proc checkCORSRequest*(window: Window; input: Request): bool =
+  if input.url.schemeType == stData:
+    return true
+  if window.isSameOrigin(input.url.origin):
+    return true
+  if window.settings.scripting != smApp:
+    #TODO I think the ideal solution here would be to check if the
+    # request & origin neither or both resolve to the local network,
+    # and then reject based on that.
+    # but that's hard, so for now I'll just gate CORS behind app mode.
+    return false
+  #TODO redirect-taint
+  let requestOrigin = $window.settings.origin
+  if input.url.scheme != requestOrigin.until(':'):
+    return false
+  input.headers["Origin"] = requestOrigin
+  let headers = newHeaders(hgRequest, {"Origin": requestOrigin})
+  if headers == nil:
+    return false
+  let request = newRequest(input.url, hmOptions, headers)
+  if request == nil:
+    return false
+  let response = window.loader.doRequest(request)
+  if response == nil:
+    return false
+  window.loader.close(response)
+  if response.status notin 200'u16..299'u16:
+    return false
+  let origin = response.headers.getAll("Access-Control-Allow-Origin")
+  if origin.len == 0:
+    return false
+  if origin == "*" and input.credentials != cmInclude:
+    return true
+  if origin != requestOrigin:
+    return false
+  input.credentials != cmInclude or
+    response.headers.getAll("Access-Control-Allow-Credentials") == "true"
+
 proc fetch*(window: Window; input: Request; finish: FetchFinish;
     opaque: RootRef) =
-  #TODO cors requests?
-  if input.url.schemeType != stData and
-      not window.isSameOrigin(input.url.origin):
-    return
-  window.loader.fetch(input, finish, opaque)
+  if window.checkCORSRequest(input):
+    window.loader.fetch(input, finish, opaque)
 
 proc corsFetch(window: Window; input: Request; finish: FetchFinish;
     opaque: RootRef) =
@@ -1838,9 +1873,8 @@ proc mutationJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
   return JS_UNDEFINED
 
 proc queueMutationJob(ctx: JSContext) =
-  if not mutationJobQueued:
-    if ctx.enqueueJob(mutationJob) >= 0:
-      mutationJobQueued = true
+  if not mutationJobQueued and ctx.enqueueJob(mutationJob) == fjOk:
+    mutationJobQueued = true
 
 proc queueMutationRecord(target: Node; ctx: JSContext; t: MutationRecordType;
     name, namespace: CAtom; oldValue: RefString; hasOldValue2: bool;
@@ -5344,9 +5378,14 @@ proc postConnectionSteps(element: Element; ctx: JSContext) =
     script.prepare(ctx)
 
 proc delAttr(element: Element; ctx: JSContext; i: int) =
-  let name = element.attrs[i].name
-  element.asNode.queueMutationRecord(ctx, mrtAttributes, name, CAtomNull,
-    nil, true, element.attrs[i].value, [], [], Node(nil), Node(nil))
+  var name = element.attrs[i].name
+  if element.attrs[i].namespace != CAtomNull:
+    let i = name.find(':')
+    if i >= 0:
+      name = name.substr(i)
+  element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
+    element.attrs[i].namespace, nil, true, element.attrs[i].value, [], [],
+    Node(nil), Node(nil))
   let map = element.getCachedAttributes()
   if map != nil:
     # delete from attrlist + adjust indices invalidated
@@ -5793,12 +5832,12 @@ jsClassPublicDef(Element):
     ?ctx.validateAndExtract(namespace, localName, nvAttribute)
     var i = element.findAttrNS(namespace, localName)
     if i >= 0:
-      element.asNode.queueMutationRecord(ctx, mrtAttributes, qualifiedName,
+      element.asNode.queueMutationRecord(ctx, mrtAttributes, localName,
         namespace, nil, true, element.attrs[i].value, [], [], Node(nil),
         Node(nil))
       element.attrs[i].value = $value
     else:
-      element.asNode.queueMutationRecord(ctx, mrtAttributes, qualifiedName,
+      element.asNode.queueMutationRecord(ctx, mrtAttributes, localName,
         namespace, nil, false, "", [], [], Node(nil), Node(nil))
       i = element.attrs.upperBound(qualifiedName, cmpAttrName)
       element.attrs.insert(AttrData(

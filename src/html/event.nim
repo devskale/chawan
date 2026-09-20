@@ -26,7 +26,7 @@ type
     AT_TARGET = 2u16
     BUBBLING_PHASE = 3u16
 
-  EventFlag = enum
+  EventFlag* = enum
     efStopPropagation
     efStopImmediatePropagation
     efCanceled
@@ -44,7 +44,7 @@ type
     currentTarget*: EventTarget
     eventType*: CAtom
     eventPhase: uint16
-    flags: set[EventFlag]
+    flags*: set[EventFlag]
 
   Event* = JSRef[EventObj]
 
@@ -117,7 +117,7 @@ type
   MutationRecord = JSRef[MutationRecordObj]
 
   MutationObserverObj = object
-    callback*: JSObject
+    callback*: JSCallback
     nodes: seq[ptr EventTargetObj]
     records*: seq[MutationRecord]
 
@@ -158,13 +158,13 @@ type
 
   AbortSignalObj {.pure, final.} = object of EventTargetObj
     reason: JSValueTraced
-    abortSteps: seq[JSObject]
+    abortSteps: seq[JSCallback]
     #TODO source/dependent signals
 
   AbortControllerObj = object
-    signal: AbortSignal
+    signal*: AbortSignal
 
-  AbortController = JSRef[AbortControllerObj]
+  AbortController* = JSRef[AbortControllerObj]
 
 # Forward declarations
 proc removeEventListener*(ctx: JSContext; eventTarget: EventTarget;
@@ -278,7 +278,7 @@ jsClassPublicDef(Event):
       jsmfget("composed", efComposed).} =
     flag in event.flags
 
-  proc initialize(this: Event; eventType: CAtom; bubbles, cancelable: bool) =
+  proc initialize*(this: Event; eventType: CAtom; bubbles, cancelable: bool) =
     this.flags.incl(efInitialized)
     this.flags.excl(efTrusted)
     this.target = EventTarget(nil)
@@ -571,9 +571,8 @@ proc queueRecord*(observer: MutationObserver; target: EventTarget;
     observer.records.add(record)
 
 jsClassDef(MutationObserver):
-  proc newMutationObserver(ctx: JSContext; callback: JSValueConst):
-      MutationObserver {.jsctor.} =
-    jsNew MutationObserverObj(callback: ctx.dupTraceObj(callback))
+  proc newMutationObserver(callback: JSCallback): MutationObserver {.jsctor.} =
+    jsNew MutationObserverObj(callback: callback)
 
   proc mark(rt: JSRuntime; this: MutationObserver; markFunc: JS_MarkFunc)
       {.jsmark.} =
@@ -739,7 +738,7 @@ proc addEventListener(ctx: JSContext; target: EventTarget; eventType: CAtom;
         data.toJSValueConstArray())
       if JS_IsException(fun):
         return err()
-      signal.abortSteps.add(traceObj(fun))
+      signal.abortSteps.add(traceCallback(fun))
   ok()
 
 proc flatten(ctx: JSContext; options: JSValueConst): Opt[bool] =
@@ -1023,7 +1022,7 @@ jsClassDef(AbortSignal):
 
   jsget AbortSignal, reason
 
-  proc aborted(this: AbortSignal): bool {.jsfget.} =
+  proc aborted*(this: AbortSignal): bool {.jsfget.} =
     not JS_IsUndefined(this.reason)
 
   proc mark(rt: JSRuntime; this: AbortSignal; markFun: JS_MarkFunc) {.
@@ -1047,13 +1046,13 @@ jsClassDef(AbortSignal):
 jsClassDef(AbortController):
   jsget AbortController, signal
 
-  proc newAbortController(ctx: JSContext): AbortController {.jsctor.} =
+  proc newAbortController*(): AbortController {.jsctor.} =
     let signal = jsNew AbortSignalObj(reason: trace(JS_UNDEFINED))
     if signal == nil:
       return AbortController(nil)
     jsNew AbortControllerObj(signal: signal)
 
-  proc abort(ctx: JSContext; this: AbortController;
+  proc abort*(ctx: JSContext; this: AbortController;
       reason: JSValueConst = JS_UNDEFINED): JSValue {.jsfunc.} =
     let signal = this.signal
     if not signal.aborted:
