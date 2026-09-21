@@ -701,8 +701,6 @@ proc nextElementSibling*(element: Element): Element
 proc postConnectionSteps(element: Element; ctx: JSContext)
 proc precedes(this, other: Element): bool
 proc previousElementSibling*(element: Element): Element
-proc reflectTokens*(element: Element; arr: var DOMTokenArray; name: StaticAtom;
-  value: string)
 proc removingSteps(element: Element)
 proc scriptingEnabled(element: Element): bool
 proc shadowRoot(this: Element): ShadowRoot
@@ -1016,7 +1014,7 @@ proc setEvent(ctx: JSContext; event: Event): Event {.exportc: "cha_$1".} =
     return res
   Event(nil)
 
-const WindowEvents* = [satError, satLoad, satFocus, satBlur]
+const WindowEvents* = [satError, satLoad, satFocus, satBlur, satMessage]
 
 proc isHTMLElementOf(this: Collection; node: Node): bool =
   let element = node as HTMLElement
@@ -1869,7 +1867,7 @@ proc mutationJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
       let this = trace(ctx.toJS(observer)) # cannot fail
       #TODO invoke (with all the ceremony that entails)
       let callback = JS_DupValue(ctx, observer.callback.value)
-      discard ?trace(ctx.callFree(callback, this.v, records.v))
+      discard ?trace(ctx.callFree(callback, this.v, records.v, this.v))
   return JS_UNDEFINED
 
 proc queueMutationJob(ctx: JSContext) =
@@ -1889,7 +1887,7 @@ proc queueMutationRecord(target: Node; ctx: JSContext; t: MutationRecordType;
   #TODO can we do this without actually traversing ancestors somehow?
   # (maybe link the last observer with parent's first observer?)
   for it in target.branch:
-    for el in target.asEventTarget.mutationObservers:
+    for el in it.asEventTarget.mutationObservers:
       var oldValue = false
       if oifSubtree notin el.flags and it != target:
         continue
@@ -2758,11 +2756,12 @@ proc replaceAll(parent: ParentNode; ctx: JSContext; node: Node) =
       let nodes = fragment.asParentNode.getChildList()
       for it in nodes:
         parent.insert(ctx, it, Node(nil), suppressObservers = true)
+      parent.queueTreeMutationRecord(ctx, nodes, removedNodes, Node(nil),
+        Node(nil))
     else:
       parent.insert(ctx, node, Node(nil), suppressObservers = true)
-  if node != nil:
-    parent.queueTreeMutationRecord(ctx, [node], removedNodes, Node(nil),
-      Node(nil))
+      parent.queueTreeMutationRecord(ctx, [node], removedNodes, Node(nil),
+        Node(nil))
   elif removedNodes.len > 0:
     parent.queueTreeMutationRecord(ctx, [], removedNodes, Node(nil), Node(nil))
 
@@ -3139,7 +3138,7 @@ jsClassDef(CharacterData):
   proc setData(ctx: JSContext; this: CharacterData; data: DOMStringNull) {.
       jsfset: "data".} =
     this.asNode.queueMutationRecord(ctx, mrtCharacterData, CAtomNull,
-      CAtomNull, this.data, true, "", [], [], Node(nil), Node(nil))
+      CAtomNull, this.data, false, "", [], [], Node(nil), Node(nil))
     this.data = newRefString(data)
 
   proc length(this: CharacterData): int {.jsfget.} =
@@ -5118,6 +5117,24 @@ proc reflectScriptAttr(element: Element; name: StaticAtom; value: string):
       return true
   false
 
+proc reflectTokens*(element: Element; arr: var DOMTokenArray; name: StaticAtom;
+    value: string) =
+  if value == "":
+    arr = DOMTokenArray(nil)
+  else:
+    var toks = newSeqOfCap[CAtom](16)
+    for x in value.split(AsciiWhitespace):
+      if x != "":
+        let a = x.toAtom()
+        if a notin toks:
+          toks.add(a)
+    arr = newDOMTokenArray(toks)
+  let list = element.getAccessor(name) as DOMTokenList
+  if list != nil:
+    # arr is guaranteed to outlive the DOMTokenList because the latter
+    # references element
+    list.toks = DOMTokenArrayView(arr)
+
 proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
     value: string) =
   case element.tagType
@@ -5525,24 +5542,6 @@ proc getDOMTokenList*(element: Element; arr: DOMTokenArray; name: StaticAtom):
       return list
     element.addAccessor(list.asElementAccessor, name)
   list
-
-proc reflectTokens*(element: Element; arr: var DOMTokenArray; name: StaticAtom;
-    value: string) =
-  if value == "":
-    arr = DOMTokenArray(nil)
-  else:
-    var toks = newSeqOfCap[CAtom](16)
-    for x in value.split(AsciiWhitespace):
-      if x != "":
-        let a = x.toAtom()
-        if a notin toks:
-          toks.add(a)
-    arr = newDOMTokenArray(toks)
-    let list = element.getAccessor(name) as DOMTokenList
-    if list != nil:
-      # arr is guaranteed to outlive the DOMTokenList because the latter
-      # references element
-      list.toks = DOMTokenArrayView(arr)
 
 proc shadowRoot(this: Element): ShadowRoot =
   this.internalFirst as ShadowRoot
