@@ -12,39 +12,53 @@ type
     jsyToStringTag = "toStringTag"
 
   JSStrRef* = enum
+    jstAcceptNode = "acceptNode"
+    jstBuffer = "buffer"
+    jstButton = "button"
+    jstConfig = "config"
+    jstContentType = "contentType"
+    jstCrypto = "crypto"
     jstDone = "done"
-    jstValue = "value"
-    jstNext = "next"
     jstEntries = "entries"
     jstForEach = "forEach"
-    jstKeys = "keys"
-    jstValues = "values"
-    jstScreen = "screen"
-    jstHistory = "history"
-    jstCrypto = "crypto"
-    jstNavigator = "navigator"
-    jstPlugins = "plugins"
-    jstMimeTypes = "mimeTypes"
-    jstPermissions = "permissions"
-    jstLocation = "location"
-    jstBuffer = "buffer"
-    jstAcceptNode = "acceptNode"
-    jstName = "name"
     jstHandleEvent = "handleEvent"
-    jstHref = "href"
-    jstOrigin = "origin"
-    jstProtocol = "protocol"
-    jstUsername = "username"
-    jstPassword = "password"
+    jstHash = "hash"
+    jstHistory = "history"
     jstHost = "host"
     jstHostname = "hostname"
-    jstPort = "port"
-    jstPathname = "pathname"
-    jstSearch = "search"
-    jstHash = "hash"
-    jstStack = "stack"
+    jstHref = "href"
+    jstKeys = "keys"
     jstLength = "length"
+    jstLocale = "locale"
+    jstLocation = "location"
+    jstMain = "main"
+    jstMimeTypes = "mimeTypes"
+    jstMods = "mods"
+    jstName = "name"
+    jstNavigator = "navigator"
+    jstNext = "next"
+    jstOpen = "open"
+    jstOptions = "options"
+    jstOrigin = "origin"
+    jstPassword = "password"
+    jstPathname = "pathname"
+    jstPermissions = "permissions"
+    jstPlugins = "plugins"
+    jstPort = "port"
+    jstPrompt = "prompt"
+    jstProtocol = "protocol"
     jstPrototype = "prototype"
+    jstScreen = "screen"
+    jstSearch = "search"
+    jstSelected = "selected"
+    jstStack = "stack"
+    jstT = "t"
+    jstUrl = "url"
+    jstUsername = "username"
+    jstValue = "value"
+    jstValues = "values"
+    jstX = "x"
+    jstY = "y"
 
   JSValueRef* = enum
     jsvArrayPrototypeForEach = "Array.prototype.forEach"
@@ -55,7 +69,6 @@ type
     jsvSet = "Set"
     jsvFunction = "Function"
     jsvIteratorPrototype = "Iterator.prototype"
-    jsvSymbol = "Symbol" # must be last
 
   BoundRefDestructor* = proc(x: pointer) {.nimcall, raises: [].}
 
@@ -126,24 +139,39 @@ proc getParent*(rtOpaque: JSRuntimeOpaque; class: JSClassID): JSClassID =
 proc newJSContextOpaque*(ctx: JSContext): JSContextOpaque =
   let opaque = create(JSContextOpaqueObj)
   opaque.global = JS_GetGlobalObject(ctx)
+  var fail = false
   let sym = JS_GetPropertyStr(ctx, opaque.global, "Symbol")
-  for s in JSSymbolRef:
-    let name = $s
-    let val = JS_GetPropertyStr(ctx, sym, cstring(name))
-    assert JS_IsSymbol(val)
-    opaque.symRefs[s] = JS_ValueToAtom(ctx, val)
-    JS_FreeValue(ctx, val)
+  if not JS_IsException(sym):
+    for s in JSSymbolRef:
+      let name = $s
+      let val = JS_GetPropertyStr(ctx, sym, cstring(name))
+      if not JS_IsException(val):
+        opaque.symRefs[s] = JS_ValueToAtom(ctx, val)
+        JS_FreeValue(ctx, val)
+      else:
+        fail = true
+    JS_FreeValue(ctx, sym)
+  else:
+    fail = true
   for s in JSStrRef:
     let ss = $s
-    opaque.strRefs[s] = JS_NewAtomLen(ctx, ss.toCStringConst,
-      csize_t(ss.len))
-  for s in JSValueRef.low..jsvSymbol.pred:
+    let atom = JS_NewAtomLen(ctx, ss.toCStringConst, csize_t(ss.len))
+    if atom == JS_ATOM_NULL:
+      fail = true
+    opaque.strRefs[s] = atom
+  for s, it in opaque.valRefs.mpairs:
     let ss = $s
-    let ret = JS_Eval(ctx, ss.toCStringConst, csize_t(ss.len),
+    it = JS_Eval(ctx, ss.toCStringConst, csize_t(ss.len),
       cstringConst("<init>"), 0)
-    assert not JS_IsException(ret)
-    opaque.valRefs[s] = ret
-  opaque.valRefs[jsvSymbol] = sym
+    if JS_IsException(it):
+      fail = true
+  if fail:
+    for it in opaque.valRefs:
+      JS_FreeValue(ctx, it)
+    JS_FreeValue(ctx, opaque.global)
+    {.cast(raises: [])}:
+      `=destroy`(opaque[])
+    return nil
   return opaque
 
 proc getOpaque*(ctx: JSContext): JSContextOpaque =
