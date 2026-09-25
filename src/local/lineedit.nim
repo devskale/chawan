@@ -149,19 +149,20 @@ proc selectEnd(edit: LineEdit): int =
     return i
   of lstLine: return edit.text.len
 
-proc generateOutput*(edit: LineEdit; hlcolor: CellColor): FixedGrid =
+proc generateOutput*(edit: LineEdit; hlcolor: CellColor;
+    grid: var FixedGrid) =
   edit.shiftView()
-  # Make the output grid +1 cell wide, so it covers the whole input area.
-  result = newFixedGrid(edit.promptw + edit.maxwidth + 1, 1)
   var x = 0
   for u in edit.prompt.points:
-    result[x].str.addUTF8(u)
+    grid[x] = FixedCell(str: u.toUTF8())
     x += u.width()
-    if x >= result.width: break
+    if x >= grid.width:
+      break
   for i in 0 ..< edit.padding:
-    if x < result.width:
-      result[x].str = " "
-      inc x
+    if x >= grid.width:
+      break
+    grid[x] = FixedCell(str: " ")
+    inc x
   var i = edit.shifti
   let selectStart = edit.selectStart
   let selectEnd = edit.selectEnd
@@ -175,27 +176,29 @@ proc generateOutput*(edit: LineEdit; hlcolor: CellColor): FixedGrid =
     let pi = i
     let u = edit.text.nextUTF8(i)
     let w = edit.width(u)
-    if x + w > result.width:
+    if x + w > grid.width:
       break
-    if not edit.hide:
+    let str = if not edit.hide:
       if u.isControlChar():
-        result[x].str = u.controlToVisual()
+        u.controlToVisual()
       else:
-        for j in pi ..< i:
-          result[x].str &= edit.text[j]
+        edit.text.toOpenArray(pi, i - 1).substr()
     else:
-      result[x].str &= '*'
-    result[x].format = format
+      "*"
+    grid[x] = FixedCell(str: str, format: format)
     x += w
+  while x < grid.width:
+    grid[x] = FixedCell()
+    inc x
 
 proc resolve(ctx: JSContext; edit: LineEdit; val: JSValue): JSValue =
-  let resolve = moveJSValue(edit.resolve)
-  return ctx.callSinkFree(resolve, JS_UNDEFINED, val)
+  let resolve = move(edit.resolve)
+  return ctx.callSink(resolve, JS_UNDEFINED, val)
 
 proc update(ctx: JSContext; edit: LineEdit): JSValue =
   if edit.update == nil:
     return JS_UNDEFINED
-  return ctx.call(edit.update.value, JS_UNDEFINED)
+  return ctx.call(edit.update, JS_UNDEFINED)
 
 proc deleteTextTo(edit: LineEdit; ei: int) =
   edit.text.delete(edit.cursori ..< ei)
