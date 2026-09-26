@@ -155,7 +155,11 @@ proc generateOutput*(edit: LineEdit; hlcolor: CellColor;
   var x = 0
   for u in edit.prompt.points:
     grid[x] = FixedCell(str: u.toUTF8())
-    x += u.width()
+    let nx = x + u.width()
+    inc x
+    while x < nx: # clear unset cells
+      grid[x] = FixedCell()
+      inc x
     if x >= grid.width:
       break
   for i in 0 ..< edit.padding:
@@ -176,7 +180,8 @@ proc generateOutput*(edit: LineEdit; hlcolor: CellColor;
     let pi = i
     let u = edit.text.nextUTF8(i)
     let w = edit.width(u)
-    if x + w > grid.width:
+    let nx = x + w
+    if nx > grid.width:
       break
     let str = if not edit.hide:
       if u.isControlChar():
@@ -186,19 +191,22 @@ proc generateOutput*(edit: LineEdit; hlcolor: CellColor;
     else:
       "*"
     grid[x] = FixedCell(str: str, format: format)
-    x += w
+    inc x
+    while x < nx: # clear unset cells
+      grid[x] = FixedCell()
+      inc x
   while x < grid.width:
     grid[x] = FixedCell()
     inc x
 
 proc resolve(ctx: JSContext; edit: LineEdit; val: JSValue): JSValue =
   let resolve = move(edit.resolve)
-  return ctx.callSink(resolve, JS_UNDEFINED, val)
+  return ctx.callSink(resolve, JS_UNDEFINED.vc, val)
 
 proc update(ctx: JSContext; edit: LineEdit): JSValue =
   if edit.update == nil:
     return JS_UNDEFINED
-  return ctx.call(edit.update, JS_UNDEFINED)
+  return ctx.call(edit.update, JS_UNDEFINED.vc)
 
 proc deleteTextTo(edit: LineEdit; ei: int) =
   edit.text.delete(edit.cursori ..< ei)
@@ -274,11 +282,11 @@ jsClassDef(LineEdit):
     return ctx.resolve(edit, JS_NULL)
 
   proc submit(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
-    let text = ctx.toJS(edit.text)
     if edit.hist.mtime == 0 and edit.text.len > 0:
       edit.hist.add(edit.text)
-    if JS_IsException(text):
-      return text
+    let text = ctx.toJS(edit.text)
+    if JS_IsException(text.vc):
+      return JS_EXCEPTION
     return ctx.resolve(edit, text)
 
   proc backspace(ctx: JSContext; edit: LineEdit): JSValue {.jsfunc.} =
