@@ -1067,12 +1067,6 @@ proc checkCORSRequest*(window: Window; input: Request): bool =
     return true
   if window.isSameOrigin(input.url.origin):
     return true
-  if window.settings.scripting != smApp:
-    #TODO I think the ideal solution here would be to check if the
-    # request & origin neither or both resolve to the local network,
-    # and then reject based on that.
-    # but that's hard, so for now I'll just gate CORS behind app mode.
-    return false
   #TODO redirect-taint
   let requestOrigin = $window.settings.origin
   if input.url.scheme != requestOrigin.until(':'):
@@ -3141,7 +3135,13 @@ jsClassDef(CharacterData):
     this.data = newRefString(data)
 
   proc length(this: CharacterData): int {.jsfget.} =
-    return ($this.data).utf16Len
+    var n = 0
+    for u in this.data.s.points:
+      if u < 0x10000: # ucs-2
+        n += 1
+      else: # surrogate
+        n += 2
+    n
 
   proc previousElementSibling(this: CharacterData): Element {.jsfget.} =
     return this.asNode.previousElementSiblingImpl
