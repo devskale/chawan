@@ -575,18 +575,17 @@ Pager.prototype.setLineEdit = async function(mode, prompt, obj) {
 Pager.prototype.searchNext = async function(n = 1) {
     const regex = this.regex;
     if (regex) {
-        let reverse = this.reverseSearch;
-        if (n < 0) {
+        if (this.reverseSearch)
             n = -n;
-            reverse = !reverse;
-        }
-        const fun = reverse ? "cursorPrevMatch" : "cursorNextMatch";
         const wrap = config.search.wrap;
         if (this.menu)
-            return this.menu[fun](this.regex, wrap, true, n);
+            return this.menu.cursorNextMatch(this.regex, wrap, true, n);
         const buffer = this.buffer;
         buffer.markPos0();
-        await buffer[fun](regex, wrap, true, n);
+        const y = buffer.cursory;
+        await buffer.cursorNextMatch(regex, wrap, true, n);
+        if ((y > buffer.cursory) != (n < 0))
+            pager.alert("Search wrapped");
         buffer.markPos();
     } else
         this.alert("No previous regular expression");
@@ -645,8 +644,9 @@ Pager.prototype.isearchForward = async function(reverse = false) {
                     let wrap = config.search.wrap;
                     const iface = buffer.iface;
                     if (iface != null) {
-                        const fun = reverse ? "findPrevMatch" : "findNextMatch";
-                        const [x, y, w] = await iface[fun](re, cx, cy, wrap, 1);
+                        const n = reverse ? -1 : 1;
+                        const [x, y, w] = await iface.findNextMatch(re, cx, cy,
+                                                                    wrap, n);
                         if (this.isearchIter === iter)
                             buffer.onMatch(x, y, w, false);
                     }
@@ -696,26 +696,9 @@ Pager.prototype.showFullAlert = function() {
 }
 
 /* private */
-Pager.prototype.setTab = function(buffer, tab) {
-    const removed = buffer.setTab(tab);
-    if (removed != null) {
-        if (removed.next != null)
-            removed.next.prev = removed.prev;
-        if (removed.prev != null)
-            removed.prev.next = removed.next;
-        if (this.tabHead == removed)
-            this.tabHead = removed.next;
-        removed.prev = removed.next = null;
-        /* tab cannot be null */
-        if (this.tabHead == null)
-            this.tab = this.tabHead = new Tab()
-    }
-}
-
-/* private */
 Pager.prototype.addBuffer = function(buffer) {
     this.navDirection = "next";
-    this.setTab(buffer, this.tab);
+    buffer.setTab(this.tab);
     this.setBuffer(buffer);
 }
 
@@ -737,7 +720,7 @@ Pager.prototype.addTab = function(buffer = "about:blank") {
     if (tab.next != null)
         tab.next.prev = tab;
     oldTab.next = tab;
-    pager.setTab(buffer, tab);
+    buffer.setTab(tab);
     this.setBuffer(buffer);
 }
 
@@ -1783,7 +1766,7 @@ Pager.prototype.deleteBuffer = function(buffer, setTarget = null) {
     if (buffer.replace != null)
         buffer.replace = buffer.replace.replaceRef = null;
     const wasCurrent = this.buffer == buffer;
-    this.setTab(buffer, null);
+    buffer.setTab(null);
     for (const name in this.pinned) {
         if (this.pinned[name] == buffer)
             this.pinned[name] = null;
@@ -1905,7 +1888,7 @@ const ReTextStart = /\S/gu;
                             nc.replace = replace;
                             replace.replaceRef = nc;
                         }
-                        nc.setLoadInfo("Redirecting to " + url);
+                        nc.#setLoadInfo("Redirecting to " + url);
                     }
                 }
             } else {
@@ -2093,7 +2076,7 @@ const ReTextStart = /\S/gu;
             if (visible && pager.bufferIface != this.iface)
                 pager.setVisibleBuffer(this);
             if (this.init.loadInfo != "") {
-                this.setLoadInfo("");
+                this.#setLoadInfo("");
                 if (visible && pager.alertState == "loadInfo") {
                     pager.alertState = "normal";
                     pager.queueStatusUpdate();
@@ -2134,13 +2117,13 @@ const ReTextStart = /\S/gu;
             const [n, len, bs] = await this.iface.load();
             switch (bs) {
             case "loadingPage":
-                this.setLoadInfo(`${Util.convertSize(n)} loaded`);
+                this.#setLoadInfo(`${Util.convertSize(n)} loaded`);
                 break;
             case "loadingStyle":
-                this.setLoadInfo(`${n}/${len} stylesheets loaded`);
+                this.#setLoadInfo(`${n}/${len} stylesheets loaded`);
                 break;
             case "loadingImages":
-                this.setLoadInfo(`${n}/${len} images loaded`);
+                this.#setLoadInfo(`${n}/${len} images loaded`);
                 break;
             default: /* loaded */
                 if (!this.iface.gotLines)
@@ -2340,9 +2323,18 @@ const ReTextStart = /\S/gu;
             else
                 tab.current.#append(this);
         }
-        if (oldTab != null && oldTab.current == null)
-            return oldTab;
-        return null;
+        if (oldTab != null && oldTab.current == null) {
+            if (oldTab.next != null)
+                oldTab.next.prev = oldTab.prev;
+            if (oldTab.prev != null)
+                oldTab.prev.next = oldTab.next;
+            if (pager.tabHead == oldTab)
+                pager.tabHead = oldTab.next;
+            oldTab.prev = oldTab.next = null;
+            /* tab cannot be null */
+            if (pager.tabHead == null)
+                pager.tab = pager.tabHead = new Tab()
+        }
     }
 
     /* private */ markPos0() {
@@ -2371,8 +2363,6 @@ const ReTextStart = /\S/gu;
     }
 
     /* private */ async cursorNextMatch(re, wrap, refresh, n) {
-        if (this.select)
-            return this.select.cursorNextMatch(re, wrap, n);
         const iface = this.iface;
         const cx = this.cursorx;
         const cy = this.cursory;
@@ -2383,21 +2373,19 @@ const ReTextStart = /\S/gu;
     }
 
     /* private */ async cursorPrevMatch(re, wrap, refresh, n) {
-        if (this.select)
-            return this.select.cursorPrevMatch(re, wrap, n);
         const iface = this.iface;
         const cx = this.cursorx;
         const cy = this.cursory;
         if (iface == null)
             return;
-        const [x, y, w] = await iface.findPrevMatch(re, cx, cy, wrap, n);
+        const [x, y, w] = await iface.findNextMatch(re, cx, cy, wrap, -n);
         this.onMatch(x, y, w, refresh);
     }
 
     /* private */ async #cursorPrevWordImpl(re, n = 1) {
         const cx = this.cursorx;
         const cy = this.cursory;
-        const [x, y, w] = await this.findPrevMatch(re, cx, cy, false, n);
+        const [x, y, w] = await this.findNextMatch(re, cx, cy, false, -n);
         if (y >= 0)
             this.setCursorXY(x + w - 1, y);
         else
@@ -2414,12 +2402,12 @@ const ReTextStart = /\S/gu;
             this.cursorLineEnd();
     }
 
-    /* public */ findPrevMatch(regex, x, y, wrap = false, n = 1) {
-        return this.iface.findPrevMatch(regex, x, y, wrap, n);
-    }
-
     /* public */ findNextMatch(regex, x, y, wrap = false, n = 1) {
         return this.iface.findNextMatch(regex, x, y, wrap, n);
+    }
+
+    /* public */ findPrevMatch(regex, x, y, wrap = false, n = 1) {
+        return this.findNextMatch(regex, x, y, wrap, -n);
     }
 
     /* private */ startSelection(t, mouse, x1 = undefined) {
@@ -2446,7 +2434,7 @@ const ReTextStart = /\S/gu;
         if (iface != null && iface.loadState != "loading")
             return;
         this.loadState = "canceled";
-        this.setLoadInfo("");
+        this.#setLoadInfo("");
         if (iface != null)
             iface.cancel();
         else {
@@ -2456,7 +2444,7 @@ const ReTextStart = /\S/gu;
         pager.alert("Canceled loading")
     }
 
-    /* private */ setLoadInfo(msg) {
+    #setLoadInfo(msg) {
         this.init.loadInfo = msg;
         pager.copyLoadInfo(this.init);
     }
@@ -2817,7 +2805,7 @@ const ReTextStart = /\S/gu;
         const iface = this.iface
         if (iface == null)
             return;
-        let p1 = iface.findPrevMatch(ReViWordStart, x + 1, y, false, 1);
+        let p1 = iface.findNextMatch(ReViWordStart, x + 1, y, false, -1);
         let p2 = iface.findNextMatch(ReViWordEnd, x - 1, y, false, 1);
         let [x1, y1, w1] = await p1;
         let [x2, y2, w2] = await p2;

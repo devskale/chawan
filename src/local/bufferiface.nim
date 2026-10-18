@@ -47,7 +47,6 @@ type
     bcFindNextMatch = "findNextMatch"
     bcFindNextParagraph = "findNextParagraph"
     bcFindPrevLink = "findPrevLink"
-    bcFindPrevMatch = "findPrevMatch"
     bcFindRevNthLink = "findRevNthLink"
     bcForceReshape = "forceReshape"
     bcGetLines = "getLines"
@@ -619,7 +618,7 @@ proc cursorDispX(iface: BufferInterface): int =
   let y = iface.cursory
   if not iface.lineLoaded(y):
     return 0
-  let line = iface.getLineStr(y)
+  let line {.cursor.} = iface.getLineStr(y)
   if line.len == 0:
     return 0
   var w = 0
@@ -1095,7 +1094,7 @@ jsClassPublicDef(BufferInterface):
     let y = iface.cursory
     if not iface.lineLoaded(y):
       return 0
-    let line = iface.getLineStr(y)
+    let line {.cursor.} = iface.getLineStr(y)
     var w = 0
     var i = 0
     let cc = iface.cursorx
@@ -1113,7 +1112,7 @@ jsClassPublicDef(BufferInterface):
     let y = iface.cursory
     if not iface.lineLoaded(y):
       return 0
-    let line = iface.getLineStr(y)
+    let line {.cursor.} = iface.getLineStr(y)
     var w = 0
     var i = 0
     let cc = iface.cursorx
@@ -1124,9 +1123,10 @@ jsClassPublicDef(BufferInterface):
 
   #TODO cache
   proc maxScreenWidth(iface: BufferInterface): int {.jsfunc.} =
-    result = 0
+    var n = 0
     for y in iface.fromy..iface.lastVisibleLine:
-      result = max(iface.getLineStr(y).width(), result)
+      n = max(iface.getLineStr(y).width(), n)
+    n
 
   proc currentLineWidth(iface: BufferInterface; s = 0; e = int.high): int
       {.jsfunc.} =
@@ -1356,14 +1356,20 @@ jsClassPublicDef(BufferInterface):
     let endy = y
     var y = y
     var n = n
-    var b = iface.cursorBytes(y, x + 1)
+    let forward = n > 0
+    if not forward:
+      n = -n
+    var b = if forward:
+      iface.cursorBytes(y, x + 1)
+    else:
+      iface.cursorStartByte(y, x)
     var first = true
     while true:
-      if y >= iface.numLines:
+      if forward and y >= iface.numLines or not forward and y < 0:
         if not wrap:
           break
         wrap = false
-        y = 0
+        y = if forward: 0 else: iface.numLines - 1
       if not iface.lineLoaded(y):
         let regex = bytecodeToRegex(bytecode, bytecodeLen)
         ctx.withPacketWriter iface, bcFindNextMatch, w:
@@ -1372,21 +1378,30 @@ jsClassPublicDef(BufferInterface):
           w.swrite(y)
           w.swrite(endy)
           w.swrite(wrap)
-          w.swrite(n)
+          w.swrite(if forward: n else: -n)
         return addPromise[BufferMatch](ctx, iface)
-      let s = iface.getLineStr(y)
-      let cap = bytecode.matchFirst(s, b)
+      let s {.cursor.} = iface.getLineStr(y)
+      if not forward and b < 0:
+        b = s.len
+      let cap = if forward:
+        bytecode.matchFirst(s, b)
+      else:
+        bytecode.matchLast(s.toOpenArray(0, b - 1))
       if cap.s >= 0:
         let x = s.width(0, cap.s)
         let w = s.toOpenArray(cap.s, cap.e - 1).width()
         dec n
         if n == 0:
           return ctx.toJS(BufferMatch(x: x, y: y, w: w))
-      b = 0
       if y == endy and not first:
         break
       first = false
-      inc y
+      if forward:
+        b = 0
+        inc y
+      else:
+        b = -1
+        dec y
     return ctx.toJS(BufferMatch(x: -1, y: -1))
 
   proc findNextParagraph(ctx: JSContext; iface: BufferInterface; y, n: int):
@@ -1405,52 +1420,6 @@ jsClassPublicDef(BufferInterface):
       w.swrite(y)
       w.swrite(n)
     return addPromise[PagePos](ctx, iface)
-
-  proc findPrevMatch(ctx: JSContext; iface: BufferInterface; re: JSValueConst;
-      x, y: int; wrap: bool; n: int): JSValue {.jsfunc.} =
-    var bytecodeLen: cint
-    let p = JS_GetRegExpBytecode(ctx, re, bytecodeLen)
-    if p == nil:
-      return JS_EXCEPTION
-    let bytecode = cast[REBytecode](p)
-    var wrap = wrap
-    let endy = y
-    var n = n
-    var y = y
-    var b = iface.cursorStartByte(y, x)
-    var first = true
-    while true:
-      if y < 0:
-        if not wrap:
-          break
-        y = iface.numLines - 1
-        wrap = false
-      if not iface.lineLoaded(y):
-        let regex = bytecodeToRegex(bytecode, bytecodeLen)
-        ctx.withPacketWriter iface, bcFindPrevMatch, w:
-          w.swrite(regex)
-          w.swrite(x)
-          w.swrite(y)
-          w.swrite(endy)
-          w.swrite(wrap)
-          w.swrite(n)
-        return addPromise[BufferMatch](ctx, iface)
-      let s = iface.getLineStr(y)
-      if b < 0:
-        b = s.len
-      let cap = bytecode.matchLast(s.toOpenArray(0, b - 1))
-      if cap.s >= 0:
-        let x = s.width(0, cap.s)
-        let w = s.toOpenArray(cap.s, cap.e - 1).width()
-        dec n
-        if n == 0:
-          return ctx.toJS(BufferMatch(x: x, y: y, w: w))
-      dec y
-      if y == endy and not first:
-        break
-      first = false
-      b = -1
-    return ctx.toJS(BufferMatch(x: -1, y: -1))
 
   proc findRevNthLink(ctx: JSContext; iface: BufferInterface; x, y, n: int):
       JSValue {.jsfunc.} =
@@ -1485,10 +1454,10 @@ jsClassPublicDef(BufferInterface):
       discard
     return addPromise[string](ctx, iface)
 
-  proc gotoAnchor(ctx: JSContext; iface: BufferInterface; anchor: string;
+  proc gotoAnchor(ctx: JSContext; iface: BufferInterface; anchor: USVString;
       autofocus, target: bool): JSValue {.jsfunc.} =
     ctx.withPacketWriter iface, bcGotoAnchor, w:
-      w.swrite(anchor)
+      w.swrite(anchor.toOpenArray())
       w.swrite(autofocus)
       w.swrite(target)
     return addPromise[GotoAnchorResult](ctx, iface)

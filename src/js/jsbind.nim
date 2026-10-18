@@ -195,7 +195,7 @@ proc getForeignPtr*(val: JSValueConst): pointer =
   # ugly hack, but it does the job
   # (we always get a JSValue for mark, so we discriminate unbound foreign
   # objects from bound ones by passing the former with a module tag)
-  if JS_VALUE_GET_TAG(val) == JS_TAG_MODULE:
+  if JS_VALUE_GET_TAG(val) == JS_TAG_FOREIGN_OBJ:
     return JS_VALUE_GET_PTR(val)
   return JS_GetOpaque(val, JS_GetClassID(val))
 
@@ -688,7 +688,7 @@ proc addFixParam(gen: var JSFuncGenerator; id: NimNode) =
       var `s` {.noinit.}: pointer
       if dl != fjErr and ctx.fromJSObjectNull(`id`, `s`) == fjErr:
         dl = fjErr
-    else:
+    elif `t` isnot JSAtom:
       when `t` is SomeNumber or `t` is enum or `t` is bool:
         var `s` {.noinit.}: `t`
       else:
@@ -703,6 +703,8 @@ proc addFixParam(gen: var JSFuncGenerator; id: NimNode) =
       cast[JSCallback](`s`)
     elif `t` is JSObjectNil:
       cast[JSObjectNil](`s`)
+    elif `t` is JSAtom:
+      `id`
     else:
       `s`
   )

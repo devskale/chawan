@@ -5,6 +5,7 @@ import std/macros
 import std/typetraits
 
 import js/constcharp
+import js/cutils
 import js/jsopaque
 import js/jsref
 import js/jstypes
@@ -17,6 +18,7 @@ import utils/twtstr
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var string): JSCode
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var DOMString): JSCode
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var DOMStringNull): JSCode
+proc fromJS*(ctx: JSContext; val: JSValueConst; res: var USVString): JSCode
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var ByteString): JSCode
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var int16): JSCode
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var int32): JSCode
@@ -142,8 +144,8 @@ proc isSequence*(ctx: JSContext; o: JSValueConst): Opt[bool] =
   let prop = ?ctx.getProperty(o, jsyIterator)
   ok(not JS_IsUndefined(prop))
 
-proc fromJS(ctx: JSContext; cs: cstringConst; len: csize_t; narrow: bool;
-    res: var string): JSCode =
+proc fromJS(ctx: JSContext; cs: cstringConst; len: csize_t; res: var string):
+    JSCode =
   if cs == nil:
     return fjErr
   if len > csize_t(int.high):
@@ -154,16 +156,13 @@ proc fromJS(ctx: JSContext; cs: cstringConst; len: csize_t; narrow: bool;
   res = newString(ilen)
   if ilen > 0:
     chaArrayCopy(res, cstring(cs).toOpenArray(0, ilen - 1))
-    if not narrow:
-      res.replaceSurrogates()
   JS_FreeCString(ctx, cs)
   fjOk
 
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var string): JSCode =
   var len {.noinit.}: csize_t
-  let cs = JS_ToCStringLen(ctx, len, val) # cstring
-  let narrow = JS_GetNarrowStringBuffer(val) != nil
-  ctx.fromJS(cs, len, narrow, res)
+  let cs = JS_ToCStringUSVLen(ctx, len, val) # cstring
+  ctx.fromJS(cs, len, res)
 
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var DOMString):
     JSCode =
@@ -176,6 +175,19 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var DOMString):
     JS_ThrowRangeError(ctx, "string length out of bounds")
     return fjErr
   res = initDOMString(cstring(cs), cast[int](len))
+  fjOk
+
+proc fromJS*(ctx: JSContext; val: JSValueConst; res: var USVString):
+    JSCode =
+  var len {.noinit.}: csize_t
+  let cs = JS_ToCStringUSVLen(ctx, len, val) # cstring
+  if cs == nil:
+    return fjErr
+  if len > csize_t(int.high):
+    JS_FreeCString(ctx, cs)
+    JS_ThrowRangeError(ctx, "string length out of bounds")
+    return fjErr
+  res = initUSVString(cstring(cs), cast[int](len))
   fjOk
 
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var DOMStringNull):
@@ -265,18 +277,14 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var float64): JSCode =
 type SeqItResult* = enum
   sirDone, sirContinue, sirException
 
-template err(t: typedesc[SeqItResult]): SeqItResult =
-  sirException
-
 proc fromJSSeqIt*(ctx: JSContext; iter, nextMethod: JSValueConst;
     res: var JSValue): SeqItResult =
-  let next = ?trace(JS_Call(ctx, nextMethod, iter, 0, nil))
-  let doneVal = ?ctx.getProperty(next.vc, jstDone)
-  var done: bool
-  ?ctx.fromJSFree(doneVal.toJSValue(), done)
-  if not done:
-    let val = ?ctx.getProperty(next.vc, jstValue)
-    res = val.toJSValue()
+  var done: JS_BOOL
+  let val = JS_IteratorNext(ctx, iter, nextMethod, done)
+  if JS_IsException(val.vc):
+    return sirException
+  res = val
+  if done == 0:
     return sirContinue
   sirDone
 
@@ -682,14 +690,14 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var JSObjectNil):
     return fjErr
   fjOk
 
-proc fromJS*(ctx: JSContext; atom: JSAtom; res: var JSAtom): JSCode =
-  res = atom
-  fjOk
-
 proc fromJS*(ctx: JSContext; atom: JSAtom; res: var string): JSCode =
+  let str = JS_AtomToString(ctx, atom);
+  if JS_IsException(str.vc):
+    return fjErr
   var len {.noinit.}: csize_t
-  let cs = JS_AtomToCStringLen(ctx, len, atom)
-  ctx.fromJS(cs, len, narrow = false, res)
+  let cs = JS_ToCStringUSVLen(ctx, len, str.vc);
+  JS_FreeValue(ctx, str)
+  ctx.fromJS(cs, len, res)
 
 proc fromJS*(ctx: JSContext; atom: JSAtom; res: var DOMString): JSCode =
   var len {.noinit.}: csize_t

@@ -254,7 +254,7 @@ type
     invalid*: bool
     match*: CollectionMatchFun
     snapshot*: seq[Node]
-    atoms*: seq[CAtom]
+    atoms*: DOMTokenArray
 
   NodeIteratorLike = JSRef[NodeIteratorLikeObj]
 
@@ -2811,7 +2811,7 @@ proc getElementsByTagNameImpl(root: ParentNode; tagName: CAtom):
   let this = newHTMLCollection(root.asNode, match, cmSubtree,
     cnGetElementsByTagName)
   if this != nil:
-    this.atoms = @[tagName]
+    this.atoms = newDOMTokenArray(tagName)
   this
 
 proc getElementsByClassNameImpl(root: ParentNode; classNames: DOMString):
@@ -2823,10 +2823,11 @@ proc getElementsByClassNameImpl(root: ParentNode; classNames: DOMString):
   let this = newHTMLCollection(root.asNode, isElementWithClass, cmSubtree,
     cnGetElementsByClassName)
   if this != nil:
-    this.atoms.add(param)
+    var atoms = @[param]
     for class in classNames.toOpenArray().split(AsciiWhitespace):
       if class.len > 0:
-        this.atoms.add(class.toAtom())
+        atoms.add(class.toAtom())
+    this.atoms = newDOMTokenArray(atoms)
   this
 
 proc insert1(parent: ParentNode; ctx: JSContext; node, before: Node;
@@ -2972,8 +2973,10 @@ proc getChildrenOf(node: ParentNode; name: CollectionName;
   if collection == nil:
     collection = newHTMLCollection(node.asNode, isHTMLElementOf, mode, name)
     if collection != nil:
+      var atoms: seq[CAtom] = @[]
       for tag in tags:
-        collection.atoms.add(tag.view())
+        atoms.add(tag.view())
+      collection.atoms = newDOMTokenArray(atoms)
   collection
 
 jsClassPublicDef(ParentNode): # fake class
@@ -3451,7 +3454,7 @@ proc getElementsById*(document: Document; id: CAtom): JSRootRef =
             cnGetElementsById
           )
           if collection != nil:
-            collection.atoms = @[id]
+            collection.atoms = newDOMTokenArray(id)
           return collection.asRootRef
         return cast[Element](it).asRootRef
   JSRootRef(nil)
@@ -3766,12 +3769,12 @@ jsClassPublicDef(Document):
     let cookie = response.stream.readAll()
     return ctx.toJS(cookie)
 
-  proc setCookie(ctx: JSContext; document: Document; cookie: string):
+  proc setCookie(ctx: JSContext; document: Document; cookie: USVString):
       Opt[void] {.jsfset: "cookie".} =
     let window = ?ctx.getCookieWindow(document)
     if window == nil:
       return ok()
-    let headers = newHeaders(hgRequest, {"Set-Cookie": cookie})
+    let headers = newHeaders(hgRequest, {"Set-Cookie": $cookie})
     let request = newRequest("x-cha-cookie:set", hmPost, headers,
       credentials = cmOmit, internal = true)
     let response = window.loader.doRequest(request)
@@ -3910,7 +3913,7 @@ jsClassPublicDef(Document):
       cnGetElementsByName
     )
     if this != nil:
-      this.atoms = @[name]
+      this.atoms = newDOMTokenArray(name)
     this
 
   proc getElementsByTagName(document: Document; tagName: CAtom):
@@ -3979,13 +3982,12 @@ jsClassPublicDef(Document):
       JSValue {.jsfunc.} =
     var text = ""
     for arg in args:
-      var s: DOMString
+      # Note: this diverges from behavior in other browsers, but I'm not
+      # convinced that modifying the parser to adjust for this edge case is
+      # worth the trouble.
+      var s: USVString
       ?ctx.fromJS(arg, s)
       text &= s.toOpenArray()
-    # Note: this diverges from behavior in other browsers, but I'm not
-    # convinced that modifying the parser to adjust for this edge case is
-    # worth the trouble.
-    text.replaceSurrogates()
     if document.isxml:
       return JS_ThrowDOMException(ctx, "InvalidStateError",
         "document.write not supported in XML documents")
@@ -6241,7 +6243,7 @@ jsClassDef(CSSStyleDeclaration):
   proc getter(ctx: JSContext; this: CSSStyleDeclaration; atom: JSAtom): JSValue
       {.jsgetownprop.} =
     var u: uint32
-    var ds: DOMString
+    var ds: USVString
     case ctx.fromIdx(atom, u, ds)
     of fiIdx:
       if u < this.length:
@@ -6249,12 +6251,12 @@ jsClassDef(CSSStyleDeclaration):
       return JS_UNINITIALIZED
     of fiStr:
       if ds.toOpenArray() == "cssFloat":
-        return ctx.toJS(this.getPropertyValue(initDOMStringLit("float")))
+        return ctx.toJS(this.getPropertyValue(initUSVStringLit("float")))
       if ds.toOpenArray().isSupportedProperty():
         return ctx.toJS(this.getPropertyValue(ds))
       let s = ds.toOpenArray().camelToKebabCase()
       if s.isSupportedProperty():
-        return ctx.toJS(this.getPropertyValue(s.toDOMStringView()))
+        return ctx.toJS(this.getPropertyValue(s.toUSVStringView()))
       return JS_UNINITIALIZED
     of fiErr: return JS_EXCEPTION
 
@@ -6262,7 +6264,7 @@ jsClassDef(CSSStyleDeclaration):
       name: CSSOMString): JSValue {.jsfunc.} =
     ?ctx.checkReadOnly(this)
     let name = name.toOpenArray().toLowerAscii()
-    let value = this.getPropertyValue(name.toDOMStringView())
+    let value = this.getPropertyValue(name.toUSVStringView())
     let sh = shorthandType(name)
     if sh != cstNone:
       for t in ShorthandMap[sh]:
@@ -6310,7 +6312,7 @@ jsClassDef(CSSStyleDeclaration):
       if name == "cssFloat":
         name = "float"
       name = camelToKebabCase(name)
-      return ctx.setProperty(this, name.toDOMStringView(), value)
+      return ctx.setProperty(this, name.toUSVStringView(), value)
     of fiErr:
       return JS_EXCEPTION
 
