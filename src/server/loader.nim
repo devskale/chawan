@@ -174,7 +174,6 @@ type
 
   LoaderConfig* = object
     cgiDir*: seq[string]
-    w3mCGICompat*: bool
     tmpdir*: string
     configDir*: string
     dataDir*: string
@@ -404,14 +403,6 @@ proc close(ctx: var LoaderContext; client: ClientHandle) =
 proc isPrivileged(ctx: LoaderContext; client: ClientHandle): bool =
   return ctx.pagerClient == client
 
-proc canRewriteForCGICompat(ctx: LoaderContext; path: string): bool =
-  if path.startsWith("/cgi-bin/") or path.startsWith("/$LIB/"):
-    return true
-  for dir in ctx.config.cgiDir:
-    if path.startsWith(dir):
-      return true
-  return false
-
 proc rejectHandle(ctx: var LoaderContext; handle: InputHandle;
     code: ConnectionError; msg = "") =
   case ctx.sendResult(handle, int(code), msg)
@@ -535,8 +526,6 @@ proc pushBuffer(ctx: var LoaderContext; handle: InputHandle;
 
 proc redirectToFile(ctx: var LoaderContext; output: OutputHandle;
     targetPath: string; fileOutput: var OutputHandle; osent: var uint64): bool =
-  fileOutput = nil
-  osent = 0
   discard mkdir(cstring(ctx.config.tmpdir), 0o700)
   discard unlink(cstring(targetPath))
   let ps = newPosixStream(targetPath, O_CREAT or O_WRONLY or O_EXCL, 0o600)
@@ -1458,12 +1447,6 @@ proc loadXChaCookie(ctx: var LoaderContext; client: ClientHandle;
 proc loadResource(ctx: var LoaderContext; client: ClientHandle;
     config: LoaderClientConfig; request: var RawRequest; handle: InputHandle;
     resource: bool) =
-  if ctx.config.w3mCGICompat and request.url.schemeType == stFile:
-    let path = request.url.pathname.percentDecode()
-    if ctx.canRewriteForCGICompat(path):
-      let url = parseURL0("cgi-bin:" & path & request.url.search)
-      if url != nil:
-        request.url = url
   var typeBuf = request.url.scheme & '/' &
     ($request.httpMethod).toLowerAscii()
   var netPathSeen = false
@@ -1672,8 +1655,8 @@ proc redirectToFileCmd(ctx: var LoaderContext; rclient: ClientHandle;
   let output = ctx.findOutput(outputId, rclient)
   var success = false
   if output != nil:
-    var fileOutput: OutputHandle
-    var sent: uint64
+    var fileOutput: OutputHandle = nil
+    var sent = 0'u64
     success = ctx.redirectToFile(output, targetPath, fileOutput, sent)
     let contentLen = if output.parent != nil:
       output.parent.contentLen
