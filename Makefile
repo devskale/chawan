@@ -384,7 +384,7 @@ $(OBJDIR)/chagashi_test:
 	unxz $(OBJDIR)/chagashi_test/data.tar.xz
 	tar xf $(OBJDIR)/chagashi_test/data.tar -C $(OBJDIR)/chagashi_test
 
-test_flags = --verbosity:0 -d:test
+test_flags = --verbosity:0 -d:test -t:-DDUMP_LEAKS=1
 
 test/charset/%: test/charset/%.nim
 	$(NIMC) $(test_flags) --nimcache:"$(OBJDIR)/test_$(notdir $@)" -o:$@ $<
@@ -414,7 +414,7 @@ test/nim/tjsref: src/js/jsref.nim src/js/jsbind.nim src/js/jsutils.nim \
 	src/js/quickjs.nim
 test/nim/tjsbind: src/js/fromjs.nim src/js/jsbind.nim src/js/jsnull.nim \
 	src/js/jspropenumlist.nim src/js/jsref.nim src/js/jstypes.nim \
-	src/js/jsutils.nim src/js/quickjs.nim src/js/tojs.nim src/utils/opt.nim
+	src/js/jsutils.nim src/js/quickjs.nim src/js/tojs.nim $(twtstr)
 test/nim/tlibregexp: src/js/libregexp.nim
 test/nim/tchahash: src/utils/chahash.nim
 test/nim/tchaos: $(chaos)

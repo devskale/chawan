@@ -1,7 +1,6 @@
 import std/options
 import std/os
 import std/posix
-import std/strutils
 import std/unittest
 
 import js/fromjs
@@ -14,6 +13,7 @@ import js/jsutils
 import js/quickjs
 import js/tojs
 import utils/opt
+import utils/twtstr
 
 proc evalConvert[T](ctx: JSContext; code: string; file = "<input>";
     flags = JS_EVAL_TYPE_GLOBAL): Result[T, string] =
@@ -430,13 +430,14 @@ val"""
 proc testJSPropEnumList() =
   let rt = newGlobalJSRuntime()
   let ctx = rt.newJSContext()
-  var list = newJSPropertyEnumList(ctx, 0)
-  list.add(1)
-  list.add("hi")
-  list.add(3)
-  list.add(4)
-  assert list.len == 4
-  js_free(ctx, list.buffer)
+  block:
+    var list = newJSPropertyEnumList(ctx, 0)
+    list.add(1)
+    list.add("hi")
+    list.add(3)
+    list.add(4)
+    assert list.len == 4
+    JS_FreePropertyEnum(ctx, list.buffer, list.len)
   ctx.free()
   rt.free()
 
