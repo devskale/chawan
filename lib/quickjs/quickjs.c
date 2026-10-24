@@ -3098,7 +3098,7 @@ static int JS_InitAtoms(JSRuntime *rt)
     rt->atom_count = 0;
     rt->atom_size = 0;
     rt->atom_free_index = 0;
-    if (JS_ResizeAtomHash(rt, 512))     /* there are at least 504 predefined atoms */
+    if (JS_ResizeAtomHash(rt, 1024))     /* there are at least 516 predefined atoms */
         return -1;
 
     p = js_atom_init;
@@ -3243,7 +3243,7 @@ static JSAtom __JS_NewAtom(JSRuntime *rt, JSString *str, int atom_type)
 
         /* alloc new with size progression 3/2:
            4 6 9 13 19 28 42 63 94 141 211 316 474 711 1066 1599 2398 3597 5395 8092
-           preallocating space for predefined atoms (at least 504).
+           preallocating space for predefined atoms (at least 516).
          */
         new_size = max_int(711, rt->atom_size * 3 / 2);
         if (new_size > JS_ATOM_MAX)
@@ -4652,6 +4652,18 @@ void JS_FreeCStringRT(JSRuntime *rt, const char *ptr)
     /* purposely removing constness */
     p = container_of(ptr, JSString, u);
     JS_FreeValueRT(rt, JS_MKPTR(JS_TAG_STRING, p));
+}
+
+const char *JS_DupCStringRT(JSRuntime *rt, const char *ptr)
+{
+    JSString *p;
+    JSValue val;
+
+    if (!ptr)
+        return NULL;
+    p = container_of(ptr, JSString, u);
+    val = JS_DupValueRT(rt, JS_MKPTR(JS_TAG_STRING, p));
+    return (const char *)JS_VALUE_GET_STRING(val)->u.str8;
 }
 
 /* create a string from a narrow Unicode (latin-1) buffer */
@@ -9930,7 +9942,8 @@ static JSValue js_create_array(JSContext *ctx, int len, JSValueConst *tab)
     return obj;
 }
 
-static JSValue js_create_array_free(JSContext *ctx, int len, JSValue *tab)
+/* consumes values in tab */
+JSValue JS_NewArrayFrom(JSContext *ctx, int len, const JSValue *tab)
 {
     JSValue obj;
     JSObject *p;
@@ -18701,7 +18714,7 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
         CASE(OP_array_from):
             call_argc = get_u16(pc);
             pc += 2;
-            ret_val = js_create_array_free(ctx, call_argc, sp - call_argc);
+            ret_val = JS_NewArrayFrom(ctx, call_argc, sp - call_argc);
             sp -= call_argc;
             if (unlikely(JS_IsException(ret_val)))
                 goto exception;
@@ -19935,11 +19948,10 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                             goto exception;
                         }
                         sf->cur_pc = pc;
-                        ret_val = JS_ToPropertyKey(ctx, sp[-1]);
+                        ret_val = JS_ToPropertyKeyFree(ctx, *--sp);
                         if (JS_IsException(ret_val))
                             goto exception;
-                        JS_FreeValue(ctx, sp[-1]);
-                        sp[-1] = ret_val;
+                        *sp++ = ret_val;
                         break;
                     }
                     sf->cur_pc = pc;
@@ -19994,18 +20006,17 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 JSValue val;
                 JSAtom atom;
                 sf->cur_pc = pc;
-                atom = JS_ValueToAtom(ctx, sp[-1]);
+                atom = JS_ValueToAtomFree(ctx, *--sp);
                 if (unlikely(atom == JS_ATOM_NULL))
                     goto exception;
-                val = JS_GetPropertyInternal(ctx, sp[-2], atom, sp[-3], FALSE);
+                val = JS_GetPropertyInternal(ctx, sp[-1], atom, sp[-2], FALSE);
                 JS_FreeAtom(ctx, atom);
                 if (unlikely(JS_IsException(val)))
                     goto exception;
                 JS_FreeValue(ctx, sp[-1]);
                 JS_FreeValue(ctx, sp[-2]);
-                JS_FreeValue(ctx, sp[-3]);
-                sp[-3] = val;
-                sp -= 2;
+                sp[-2] = val;
+                sp -= 1;
             }
             BREAK;
 
@@ -20064,13 +20075,18 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 int ret;
                 JSAtom atom;
                 sf->cur_pc = pc;
-                atom = JS_ValueToAtom(ctx, sp[-2]);
-                if (unlikely(atom == JS_ATOM_NULL))
+                atom = JS_ValueToAtomFree(ctx, sp[-2]);
+                if (unlikely(atom == JS_ATOM_NULL)) {
+                    JS_FreeValue(ctx, sp[-1]);
+                    sp -= 2;
                     goto exception;
+                }
                 if (unlikely(JS_IsUndefined(sp[-3]))) {
                     if (is_strict_mode(ctx)) {
                         JS_ThrowReferenceErrorNotDefined(ctx, atom);
                         JS_FreeAtom(ctx, atom);
+                        JS_FreeValue(ctx, sp[-1]);
+                        sp -= 2;
                         goto exception;
                     } else {
                         sp[-3] = JS_DupValue(ctx, ctx->global_obj);
@@ -20080,17 +20096,20 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 if (unlikely(ret <= 0)) {
                     if (unlikely(ret < 0)) {
                         JS_FreeAtom(ctx, atom);
+                        JS_FreeValue(ctx, sp[-1]);
+                        sp -= 2;
                         goto exception;
                     }
                     if (is_strict_mode(ctx)) {
                         JS_ThrowReferenceErrorNotDefined(ctx, atom);
                         JS_FreeAtom(ctx, atom);
+                        JS_FreeValue(ctx, sp[-1]);
+                        sp -= 2;
                         goto exception;
                     }
                 }
                 ret = JS_SetPropertyInternal(ctx, sp[-3], atom, sp[-1], sp[-3], JS_PROP_THROW_STRICT);
                 JS_FreeAtom(ctx, atom);
-                JS_FreeValue(ctx, sp[-2]);
                 JS_FreeValue(ctx, sp[-3]);
                 sp -= 3;
                 if (unlikely(ret < 0))
@@ -20107,15 +20126,17 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                     JS_ThrowTypeErrorNotAnObject(ctx);
                     goto exception;
                 }
-                atom = JS_ValueToAtom(ctx, sp[-2]);
-                if (unlikely(atom == JS_ATOM_NULL))
+                atom = JS_ValueToAtomFree(ctx, sp[-2]);
+                if (unlikely(atom == JS_ATOM_NULL)) {
+                    JS_FreeValue(ctx, sp[-1]);
+                    sp -= 2;
                     goto exception;
+                }
                 ret = JS_SetPropertyInternal(ctx, sp[-3], atom, sp[-1], sp[-4],
                                              JS_PROP_THROW_STRICT);
                 JS_FreeAtom(ctx, atom);
                 JS_FreeValue(ctx, sp[-4]);
                 JS_FreeValue(ctx, sp[-3]);
-                JS_FreeValue(ctx, sp[-2]);
                 sp -= 4;
                 if (ret < 0)
                     goto exception;
@@ -20933,11 +20954,10 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
                 break;
             default:
                 sf->cur_pc = pc;
-                ret_val = JS_ToPropertyKey(ctx, sp[-1]);
+                ret_val = JS_ToPropertyKeyFree(ctx, *--sp);
                 if (JS_IsException(ret_val))
                     goto exception;
-                JS_FreeValue(ctx, sp[-1]);
-                sp[-1] = ret_val;
+                *sp++ = ret_val;
                 break;
             }
             BREAK;

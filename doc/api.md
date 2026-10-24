@@ -541,6 +541,13 @@ Following properties (functions/getters) are defined by `Buffer`:
   "prev" return the next/previous buffer respectively, while "any" returns
   either "prev", or if it's null, "next".
 
+`cancel()`
+: Stop loading this buffer.
+
+  If no connection to the URL has been established yet, this closes the
+  buffer.  Otherwise, the buffer is preserved, but without loading any more
+  data or resources.
+
 `url`
 : Getter for the buffer's URL.  Note: this returns a `URL` object, not a
   string.
@@ -694,6 +701,10 @@ which public methods are:
 
 `select()`
 : Select the previous menu item defined using `item()` or `menu()`.
+
+`border(borderStyle)`
+: Set the border style.  `borderStyle` must be a valid CSS border style
+  enumeration such as "dotted" or "double".
 
 ### LineEdit
 
