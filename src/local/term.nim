@@ -5,6 +5,8 @@ import std/termios
 
 import config/config
 import config/conftypes
+import css/cell
+import css/color
 import encoding/charset
 import encoding/decoder
 import encoding/encoder
@@ -13,9 +15,7 @@ import io/dynstream
 import io/poll
 import js/jsref
 import server/loaderiface
-import server/blob
-import css/cell
-import css/color
+import utils/chaos
 import utils/opt
 import utils/strwidth
 import utils/twtstr
@@ -101,7 +101,7 @@ type
     scrolled: bool # sixel only: set if screen was scrolled since printing
     preludeLen: int
     kittyId: uint
-    data: Blob
+    data: MaybeMappedMemory
     next: CanvasImage
 
   TerminalPage {.acyclic.} = ref object
@@ -1641,7 +1641,7 @@ proc processOutputString*(term: Terminal; s: openArray[char];
     return ok()
   if not trackCursor:
     term.unsetCursorPos()
-  if s.validateUTF8Surr() != -1:
+  if s.validateUTF8() != -1:
     if trackCursor:
       inc term.frame.cursorx
     return term.write('?')
@@ -2096,13 +2096,15 @@ iterator updateImages*(term: Terminal; bufWidth, bufHeight: int): CanvasImage =
       prev = image
       image = image.next
 
-proc updateImage*(image: CanvasImage; data: Blob; preludeLen: int) =
+proc updateImage*(image: CanvasImage; data: MaybeMappedMemory;
+    preludeLen: int) =
   image.data = data
   image.preludeLen = preludeLen
   image.dims.erry2 = image.dims.erry
 
-proc newCanvasImage*(data: Blob; pid, preludeLen: int; bmp: NetworkBitmap;
-    dims: CanvasImageDimensions; transparent: bool): CanvasImage =
+proc newCanvasImage*(data: MaybeMappedMemory; pid, preludeLen: int;
+    bmp: NetworkBitmap; dims: CanvasImageDimensions; transparent: bool):
+    CanvasImage =
   CanvasImage(
     pid: pid,
     bmp: bmp,
@@ -2182,10 +2184,8 @@ proc outputSixelImage(term: Terminal; x, y: int; image: CanvasImage;
 
 proc outputSixelImage(term: Terminal; x, y: int; image: CanvasImage):
     Opt[void] =
-  var p = cast[ptr UncheckedArray[char]](image.data.buffer)
-  if image.data.size > 0:
-    let H = image.data.size - 1
-    ?term.outputSixelImage(x, y, image, p.toOpenArray(0, H))
+  if image.data.len > 0:
+    ?term.outputSixelImage(x, y, image, image.data.toOpenArray())
   ok()
 
 proc outputKittyImage(term: Terminal; x, y: int; image: CanvasImage):
@@ -2213,8 +2213,8 @@ proc outputKittyImage(term: Terminal; x, y: int; image: CanvasImage):
   outs &= ",i=" & $image.kittyId
   const MaxBytes = 4096 * 3 div 4
   var i = MaxBytes
-  let p = cast[ptr UncheckedArray[uint8]](image.data.buffer)
-  let L = image.data.size
+  let p = image.data.p
+  let L = image.data.len
   let m = if i < L: '1' else: '0'
   outs &= ",a=T,f=100,m=" & m & ';'
   outs.btoa(p.toOpenArray(0, min(L, i) - 1))

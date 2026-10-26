@@ -101,7 +101,7 @@ type
     state*: CachedImageState
     width*: int
     height*: int
-    data*: Blob # mmapped blob of image data
+    data*: MaybeMappedMemory # mmapped blob of image data
     cacheId*: int # cache id of the file backing "data"
     bmp*: NetworkBitmap
     # Following variables are always 0 in kitty mode; they exist to support
@@ -1473,10 +1473,10 @@ jsClassPublicDef(BufferInterface):
       discard
     return addPromise[LoadResult](ctx, iface)
 
-  proc readSuccess(ctx: JSContext; iface: BufferInterface; s: string; fd: cint):
-      JSValue {.jsfunc.} =
+  proc readSuccess(ctx: JSContext; iface: BufferInterface; s: USVString;
+      fd: cint): JSValue {.jsfunc.} =
     ctx.withPacketWriter iface, bcReadSuccess, w:
-      w.swrite(s)
+      w.swrite(s.toOpenArray())
       let hasfd = fd != -1
       w.swrite(hasfd)
       if hasfd:

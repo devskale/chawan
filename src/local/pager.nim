@@ -38,7 +38,6 @@ import local/bufferiface
 import local/lineedit
 import local/select
 import local/term
-import server/blob
 import server/connectionerror
 import server/forkserver
 import server/headers
@@ -754,13 +753,8 @@ proc loadCachedImage3(opaque: RootRef; response: Response) =
   if mem == nil:
     loader.removeCachedItem(env.cacheId)
     return
-  let blob = newBlob(mem.p, mem.len, "image/x-sixel",
-    (proc(opaque, p: pointer) =
-      deallocMem(cast[MaybeMappedMemory](opaque))
-    ), mem
-  )
   env.iface.queueDraw()
-  cachedImage.data = blob
+  cachedImage.data = mem
   cachedImage.state = cisLoaded
   cachedImage.cacheId = cacheId
   cachedImage.transparent =
@@ -1076,7 +1070,7 @@ proc defaultEnv(pager: Pager): seq[EnvVar] =
 
 proc setEnvVars0(pager: Pager; env: openArray[EnvVar]): Opt[void] =
   for it in env:
-    ?twtstr.setEnv(it.name, it.value)
+    ?setEnv(it.name, it.value)
   ok()
 
 proc setEnvVars(pager: Pager; env: openArray[EnvVar]) =
@@ -2059,7 +2053,7 @@ jsClassDef(Pager):
 
   # private
   proc setLineEdit0(ctx: JSContext; pager: Pager; mode: LineMode;
-      prompt: sink string; obj = JS_UNDEFINED.vc): JSValue {.jsfunc.} =
+      prompt: USVString; obj = JS_UNDEFINED.vc): JSValue {.jsfunc.} =
     var current = ""
     var hide = false
     var update = JSCallback(nil)
@@ -2070,7 +2064,7 @@ jsClassDef(Pager):
     var reject: JSCallback
     let res = ?ctx.newPromiseCapability(resolve, reject)
     let hist = pager.getHist(mode)
-    let lineEdit = readLine(prompt, current, pager.attrs.width, hide, hist,
+    let lineEdit = readLine($prompt, current, pager.attrs.width, hide, hist,
       pager.luctx, update, resolve)
     if lineEdit == nil:
       return JS_ThrowOutOfMemory(ctx)
@@ -2224,8 +2218,8 @@ jsClassDef(Pager):
     pager.askPromise = move(resolve)
     res.toJSValue()
 
-  proc fitAskPrompt(pager: Pager; prompt0: sink string): string {.jsfunc.} =
-    var prompt = prompt0
+  proc fitAskPrompt(pager: Pager; prompt: USVString): string {.jsfunc.} =
+    var prompt = $prompt
     let choice = " (y/n)"
     let maxw = pager.status.grid.width - choice.width()
     var w = 0
@@ -2256,12 +2250,10 @@ jsClassDef(Pager):
     return JS_FALSE
 
   # private
-  proc startMousePaste(pager: Pager) {.jsfunc.} =
-    pager.mousePaste = true
-
-  # private
-  proc stopMousePaste(pager: Pager) {.jsfunc.} =
-    pager.mousePaste = false
+  proc toggleMousePaste(pager: Pager; b: bool) {.
+      jsmfunc("startMousePaste", true),
+      jsmfunc("stopMousePaste", false).} =
+    pager.mousePaste = b
 
   # private
   proc copyLoadInfo(pager: Pager; init: BufferInit) {.jsfunc.} =
@@ -2400,7 +2392,7 @@ jsClassDef(Pager):
     pager.addConsole0(close = true)
 
   # private
-  proc saveTo(pager: Pager; init: BufferInit; path: DOMString): bool
+  proc saveTo(pager: Pager; init: BufferInit; path: USVString): bool
       {.jsfunc.} =
     if pager.loader.redirectToFile(init.istreamOutputId, $path, init.url):
       pager.loader.resume(init.istreamOutputId)
@@ -2521,8 +2513,8 @@ jsClassDef(Pager):
     return ctx.jsQuit(pager, 1)
 
   # private
-  proc addHist(pager: Pager; mode: LineMode; s: sink string) {.jsfunc.} =
-    pager.getHist(mode).add(s)
+  proc addHist(pager: Pager; mode: LineMode; s: USVString) {.jsfunc.} =
+    pager.getHist(mode).add($s)
 
   # private
   proc applyMailcap(ctx: JSContext; pager: Pager; init: BufferInit;
@@ -2637,9 +2629,11 @@ jsClassDef(Pager):
     ok()
 
   # private
-  proc addMailcapEntry(pager: Pager; init: BufferInit; cmd: sink string;
+  proc addMailcapEntry(pager: Pager; init: BufferInit; cmd: USVString;
       flag: MailcapFlag) {.jsfunc.} =
-    pager.saveEntry(init.shortContentType, MailcapEntry(cmd: cmd, flags: {flag}))
+    pager.saveEntry(init.shortContentType, MailcapEntry(
+      cmd: $cmd, flags: {flag}
+    ))
 
   # private
   proc findMailcapPrevNext(pager: Pager; init: BufferInit; i: int):
