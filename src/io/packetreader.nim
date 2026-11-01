@@ -1,10 +1,11 @@
 # TODO:
-# * use custom code instead of PacketCode?
 # * impose a sensible limit on packet size
 # * allocation errors?  (I think they have to be handled differently...)
 
 {.push raises: [].}
 
+when NimMajor >= 2:
+  import std/assertions
 import std/posix
 import std/typetraits
 

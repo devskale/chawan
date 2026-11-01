@@ -1,5 +1,7 @@
 {.push raises: [].}
 
+when NimMajor >= 2:
+  import std/assertions
 import std/algorithm
 import std/macros
 import std/typetraits
@@ -222,6 +224,13 @@ proc fromJS*(ctx: JSContext; val: JSValueConst; res: var ByteString):
   var len {.noinit.}: csize_t
   let cs = JS_ToCStringLen(ctx, len, val) # cstring
   ctx.fromJS(cs, len, res)
+
+proc fromJS*(ctx: JSContext; val: JSValueConst; res: var CStringNZ): JSCode =
+  let cs = JS_ToCStringNZ(ctx, val)
+  if cs == nil:
+    return fjErr
+  res = CStringNZ(p: cstring(cs))
+  fjOk
 
 proc fromJS*(ctx: JSContext; val: JSValueConst; res: var int16): JSCode =
   var n {.noinit.}: int32

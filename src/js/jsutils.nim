@@ -2,6 +2,9 @@
 
 {.push raises: [].}
 
+when NimMajor >= 2:
+  import std/assertions
+
 import js/constcharp
 import js/cutils
 import js/dtoa
@@ -123,14 +126,6 @@ proc callSink*(ctx: JSContext; funcObj: sink JSCallback; this: JSValueConst;
   let res = JS_Call(ctx, funcObj.value, this, cast[cint](argv.len),
     argv.toJSValueConstArray())
   ctx.freeValues(argv)
-  res
-
-proc callSinkThis*(ctx: JSContext; funcObj: sink JSCallback; this: JSValue;
-    argv: varargs[JSValue]): JSValue =
-  ## Call `funcObj` with the this value `this` and parameters `argv`, then
-  ## free each element of `argv` as well as `this`.
-  let res = ctx.callSink(funcObj, this.vc, argv)
-  JS_FreeValue(ctx, this)
   res
 
 proc invoke*(ctx: JSContext; val: JSObject; atom: JSAtom;
