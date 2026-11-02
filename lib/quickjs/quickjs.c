@@ -34,7 +34,7 @@
 #include <math.h>
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
-#elif defined(__linux__) || defined(__GLIBC__)
+#elif defined(__linux__) || defined(__GLIBC__) || defined(__HAIKU__) || defined(__NetBSD__)
 #include <malloc.h>
 #elif defined(__FreeBSD__)
 #include <malloc_np.h>
@@ -68,7 +68,7 @@
 
 /* define to include Atomics.* operations which depend on the OS
    threads */
-#if !defined(__EMSCRIPTEN__) && !defined(CHA_BUILD)
+#if !defined(__EMSCRIPTEN__) && !defined(CONFIG_NO_ATOMICS)
 #define CONFIG_ATOMICS
 #endif
 
@@ -380,6 +380,9 @@ struct JSRuntime {
     JSSharedArrayBufferFunctions sab_funcs;
     /* see JS_SetStripInfo() */
     uint8_t strip_flags;
+
+    /* callback for getTimezoneOffset */
+    JSTimezoneOffsetFunc *get_timezone_offset;
     
     /* Shape hash table */
     int shape_hash_bits;
@@ -1406,6 +1409,7 @@ static JSVarRef *js_global_object_find_uninitialized_var(JSContext *ctx, JSObjec
 static int typed_array_init(JSContext *ctx, JSValueConst obj,
                             JSValue buffer, uint64_t offset, uint64_t len,
                             BOOL track_rab);
+static int js_get_timezone_offset_def(void *opaque, int64_t time);
 
 
 static const JSClassExoticMethods js_arguments_exotic_methods;
@@ -2086,6 +2090,7 @@ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)
     rt->malloc_ctx.mf = *mf;
     rt->malloc_ctx.malloc_state = ms;
     rt->malloc_gc_threshold = 256 * 1024;
+    rt->get_timezone_offset = js_get_timezone_offset_def;
 
     init_list_head(&rt->context_list);
     init_list_head(&rt->gc_obj_list);
@@ -2141,19 +2146,16 @@ void JS_SetRuntimeOpaque(JSRuntime *rt, void *opaque)
 /* default memory allocation functions with memory limitation */
 static size_t js_def_malloc_usable_size(const void *ptr)
 {
-#ifdef CHA_BUILD
-    return 0;
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
     return malloc_size(ptr);
 #elif defined(_WIN32)
     return _msize((void *)ptr);
-#elif defined(__EMSCRIPTEN__) || defined(__OpenBSD__)
+#elif defined(__EMSCRIPTEN__)
     return 0;
-#elif defined(__linux__) || defined(__GLIBC__)
+#elif defined(__linux__) || defined(__GLIBC__) || defined(__HAIKU__) || defined(__NetBSD__) || defined(__FreeBSD__)
     return malloc_usable_size((void *)ptr);
 #else
-    /* change this to `return 0;` if compilation fails */
-    return malloc_usable_size((void *)ptr);
+    return 0;
 #endif
 }
 
@@ -4587,6 +4589,14 @@ JSValue JS_NewStringLen(JSContext *ctx, const char *buf, size_t buf_len)
     return JS_EXCEPTION;
 }
 
+/* create a string from a narrow Unicode (latin-1) buffer */
+JSValue JS_NewNarrowStringLen(JSContext *ctx, const char *buf, size_t buf_len)
+{
+    if (buf_len > JS_STRING_LEN_MAX)
+        return JS_ThrowInternalError(ctx, "string too long");
+    return js_new_string8_len(ctx, buf, buf_len);
+}
+
 static JSValue JS_ConcatString3(JSContext *ctx, const char *str1,
                                 JSValue str2, const char *str3)
 {
@@ -4765,6 +4775,30 @@ const char *JS_ToCStringNZ(JSContext *ctx, JSValueConst val1)
     return str;
 }
 
+const char *JS_ToCStringNarrowLen(JSContext *ctx, size_t *plen,
+                                  JSValueConst value)
+{
+    JSValue str;
+    JSString *p;
+
+    str = JS_ToString(ctx, value);
+    if (JS_IsException(str))
+        goto fail;
+    p = JS_VALUE_GET_STRING(value);
+    if (p->is_wide_char) {
+        JS_ThrowTypeError(ctx, "invalid character in string");
+        JS_FreeValue(ctx, str);
+        goto fail;
+    }
+    if (plen)
+        *plen = p->len;
+    return (const char *)p->u.str8;
+fail:
+    if (plen)
+        *plen = 0;
+    return NULL;
+}
+
 void JS_FreeCString(JSContext *ctx, const char *ptr)
 {
     JS_FreeCStringRT(ctx->rt, ptr);
@@ -4790,29 +4824,6 @@ const char *JS_DupCStringRT(JSRuntime *rt, const char *ptr)
     p = container_of(ptr, JSString, u);
     val = JS_DupValueRT(rt, JS_MKPTR(JS_TAG_STRING, p));
     return (const char *)JS_VALUE_GET_STRING(val)->u.str8;
-}
-
-/* create a string from a narrow Unicode (latin-1) buffer */
-JSValue JS_NewNarrowStringLen(JSContext *ctx, const char *buf, size_t buf_len)
-{
-    if (buf_len > JS_STRING_LEN_MAX)
-        return JS_ThrowInternalError(ctx, "string too long");
-    return js_new_string8_len(ctx, buf, buf_len);
-}
-
-uint8_t *JS_GetNarrowStringBuffer(JSValueConst value)
-{
-    if (JS_VALUE_GET_TAG(value) != JS_TAG_STRING ||
-        JS_VALUE_GET_STRING(value)->is_wide_char)
-        return NULL;
-    return JS_VALUE_GET_STRING(value)->u.str8;
-}
-
-uint32_t JS_GetStringLength(JSValueConst value)
-{
-    if (unlikely(JS_VALUE_GET_TAG(value) != JS_TAG_STRING))
-        return 0;
-    return JS_VALUE_GET_STRING(value)->len;
 }
 
 static int memcmp16_8(const uint16_t *src1, const uint8_t *src2, int len)
@@ -8629,14 +8640,13 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
     func = js_autoinit_func_table[id];
     /* 'func' shall not modify the object properties 'pr' */
     val = func(realm, p, prop, pr->u.init.opaque);
-    js_autoinit_free(ctx->rt, pr);
-    prs->flags &= ~JS_PROP_TMASK;
-    pr->u.value = JS_UNDEFINED;
     if (JS_IsException(val))
         return -1;
     if (id == JS_AUTOINIT_ID_MODULE_NS &&
         JS_VALUE_GET_TAG(val) == JS_TAG_STRING) {
         /* WARNING: a varref is returned as a string  ! */
+        js_autoinit_free(ctx->rt, pr);
+        prs->flags &= ~JS_PROP_TMASK;
         prs->flags |= JS_PROP_VARREF;
         pr->u.var_ref = JS_VALUE_GET_PTR(val);
         js_rc(pr->u.var_ref)->ref_count++;
@@ -8648,11 +8658,16 @@ static int JS_AutoInitProperty(JSContext *ctx, JSObject *p, JSAtom prop,
             JS_FreeValue(ctx, val);
             return -1;
         }
+        js_autoinit_free(ctx->rt, pr);
+        prs->flags &= ~JS_PROP_TMASK;
         prs->flags |= JS_PROP_VARREF;
         pr->u.var_ref = var_ref;
         var_ref->value = val; 
         var_ref->is_const = !(prs->flags & JS_PROP_WRITABLE);
     } else {
+        js_autoinit_free(ctx->rt, pr);
+        prs->flags &= ~JS_PROP_TMASK;
+        pr->u.value = JS_UNDEFINED;
         pr->u.value = val;
     }
     return 0;
@@ -9885,6 +9900,44 @@ static int call_setter(JSContext *ctx, JSObject *setter,
     }
 }
 
+static void delete_property_no_move(JSContext *ctx, JSObject *p, JSShapeProperty *pr_del)
+{
+    JSShape *sh;
+    JSShapeProperty *pr, *lpr, *prop;
+    JSProperty *pr1;
+    intptr_t h, h1;
+
+    sh = p->shape;
+    h1 = pr_del->atom & sh->prop_hash_mask;
+    h = sh->hash_table[h1];
+    prop = get_shape_prop(sh);
+    lpr = NULL;
+    while (h != 0) {
+        pr = &prop[h - 1];
+        if (pr == pr_del) {
+            /* remove property */
+            if (lpr) {
+                lpr->hash_next = pr->hash_next;
+            } else {
+                sh->hash_table[h1] = pr->hash_next;
+            }
+            sh->deleted_prop_count++;
+            /* free the entry */
+            pr1 = &p->prop[h - 1];
+            free_property(ctx->rt, pr1, pr->flags);
+            JS_FreeAtom(ctx, pr->atom);
+            /* put default values */
+            pr->flags = 0;
+            pr->atom = JS_ATOM_NULL;
+            pr1->u.value = JS_UNDEFINED;
+            return;
+        }
+        lpr = pr;
+        h = pr->hash_next;
+    }
+    abort();
+}
+
 /* set the array length and remove the array elements if necessary. */
 static int set_array_length(JSContext *ctx, JSObject *p, JSValue val,
                             int flags)
@@ -9937,7 +9990,7 @@ static int set_array_length(JSContext *ctx, JSObject *p, JSValue val,
                 }
             } else {
                 /* faster to iterate thru all the properties. Need two
-                   passes in case one of the property is not
+                   passes in case one of the properties is not
                    configurable */
                 cur_len = len;
                 for(i = 0, pr = get_shape_prop(sh); i < sh->prop_count;
@@ -9951,18 +10004,25 @@ static int set_array_length(JSContext *ctx, JSObject *p, JSValue val,
                     }
                 }
 
+                if (js_shape_prepare_update(ctx, p, NULL))
+                    return -1;
+                sh = p->shape;
+                
                 for(i = 0, pr = get_shape_prop(sh); i < sh->prop_count;
                     i++, pr++) {
                     if (pr->atom != JS_ATOM_NULL &&
                         JS_AtomIsArrayIndex(ctx, &idx, pr->atom)) {
                         if (idx >= cur_len) {
-                            /* remove the property */
-                            delete_property(ctx, p, pr->atom);
-                            /* WARNING: the shape may have been modified */
-                            sh = p->shape;
-                            pr = get_shape_prop(sh) + i;
+                            /* remove the property without compaction (cannot fail) */
+                            delete_property_no_move(ctx, p, pr);
                         }
                     }
+                }
+
+                /* compact the properties if too many deleted properties */
+                if (sh->deleted_prop_count >= 8 &&
+                    sh->deleted_prop_count >= ((unsigned)sh->prop_count / 2)) {
+                    compact_properties(ctx, p);
                 }
             }
         } else {
@@ -33554,6 +33614,11 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
     JSVarDef *vd;
     BOOL is_pseudo_var, is_arg_scope;
 
+    if (s->var_ref_count >= JS_MAX_LOCAL_VARS) {
+        JS_ThrowInternalError(ctx, "too many local variables");
+        return -1;
+    }
+
     label_done = -1;
 
     /* XXX: could be simpler to use a specific function to
@@ -34902,6 +34967,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
             pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                          NULL, NULL, pos_next);
             JS_FreeAtom(ctx, var_name);
+            if (pos_next < 0)
+                goto fail;
             break;
         case OP_scope_make_ref:
             {
@@ -34915,6 +34982,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
                 pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                              bc_buf, ls, pos_next);
                 JS_FreeAtom(ctx, var_name);
+                if (pos_next < 0)
+                    goto fail;
             }
             break;
         case OP_scope_get_private_field:
@@ -48199,9 +48268,8 @@ static const JSCFunctionListEntry js_math_obj[] = {
 
 /* OS dependent. d = argv[0] is in ms from 1970. Return the difference
    between UTC time and local time 'd' in minutes */
-static int getTimezoneOffset(int64_t time)
+static int js_get_timezone_offset_def(void *opaque, int64_t time)
 {
-#ifndef CHA_BUILD
     time_t ti;
     int res;
 
@@ -48252,9 +48320,11 @@ static int getTimezoneOffset(int64_t time)
     }
 #endif
     return res;
-#else
-    return 0;
-#endif
+}
+
+static inline int getTimezoneOffset(JSContext *ctx, int64_t time)
+{
+    return ctx->rt->get_timezone_offset(ctx->rt->user_opaque, time);
 }
 
 #if 0
@@ -48311,6 +48381,12 @@ static void js_regexp_finalizer(JSRuntime *rt, JSValue val)
         JS_FreeValueRT(rt, JS_MKPTR(JS_TAG_STRING, re->bytecode));
     if (re->pattern != NULL)
         JS_FreeValueRT(rt, JS_MKPTR(JS_TAG_STRING, re->pattern));
+}
+
+static int lre_check_stack_overflow(void *opaque, size_t alloca_size)
+{
+    JSRuntime *rt = opaque;
+    return js_check_stack_overflow(rt, alloca_size);
 }
 
 /* create a string containing the RegExp bytecode */
@@ -48380,7 +48456,9 @@ static JSValue js_compile_regexp(JSContext *ctx, JSValueConst pattern,
     if (!str)
         return JS_EXCEPTION;
     re_bytecode_buf = lre_compile(&re_bytecode_len, error_msg,
-                                  sizeof(error_msg), str, len, re_flags, ctx);
+                                  sizeof(error_msg), str, len, re_flags,
+                                  js_realloc_rt_dbuf, lre_check_stack_overflow,
+                                  ctx->rt);
     JS_FreeCString(ctx, str);
     if (!re_bytecode_buf) {
         JS_ThrowSyntaxError(ctx, "%s", error_msg);
@@ -48759,35 +48837,12 @@ fail:
     return JS_EXCEPTION;
 }
 
-int lre_check_stack_overflow(void *opaque, size_t alloca_size)
+static int lre_check_timeout(void *opaque)
 {
-    JSContext *ctx = opaque;
-
-    if (!ctx)
-        return 0;
-    return js_check_stack_overflow(ctx->rt, alloca_size);
-}
-
-int lre_check_timeout(void *opaque)
-{
-    JSContext *ctx = opaque;
-    JSRuntime *rt;
-
-    if (!ctx)
-        return 0;
-    rt = ctx->rt;
+    JSRuntime *rt = opaque;
     return (rt->interrupt_handler && 
             rt->interrupt_handler(rt, rt->interrupt_opaque));
 }
-
-#ifndef CHA_BUILD
-void *lre_realloc(void *opaque, void *ptr, size_t size)
-{
-    JSContext *ctx = opaque;
-    /* No JS exception is raised here */
-    return js_realloc_rt(ctx->rt, ptr, size);
-}
-#endif
 
 static JSValue js_regexp_escape(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
@@ -48890,6 +48945,7 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
     const char *group_name_ptr;
     JSObject *p_obj;
     JSAtom group_name;
+    JSLREExecFunctions lre_funcs;
     
     if (!re)
         return JS_EXCEPTION;
@@ -48927,9 +48983,11 @@ static JSValue js_regexp_exec(JSContext *ctx, JSValueConst this_val,
     if (last_index > str->len) {
         rc = 2;
     } else {
+        lre_funcs.lre_realloc = js_realloc_rt_dbuf;
+        lre_funcs.lre_check_timeout = lre_check_timeout;
         rc = lre_exec(capture, re_bytecode,
-                      str_buf, last_index, str->len,
-                      shift, ctx);
+                      str_buf, last_index, str->len, shift,
+                      &lre_funcs, ctx->rt);
     }
     if (rc != 1) {
         if (rc >= 0) {
@@ -49112,6 +49170,7 @@ static JSValue js_regexp_replace(JSContext *ctx, JSValueConst this_val, JSValueC
     JSString *rp = JS_VALUE_GET_STRING(rep_val);
     const char *group_name_ptr;
     BOOL fullUnicode;
+    JSLREExecFunctions lre_funcs;
     
     if (!re)
         return JS_EXCEPTION;
@@ -49150,12 +49209,15 @@ static JSValue js_regexp_replace(JSContext *ctx, JSValueConst this_val, JSValueC
     shift = str->is_wide_char;
     str_buf = str->u.str8;
     next_src_pos = 0;
+    lre_funcs.lre_realloc = js_realloc_rt_dbuf;
+    lre_funcs.lre_check_timeout = lre_check_timeout;
     for (;;) {
         if (last_index > str->len) {
             ret = 0;
         } else {
             ret = lre_exec(capture, re_bytecode,
-                           str_buf, last_index, str->len, shift, ctx);
+                           str_buf, last_index, str->len, shift,
+                           &lre_funcs, ctx->rt);
         }
         if (ret != 1) {
             if (ret >= 0) {
@@ -52289,8 +52351,8 @@ int JS_AddIntrinsicProxy(JSContext *ctx)
     if (JS_SetPropertyFunctionList(ctx, obj1, js_proxy_funcs,
                                    countof(js_proxy_funcs)))
         goto fail;
-    if (JS_DefinePropertyValueStr(ctx, ctx->global_obj, "Proxy",
-                                  obj1, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE) < 0)
+    if (JS_DefinePropertyValue(ctx, ctx->global_obj, JS_ATOM_Proxy,
+                               obj1, JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE) < 0)
         goto fail;
     return 0;
  fail:
@@ -55829,7 +55891,7 @@ static __exception int get_date_fields(JSContext *ctx, JSValueConst obj,
     } else {
         d = dval;     /* assuming -8.64e15 <= dval <= -8.64e15 */
         if (is_local) {
-            tz = -getTimezoneOffset(d);
+            tz = -getTimezoneOffset(ctx, d);
             d += tz * 60000;
         }
     }
@@ -55875,7 +55937,8 @@ static double time_clip(double t) {
 
 /* The spec mandates the use of 'double' and it specifies the order
    of the operations */
-static double set_date_fields(double fields[minimum_length(7)], int is_local) {
+static double set_date_fields(JSContext *ctx, double fields[minimum_length(7)],
+                              int is_local) {
     double y, m, dt, ym, mn, day, h, s, milli, time, tv;
     int yi, mi, i;
     int64_t days;
@@ -55927,12 +55990,14 @@ static double set_date_fields(double fields[minimum_length(7)], int is_local) {
     /* adjust for local time and clip */
     if (is_local) {
         int64_t ti = tv < INT64_MIN ? INT64_MIN : tv >= 0x1p63 ? INT64_MAX : (int64_t)tv;
-        tv += getTimezoneOffset(ti) * 60000;
+        tv += getTimezoneOffset(ctx, ti) * 60000;
     }
     return time_clip(tv);
 }
 
-static double set_date_fields_checked(double fields[minimum_length(7)], int is_local)
+static double set_date_fields_checked(JSContext *ctx,
+                                      double fields[minimum_length(7)],
+                                      int is_local)
 {
     int i;
     double a;
@@ -55944,7 +56009,7 @@ static double set_date_fields_checked(double fields[minimum_length(7)], int is_l
         if (i == 0 && fields[0] >= 0 && fields[0] < 100)
             fields[0] += 1900;
     }
-    return set_date_fields(fields, is_local);
+    return set_date_fields(ctx, fields, is_local);
 }
 
 static JSValue get_date_field(JSContext *ctx, JSValueConst this_val,
@@ -56000,7 +56065,7 @@ static JSValue set_date_field(JSContext *ctx, JSValueConst this_val,
         return JS_NAN; /* thisTimeValue is NaN */
 
     if (res && argc > 0)
-        d = set_date_fields(fields, is_local);
+        d = set_date_fields(ctx, fields, is_local);
 
     return JS_SetThisDateValue(ctx, this_val, d);
 }
@@ -56173,7 +56238,7 @@ static JSValue js_date_constructor(JSContext *ctx, JSValueConst new_target,
             if (JS_ToFloat64(ctx, &fields[i], argv[i]))
                 return JS_EXCEPTION;
         }
-        val = set_date_fields_checked(fields, 1);
+        val = set_date_fields_checked(ctx, fields, 1);
     }
 has_val:
 #if 0
@@ -56213,7 +56278,7 @@ static JSValue js_Date_UTC(JSContext *ctx, JSValueConst this_val,
         if (JS_ToFloat64(ctx, &fields[i], argv[i]))
             return JS_EXCEPTION;
     }
-    return JS_NewFloat64(ctx, set_date_fields_checked(fields, 0));
+    return JS_NewFloat64(ctx, set_date_fields_checked(ctx, fields, 0));
 }
 
 /* Date string parsing */
@@ -56672,7 +56737,7 @@ static JSValue js_Date_parse(JSContext *ctx, JSValueConst this_val,
         if (valid) {
             for(i = 0; i < 7; i++)
                 fields1[i] = fields[i];
-            d = set_date_fields(fields1, is_local) - fields[8] * 60000;
+            d = set_date_fields(ctx, fields1, is_local) - fields[8] * 60000;
             rv = JS_NewFloat64(ctx, d);
         }
     }
@@ -56719,6 +56784,11 @@ static JSValue js_date_Symbol_toPrimitive(JSContext *ctx, JSValueConst this_val,
     return JS_ToPrimitive(ctx, obj, hint_num | JS_HINT_FORCE_ORDINARY);
 }
 
+void JS_SetTimezoneOffsetFunc(JSRuntime *rt, JSTimezoneOffsetFunc func)
+{
+    rt->get_timezone_offset = func;
+}
+
 static JSValue js_date_getTimezoneOffset(JSContext *ctx, JSValueConst this_val,
                                          int argc, JSValueConst *argv)
 {
@@ -56731,7 +56801,7 @@ static JSValue js_date_getTimezoneOffset(JSContext *ctx, JSValueConst this_val,
         return JS_NAN;
     else
         /* assuming -8.64e15 <= v <= -8.64e15 */
-        return JS_NewInt64(ctx, getTimezoneOffset((int64_t)trunc(v)));
+        return JS_NewInt64(ctx, getTimezoneOffset(ctx, (int64_t)trunc(v)));
 }
 
 static JSValue js_date_getTime(JSContext *ctx, JSValueConst this_val,
