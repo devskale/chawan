@@ -3942,6 +3942,24 @@ jsClassPublicDef(Document):
           return element as HTMLElement
     HTMLElement(nil)
 
+  # https://html.spec.whatwg.org/multipage/obsolete.html#Document-partial
+  proc getBodyColorAttr(document: Document; magic: StaticAtom): string {.
+      jsmfget("bgColor", satBgcolor), jsmfget("fgColor", satText),
+      jsmfget("linkColor", satLink), jsmfget("vlinkColor", satVlink),
+      jsmfget("alinkColor", satAlink).} =
+    let body = document.body.asElement
+    if body != nil:
+      return body.attr(magic)
+    return ""
+
+  proc setBodyColorAttr(ctx: JSContext; document: Document; magic: StaticAtom;
+      s: DOMStringNull) {.jsmfset("bgColor", satBgcolor),
+      jsmfset("fgColor", satText), jsmfset("linkColor", satLink),
+      jsmfset("vlinkColor", satVlink), jsmfset("alinkColor", satAlink).} =
+    let body = document.body.asElement
+    if body != nil:
+      body.setAttr(ctx, magic, s)
+
   proc title*(document: Document): string {.jsfget.} =
     let root = document.documentElement
     let title = if root != nil and root.tagType(satNamespaceSVG) == ttSvg:
@@ -4067,8 +4085,9 @@ jsClassPublicDef(Document):
     this.asParentNode.moveBeforeImpl(ctx, node, child)
 
   # https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#document-write-steps
-  proc write(ctx: JSContext; document: Document; args: varargs[JSValueConst]):
-      JSValue {.jsfunc.} =
+  proc write(ctx: JSContext; document: Document; nl: bool;
+      args: varargs[JSValueConst]): JSValue {.jsmfunc("write", false),
+      jsmfunc("writeln", true).} =
     var text = ""
     for arg in args:
       # Note: this diverges from behavior in other browsers, but I'm not
@@ -4077,6 +4096,8 @@ jsClassPublicDef(Document):
       var s: USVString
       ?ctx.fromJS(arg, s)
       text &= s.toOpenArray()
+    if nl:
+      text &= '\n'
     if document.isxml:
       return JS_ThrowDOMException(ctx, "InvalidStateError",
         "document.write not supported in XML documents")
