@@ -5,6 +5,7 @@ when NimMajor >= 2:
 import std/posix
 
 import io/dynstream
+import utils/chaos
 import utils/opt
 import utils/sandbox
 import utils/twtstr
@@ -26,7 +27,6 @@ import ../protocol/lcgi
 #define STBI_NO_TGA
 /* #define STBI_NO_GIF */
 #define STBI_NO_HDR
-#define STBI_NO_PIC
 #define STBI_NO_PNM /* (.ppm and .pgm) */
 #include "stb_image.h"
 """.}
@@ -87,7 +87,7 @@ type stbi_write_func = proc(context, data: pointer; size: cint) {.cdecl.}
 #include "stb_image_write.h"
 """.}
 proc stbi_write_png_to_func(fun: stbi_write_func; context: pointer;
-  w, h, comp: cint; data: pointer; stride_in_bytes: cint) {.importc.}
+  w, h, comp: cint; data: pointer; stride_in_bytes: cptrdiff) {.importc.}
 proc stbi_write_bmp_to_func(fun: stbi_write_func; context: pointer;
   w, h, comp: cint; data: pointer) {.importc.}
 proc stbi_write_jpg_to_func(fun: stbi_write_func; context: pointer;
@@ -157,11 +157,11 @@ proc main() =
     var height = cint(0)
     for hdr in headers.split('\n'):
       let s = hdr.after(':').strip()
-      case hdr.until(':')
-      of "Cha-Image-Dimensions":
+      let k = hdr.until(':')
+      if k == "Cha-Image-Dimensions":
         (width, height) = parseDimensionsC(s, allowZero = false)
-      of "Cha-Image-Quality":
-        let q = parseUInt32(s, allowSign = false).get(101)
+      elif k == "Cha-Image-Quality":
+        let q = parseUInt32(s.toOpenArray(), allowSign = false).get(101)
         if q < 1 or 100 < q:
           cgiDie(ceInternalError, "wrong quality")
         quality = cint(q)
@@ -174,7 +174,7 @@ proc main() =
     let p = src.p
     if format == "png":
       stbi_write_png_to_func(myWriteFunc, nil, cint(width), cint(height), 4, p,
-        0)
+        cptrdiff(0))
     elif format == "bmp":
       stbi_write_bmp_to_func(myWriteFunc, nil, cint(width), cint(height), 4, p)
     else: # jpeg

@@ -1,6 +1,7 @@
 import std/unittest
 
 import config/cookie
+import utils/cowstr
 import utils/opt
 
 proc main() =

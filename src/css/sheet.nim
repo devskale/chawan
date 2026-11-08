@@ -7,8 +7,9 @@ import css/mediaquery
 import html/catom
 import html/script
 import js/jsref
-import utils/opt
 import server/url
+import utils/cowstr
+import utils/opt
 import utils/tabutil
 
 type
@@ -42,9 +43,10 @@ type
     s*: StyleState
     settings: ptr EnvironmentSettings
     # doubly linked list of all sheets in the document
+    # (prev is unset for UA/user style)
     prev*: CSSStylesheet
     next*: CSSStylesheet
-    media*: string # media attr
+    media*: Str # media attr
     toks: seq[CSSToken]
     baseLayer: CAtom
     origin: CSSOrigin
@@ -251,7 +253,7 @@ proc add*(map: CSSRuleMap; sheet: CSSStylesheet) =
     def.idx = sheetIdShifted or uint32(def.idx)
     if def.layer != CAtomNull:
       if def.layer != prevLayer:
-        if ($def.layer)[0] == '!':
+        if def.layer.toStr()[0] == '!':
           layerId = 20000 + map.anonLayers # ought to be enough for anybody
           inc map.anonLayers
         else:
@@ -314,14 +316,14 @@ proc addRule(sheet: CSSStylesheet; rule: CSSQualifiedRule;
 proc nextAnonLayer(sheet: CSSStylesheet): CAtom =
   let res = sheet.s.anonLayerCount
   inc sheet.s.anonLayerCount
-  ('!' & $res).toAtom()
+  initStrM('!', res).toAtom()
 
 # stores new layer in parent
 proc consumeLayerName(ctx: var CSSParser; parent: var CAtom;
     anon: var bool): Opt[void] =
-  var name = ""
+  var name = initGrowbuf()
   if parent != CAtomNull:
-    name &= $parent & '.'
+    name.addM(parent.toStr(), '.')
   while ctx.has():
     case ctx.peekTokenType()
     of cttIdent:
@@ -336,7 +338,7 @@ proc consumeLayerName(ctx: var CSSParser; parent: var CAtom;
   if name.len <= 0 or name[^1] == '.':
     return err()
   anon = name[0] == '!'
-  parent = name.toAtom()
+  parent = name.toStr().toAtom()
   ok()
 
 proc parseImportLayer(ctx: var CSSParser; sheet: CSSStylesheet;
@@ -413,8 +415,9 @@ proc addAtRule(sheet: CSSStylesheet; atrule: CSSAtRule; base: URL;
       sheet.s.layers.add(names)
   ok()
 
-proc parseStylesheet*(iq: string; base: URL; settings: ptr EnvironmentSettings;
-    origin: CSSOrigin; layer: CAtom): CSSStylesheet =
+proc parseStylesheet*(iq: sink Str; base: URL;
+    settings: ptr EnvironmentSettings; origin: CSSOrigin; layer: CAtom):
+    CSSStylesheet =
   var ctx = initCSSParser(iq)
   let sheet = CSSStylesheet(
     settings: settings,
