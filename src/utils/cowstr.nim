@@ -793,14 +793,15 @@ proc kebabToCamelCase*(s: Str): Str =
   var buf = initGrowbufOfCap(s.len)
   var flip = false
   for c in s:
+    if flip and c notin AsciiLowerAlpha:
+      buf &= '-'
     if c == '-':
       flip = true
-    else:
-      if flip:
-        buf &= c.toUpperAscii()
-      else:
-        buf &= c
+    elif flip:
+      buf &= c.toUpperAscii()
       flip = false
+    else:
+      buf &= c
   if flip:
     buf &= '-'
   buf.toStr()
@@ -1516,6 +1517,10 @@ proc addHex*(buf: var Growbuf; u: uint8) =
   buf &= HexCharsUpper[u shr 4]
   buf &= HexCharsUpper[u and 0xF]
 
+proc addHexLower*(buf: var Growbuf; u: uint8) =
+  buf &= HexCharsLower[u shr 4]
+  buf &= HexCharsLower[u and 0xF]
+
 proc addHex*(buf: var Growbuf; c: char) =
   buf.addHex(uint8(c))
 
@@ -1561,10 +1566,10 @@ proc addU32(buf: var Growbuf; n: uint32) {.exportc: "cha_Growbuf_$1".} =
 proc addI32(buf: var Growbuf; n: int32) {.exportc: "cha_Growbuf_$1".} =
   buf &= n
 
-proc addU64(buf: var Growbuf; n: uint32) {.exportc: "cha_Growbuf_$1".} =
+proc addU64(buf: var Growbuf; n: uint64) {.exportc: "cha_Growbuf_$1".} =
   buf &= n
 
-proc addI64(buf: var Growbuf; n: int32) {.exportc: "cha_Growbuf_$1".} =
+proc addI64(buf: var Growbuf; n: int64) {.exportc: "cha_Growbuf_$1".} =
   buf &= n
 
 {.pop.} # raises: []

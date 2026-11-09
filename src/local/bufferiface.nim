@@ -198,19 +198,14 @@ type
     setxrefresh: bool
     setxsave: bool
 
-  #TODO a bunch of these don't actually have to be sent to the process
   BufferConfig* = object
-    askDownloadDir*: bool
-    refererFrom*: bool
     styling*: bool
     scripting*: ScriptingMode
     images*: bool
     headless*: HeadlessMode
     autofocus*: bool
-    history*: bool
     markLinks*: bool
     charsetOverride*: Charset
-    metaRefresh*: MetaRefresh
     charsets*: seq[Charset]
     imageTypes*: MimeTypesImages
     userAgent*: Str
@@ -231,6 +226,8 @@ type
     bifRedirected
     bifMailcapCancel
     bifForceType # override type
+    bifAskDownloadDir # ask for the download directory?
+    bifRefererFrom # does a click on a URL produce a Referer header?
 
   LoadState* = enum
     lsLoading = "loading"
@@ -316,6 +313,7 @@ type
     height*: int
     connectionState*: ConnectDataState
     flags*: set[BufferInitFlag]
+    metaRefresh*: MetaRefresh
     #TODO this is inaccurate, because charsetStack can desync
     charset*: Charset
     charsetStack*: seq[Charset]
@@ -400,10 +398,12 @@ proc applyResponse*(init: BufferInit; response: Response;
     cookieJar.setCookie(header, response.url,
       init.loaderConfig.cookieMode == cmSave, http = true)
   # set referrer policy, if any
-  if init.config.refererFrom:
-    let referrerPolicy = response.getReferrerPolicy()
+  let referrerPolicy = response.getReferrerPolicy()
+  if bifRefererFrom in init.flags:
     init.loaderConfig.referrerPolicy =
       referrerPolicy.get(rpStrictOriginWhenCrossOrigin)
+  elif referrerPolicy.get(rpSameOrigin) == rpNoReferrer:
+    init.loaderConfig.referrerPolicy = rpNoReferrer
   else:
     init.loaderConfig.referrerPolicy = rpSameOrigin
   # setup content type; note that isSome means an override so we skip it
@@ -445,6 +445,7 @@ jsClassPublicDef(BufferInit):
   jsget BufferInit, url
   jsget BufferInit, cacheId
   jsget BufferInit, redirectDepth
+  jsget BufferInit, metaRefresh
   jsgetset BufferInit, width
   jsgetset BufferInit, height
   jsgetset BufferInit, loadInfo
@@ -496,15 +497,13 @@ jsClassPublicDef(BufferInit):
 
   proc bufferInitFlag(init: BufferInit; flag: BufferInitFlag): bool {.
       jsmfget("hasStart", bifHasStart), jsmfget("history", bifHistory),
-      jsmfget("save", bifSave), jsmfget("ishtml", bifHTML).} =
+      jsmfget("save", bifSave), jsmfget("ishtml", bifHTML),
+      jsmfget("askDownloadDir", bifAskDownloadDir).} =
     flag in init.flags
 
   proc setBufferInitFlag(init: BufferInit; flag: BufferInitFlag; b: bool) {.
       jsmfset("save", bifSave).} =
-    if b:
-      init.flags.incl(flag)
-    else:
-      init.flags.excl(flag)
+    init.flags.toggleIf(flag, b)
 
   proc scripting(init: BufferInit): ScriptingMode {.jsfget.} =
     init.config.scripting
@@ -521,9 +520,6 @@ jsClassPublicDef(BufferInit):
   proc headless(init: BufferInit): HeadlessMode {.jsfget.} =
     init.config.headless
 
-  proc metaRefresh(init: BufferInit): MetaRefresh {.jsfget.} =
-    init.config.metaRefresh
-
   proc autofocus(init: BufferInit): bool {.jsfget.} =
     init.config.autofocus
 
@@ -533,13 +529,10 @@ jsClassPublicDef(BufferInit):
   proc setImages(init: BufferInit; images: bool) {.jsfset: "images".} =
     init.config.images = images
 
-  proc askDownloadDir(init: BufferInit): bool {.jsfget.} =
-    init.config.askDownloadDir
-
   proc title*(init: BufferInit): Str {.jsfget.} =
     if init[].title != "":
       return init[].title
-    return init.url.serialize(excludepassword = true)
+    return init.url.toStr()
 
   proc setTitle(init: BufferInit; title: sink Str) {.jsfset: "title".} =
     init.title = title
