@@ -6,6 +6,7 @@ when NimMajor >= 2:
 import encoding/charset
 import encoding/decodercore
 import utils/cowstr
+import utils/twtstr
 
 type DecoderErrorMode* = enum
   demFatal, demReplacement
@@ -20,11 +21,29 @@ type UnsafeSlice* = object
   p*: ptr UncheckedArray[char]
   len*: int
 
+proc high*(sl: UnsafeSlice): int {.inline.} =
+  {.push overflowChecks: off.}
+  let H = sl.len - 1
+  {.pop.}
+  H
+
+template toOpenArray*(sl: UnsafeSlice): openArray[char] =
+  sl.toOpenArray(0, sl.high)
+
+template toOpenArray*(sl: UnsafeSlice; lo, hi: int): openArray[char] =
+  sl.p.toOpenArray(lo, hi)
+
+template toOpenArrayByte*(sl: UnsafeSlice; lo, hi: int): openArray[uint8] =
+  sl.p.toOpenArrayByte(lo, hi)
+
+template toOpenArrayByte*(sl: UnsafeSlice): openArray[uint8] =
+  sl.toOpenArrayByte(0, sl.high)
+
 proc `$`*(sl: UnsafeSlice): string =
   if sl.p == nil:
     return ""
   var s = newString(sl.len)
-  copyMem(addr s[0], addr sl.p[0], sl.len)
+  chaArrayCopy(s, sl.toOpenArray())
   move(s)
 
 proc toUnsafeSlice(s: openArray[uint8]): UnsafeSlice =
@@ -44,12 +63,12 @@ proc toUnsafeSlice(s: string): UnsafeSlice =
 type TextDecoderContext* = object
   td*: TextDecoder
   n*: int
-  oq*: seq[uint8]
   failed*: bool
+  last*: TextDecoderResult
   errorMode*: DecoderErrorMode
 
-proc initTextDecoderContext*(charset: Charset; errorMode = demReplacement;
-    bufLen = 4096): TextDecoderContext =
+proc initTextDecoderContext*(charset: Charset; errorMode = demReplacement):
+    TextDecoderContext =
   ## Initialize a new text decoder context.
   ##
   ## `charset` is the charset to decode the buffer with.
@@ -60,35 +79,54 @@ proc initTextDecoderContext*(charset: Charset; errorMode = demReplacement;
   ## `TextDecoderContext` is set to `true`.
   ##
   ## `bufLen` is the size of the internal buffer in bytes.
-  return TextDecoderContext(
-    td: initTextDecoder(charset),
-    oq: newSeq[uint8](bufLen),
-    errorMode: errorMode
-  )
+  return TextDecoderContext(td: initTextDecoder(charset), errorMode: errorMode)
 
 # returns whether this is the last iteration
 proc decodeIter(ctx: var TextDecoderContext; iq: openArray[uint8];
-    slices: var array[2, UnsafeSlice]; finish: bool): bool =
-  result = false
-  case ctx.td.decode(iq, ctx.oq, ctx.n, finish)
-  of tdrDone:
-    slices[0] = ctx.oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
-    result = true
+    oq: var openArray[uint8]; slice: var UnsafeSlice; finish: bool): bool =
+  case ctx.last
   of tdrReadInput:
-    if ctx.n > 0:
-      slices[0] = ctx.oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
-    slices[1] = iq.toOpenArray(ctx.td.pi, ctx.td.ri - 1).toUnsafeSlice()
-  of tdrReqOutput:
-    slices[0] = ctx.oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
+    ctx.last = tdrDone
+    slice = iq.toOpenArray(ctx.td.pi, ctx.td.ri - 1).toUnsafeSlice()
+    return false
   of tdrError:
-    slices[0] = ctx.oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
+    ctx.last = tdrDone
     case ctx.errorMode
     of demReplacement:
-      slices[1] = "\uFFFD".toUnsafeSlice()
+      slice = "\uFFFD".toUnsafeSlice()
+      return false
     of demFatal:
       ctx.failed = true
-      result = true
+      return true
+  else: discard
+  var done = false
+  case ctx.td.decode(iq, oq, ctx.n, finish)
+  of tdrDone:
+    slice = oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
+    done = true
+  of tdrReadInput:
+    if ctx.n > 0:
+      slice = oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
+      ctx.last = tdrReadInput
+    else:
+      slice = iq.toOpenArray(ctx.td.pi, ctx.td.ri - 1).toUnsafeSlice()
+  of tdrReqOutput:
+    slice = oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
+  of tdrError:
+    slice = oq.toOpenArray(0, ctx.n - 1).toUnsafeSlice()
+    ctx.last = tdrError
   ctx.n = 0
+  done
+
+iterator decode*(ctx: var TextDecoderContext; iq: openArray[uint8];
+    oq: var openArray[uint8]; finish: bool): UnsafeSlice =
+  # for testing (so we can pass custom output queue lengths)
+  var done = false
+  while not done:
+    var slice: UnsafeSlice
+    done = ctx.decodeIter(iq, oq, slice, finish)
+    if slice.p != nil:
+      yield slice
 
 iterator decode*(ctx: var TextDecoderContext; iq: openArray[uint8];
     finish: bool): UnsafeSlice =
@@ -102,28 +140,9 @@ iterator decode*(ctx: var TextDecoderContext; iq: openArray[uint8];
   ## openArray or a string.  WARNING: this is simply a pointer into the
   ## input data and/or the output buffer.  Never use an `UnsafeSlice`
   ## object after the iteration you received it in.
-  var done = false
-  while not done:
-    var slices: array[2, UnsafeSlice]
-    done = ctx.decodeIter(iq, slices, finish)
-    for slice in slices:
-      if slice.p != nil:
-        yield slice
-
-proc high*(sl: UnsafeSlice): int =
-  return sl.len - 1
-
-template toOpenArray*(sl: UnsafeSlice; lo, hi: int): openArray[char] =
-  sl.p.toOpenArray(lo, hi)
-
-template toOpenArray*(sl: UnsafeSlice): openArray[char] =
-  sl.toOpenArray(0, sl.high)
-
-template toOpenArrayByte*(sl: UnsafeSlice; lo, hi: int): openArray[uint8] =
-  sl.p.toOpenArrayByte(lo, hi)
-
-template toOpenArrayByte*(sl: UnsafeSlice): openArray[uint8] =
-  sl.toOpenArrayByte(0, sl.high)
+  var oq {.noinit.}: array[1024, uint8]
+  for it in ctx.decode(iq, oq, finish):
+    yield it
 
 proc add*(s: var Growbuf; sl: UnsafeSlice) =
   s &= sl.toOpenArray()
@@ -159,26 +178,20 @@ proc decodeAll*(iq: openArray[char]; charset: Charset): Str =
   ## See above.
   return iq.toOpenArrayByte(0, iq.high).decodeAll(charset)
 
-proc toValidUTF8*(iq: openArray[char]): Str =
-  ## Validate the UTF-8 string `iq`, replacing invalid characters with
-  ## U+FFFD replacement characters.
-  return iq.decodeAll(csUtf8)
-
-proc toValidUTF8*(iq: Str): Str =
-  var nonAscii: uint
-  for c in iq:
-    nonAscii += uint8(c) shr 7
-  if nonAscii == 0:
-    return iq
-  #TODO avoid allocation in all valid cases
-  return iq.toOpenArray().decodeAll(csUtf8)
-
-proc validateUTF8*(s: openArray[char]): int =
-  var ctx = initTextDecoderContext(csUtf8, errorMode = demFatal)
-  for chunk in ctx.decode(s.toOpenArrayByte(0, s.high), finish = true):
+proc validateUTF8*(iq: openArray[char]): int =
+  var ctx = initTextDecoderContext(csUtf8, demFatal)
+  var oq: array[4, uint8]
+  for s in ctx.decode(iq.toOpenArrayByte(0, iq.high), oq, finish = true):
     discard
   if ctx.failed:
     return ctx.td.ri
   return -1
+
+proc toValidUTF8*(iq: Str): Str =
+  ## Validate the UTF-8 string `iq`, replacing invalid characters with
+  ## U+FFFD replacement characters.
+  if iq.toOpenArray().validateUTF8() < 0:
+    return iq
+  return iq.toOpenArray().decodeAll(csUtf8)
 
 {.pop.}

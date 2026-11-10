@@ -279,8 +279,8 @@ proc initStr*(s: openArray[char]): Str =
 proc toStr*(s: cstring): Str =
   initStr(s, s.len)
 
-proc str*(s: cstring): Str =
-  initStrLit(s, s.len)
+template str*(s: static string): Str =
+  initStrLit(cstring(s), s.len)
 
 macro addM*(buf: var Growbuf; ss: varargs[typed]) =
   # fmt format: like printf, but uses DLE (data link escape) instead of %
@@ -294,8 +294,15 @@ macro addM*(buf: var Growbuf; ss: varargs[typed]) =
   for it in ss:
     case it.kind
     of nnkCharLit:
-      fmt &= char(it.intVal)
+      let c = char(it.intVal)
+      if c in {'\x00', '\x10'}:
+        fmt &= "\x10c"
+        args.add(it)
+      else:
+        fmt &= c
     of nnkStrLit, nnkTripleStrLit:
+      if {'\x00', '\x10'} in it.strVal:
+        error("NUL or DLE in string (pass it as str() instead)")
       fmt &= it.strVal
     else:
       let typ = it.getTypeInst()
@@ -646,8 +653,8 @@ proc toUpperAscii*(s: Str): Str =
 proc find*(s: Str; c: char; start = 0): int =
   s.toOpenArray().find(c, start)
 
-proc find*(s: Str; cs: set[char]; start = 0): int =
-  s.toOpenArray().find(cs, start)
+proc find*(s: Str; cs: set[char]; start = 0; last = -1): int =
+  s.toOpenArray().find(cs, start, last)
 
 proc find*(s: Str; needle: openArray[char]; start = 0; last = -1): int =
   s.toOpenArray().find(needle, start, last)
@@ -1113,6 +1120,9 @@ proc btoa*(s: var Growbuf; data: openArray[uint8]) =
       s &= '='
     s &= '='
 
+proc btoa*(s: var Growbuf; data: openArray[char]) =
+  s.btoa(data.toOpenArrayByte(0, data.high))
+
 proc btoa*(data: openArray[uint8]): Str =
   if data.len == 0:
     return str("")
@@ -1294,11 +1304,6 @@ proc initGrowbuf*(src: Growbuf): Growbuf =
   buf &= src
   move(buf)
 
-proc initGrowbufUTF8*(us: openArray[uint32]): Growbuf =
-  var buf = initGrowbuf()
-  buf.addUTF8(us)
-  move(buf)
-
 proc deallocGrowbuf*(opaque, p: pointer) =
   #TODO this shouldn't be needed
   if p != nil:
@@ -1436,6 +1441,9 @@ proc `[]=`*(buf: var Growbuf; n: int; c: char) {.inline.} =
 
 proc `[]=`*(buf: var Growbuf; n: BackwardsIndex; c: char) {.inline.} =
   buf[buf.len - int(n)] = c
+
+proc nextUTF8*(buf: Growbuf; i: var int): uint32 =
+  buf.toOpenArray().nextUTF8(i)
 
 proc toStr*(buf: sink Growbuf): Str =
   let bufLen = buf.len

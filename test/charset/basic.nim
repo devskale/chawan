@@ -62,19 +62,21 @@ proc testUTF8Valid() =
     "\u1F972"
   ]
   for s in utf8_valid:
-    assert s.toValidUTF8() == s
-    assert $s.toValidUTF8() & 'x' == s & 'x'
-    var ctx = initTextDecoderContext(csUtf8, bufLen = 3)
+    assert newStr(s).toValidUTF8() == s
+    assert $newStr(s).toValidUTF8() & 'x' == s & 'x'
+    var oq {.noinit.}: array[3, uint8]
+    var ctx = initTextDecoderContext(csUtf8)
     block:
       var res = initGrowbuf()
-      for s in ctx.decode(s.toOpenArrayByte(0, s.high), finish = true):
+      for s in ctx.decode(s.toOpenArrayByte(0, s.high), oq, finish = true):
         res &= s
       assert res == s
     for j in 2 .. 10:
       var res = initGrowbuf()
       var i = 0
       while i < s.len:
-        for s in ctx.decode(s.toOpenArrayByte(i, min(i + j, s.len) - 1), finish = i + j >= s.len):
+        for s in ctx.decode(s.toOpenArrayByte(i, min(i + j, s.len) - 1),
+            oq, finish = i + j >= s.len):
           res &= s
         i += j
       assert res == s
@@ -88,23 +90,27 @@ proc testUTF8Invalid() =
     "\uD83C": "\uFFFD\uFFFD\uFFFD", # some unpaired surrogate
     "r\xC8sum\xC8s": "r\uFFFDsum\uFFFDs", # latin-1 mis-declared as UTF-8
     "\x41\xC0\xAF\x41\xF4\x80\x80\x41": "A\uFFFD\uFFFDA\uFFFDA",
+    "aaaaaaaaa\xC8": "aaaaaaaaa\uFFFD", # valid before invalid
   }
   for (s, t) in utf8_error:
-    assert s.toValidUTF8() == t
-    assert (s & 'x').toValidUTF8() == t & 'x'
+    assert newStr(s).toValidUTF8() == t
+    assert newStr(s & 'x').toValidUTF8() == t & 'x'
     block:
-      var ctx = initTextDecoderContext(csUtf8, bufLen = 2)
+      var ctx = initTextDecoderContext(csUtf8)
+      var oq {.noinit.}: array[2, uint8]
       var res = initGrowbuf()
       for i in 0 ..< s.len:
-        for s in ctx.decode([uint8(s[i])], finish = i == s.high):
+        for s in ctx.decode([uint8(s[i])], oq, finish = i == s.high):
           res &= s
       assert res == t
     block:
-      var ctx = initTextDecoderContext(csUtf8, bufLen = 2)
+      var ctx = initTextDecoderContext(csUtf8)
+      var oq {.noinit.}: array[2, uint8]
       var res = initGrowbuf()
       var i = 0
       while i < s.len:
-        for s in ctx.decode(s.toOpenArrayByte(i, min(i + 2, s.len) - 1), finish = i + 2 >= s.len):
+        for s in ctx.decode(s.toOpenArrayByte(i, min(i + 2, s.len) - 1), oq,
+            finish = i + 2 >= s.len):
           res &= s
         i += 2
       assert res == t
@@ -137,9 +143,10 @@ proc testUTF16le() =
   for i in 0 ..< 10:
     s &= "t\0e\0s\0t\0"
     s8 &= "test"
-  var ctx = initTextDecoderContext(csUtf16le, bufLen = 32)
+  var ctx = initTextDecoderContext(csUtf16le)
+  var oq {.noinit.}: array[32, uint8]
   var res = initGrowbuf()
-  for s in ctx.decode(s.toOpenArrayByte(0, s.high), finish = true):
+  for s in ctx.decode(s.toOpenArrayByte(0, s.high), oq, finish = true):
     res &= s
   assert res == s8
 
