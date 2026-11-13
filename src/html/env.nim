@@ -141,30 +141,36 @@ jsClassRaw(MimeTypeArrayDef, "MimeTypeArray"):
     return JS_UNINITIALIZED
 
 # Notification
-# The existence of this feature in mainstream browsers is an insult to all
-# users' intelligence.  Nevertheless, we have to shim the API because some
-# geniuses use it for "browser verification."
-proc resolveToDenied(ctx: JSContext; argc: cint; argv: JSValueConstArray):
-    JSValue {.cdecl.} =
+# we intentionally don't support notifications, but some websites use it
+# for "browser verification"
+type PermissionEnv = ref object of JSTaskEnv
+  resolve: JSCallback
+  callback: JSCallback
+  name: DOMString
+
+proc resolveToDenied(ctx: JSContext; env: JSTaskEnv): Opt[void] =
   let denied = ?trace(JS_NewString(ctx, "denied"))
-  if not JS_IsUndefined(argv[0]):
-    discard ?trace(ctx.call(argv[0], JS_UNDEFINED.vc, denied.vc))
+  let env = PermissionEnv(env)
+  if env.callback != nil:
+    discard ?trace(ctx.call(move(env.callback), JS_UNDEFINED.vc, denied.vc))
     #TODO "report" (fire error event)
-  return ctx.call(argv[1], JS_UNDEFINED.vc, denied.vc)
+  discard ?trace(ctx.call(move(env.resolve), JS_UNDEFINED.vc, denied.vc))
+  ok()
 
 jsClassRaw(NotificationDef, "Notification"):
   proc newNotification(ctx: JSContext; ctor: JSValueConst): JSValue
       {.jsctor2.} =
     return JS_CreateFromConstructor(ctx, ctor, classDef.id)
 
-  proc requestPermission(ctx: JSContext; callback = JS_UNDEFINED.vc): JSValue
+  proc requestPermission(ctx: JSContext; callback = JSCallback(nil)): JSValue
       {.jsstfunc.} =
-    if not JS_IsUndefined(callback) and not JS_IsFunction(ctx, callback):
-      return JS_ThrowTypeError(ctx, "not a function")
     var resolve: JSCallback
     var reject: JSCallback
     let res = ?ctx.newPromiseCapability(resolve, reject)
-    ?ctx.enqueueJob(resolveToDenied, resolve.value, callback)
+    ?ctx.queueTask(jtsDOMManipulation, resolveToDenied, PermissionEnv(
+      resolve: resolve,
+      callback: callback
+    ))
     return res.toJSValue()
 
 # PermissionStatus
@@ -188,16 +194,15 @@ jsClassDef(PermissionStatus):
   jsget PermissionStatus, name
 
 # Permissions
-proc denyPermissionJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
-    JSValue {.cdecl.} =
-  assert argc == 2
-  var name: Str
-  ?ctx.fromJS(argv[1], name)
+proc denyPermissionJob(ctx: JSContext; env: JSTaskEnv): Opt[void] =
+  let env = PermissionEnv(env)
   let obj = ?trace(ctx.toJSNew(jsNew PermissionStatusObj(
-    name: move(name),
+    name: move(env.name).toStr(),
     state: psDenied
   )))
-  return ctx.call(argv[0], JS_UNDEFINED.vc, obj.vc)
+  #TODO call?
+  discard ?trace(ctx.call(move(env.resolve), JS_UNDEFINED.vc, obj.vc))
+  ok()
 
 jsClassRaw(PermissionsDef, "Permissions"):
   proc finalizePermissions(rt: JSRuntime; this: pointer) {.jsfin.} =
@@ -211,12 +216,13 @@ jsClassRaw(PermissionsDef, "Permissions"):
     let jsName = ?ctx.getProperty(desc, jstName)
     var name: DOMString
     ?ctx.fromJSFree(jsName.toJSValue(), name)
-    let jsName2 = ?trace(ctx.toJS(name))
     var resolve: JSCallback
     var reject: JSCallback
     let res = ?ctx.newPromiseCapability(resolve, reject)
-    #TODO permission task source
-    ?ctx.enqueueJob(denyPermissionJob, resolve.value, jsName2.vc)
+    ?ctx.queueTask(jtsPermission, denyPermissionJob, PermissionEnv(
+      resolve: resolve,
+      name: name
+    ))
     res.toJSValue()
 
 # Screen
@@ -494,7 +500,7 @@ proc windowSetLocation(ctx: JSContext; this, val: JSValueConst): JSValue
   return ctx.setLocation(window, s)
 
 proc registerAutoInitGetSet(ctx: JSContext; namespace: JSObject;
-    parentClass: JSClassID; def: ChaClassDef; name: JSStrRef;
+    parentClass: JSClassID; def: var ChaClassDef; name: JSStrRef;
     t: AutoInitGetSetType): Opt[void] =
   # Register a lazily initialized singleton-like class.
   ?ctx.registerClass(def)
@@ -709,42 +715,40 @@ proc jsFinish(opaque: RootRef; response: Response) =
   if response != nil:
     let val = ctx.toJS(response)
     if not JS_IsException(val.vc):
+      #TODO invoke?
       let res = trace(ctx.callSink(resolve, JS_UNDEFINED.vc, val))
       if JS_IsException(res):
         ctx.consoleError(ctx.getExceptionMsg())
   else:
     discard ctx.throwNetworkError()
     discard ctx.enqueueRejection(reject)
+  JS_GetRuntime(ctx).runMicrotasks()
   JS_FreeContext(ctx)
 
 proc microtaskJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
     JSValue {.cdecl.} =
-  ctx.call(argv[0], JS_UNDEFINED.vc)
+  JS_Call(ctx, argv[0], JS_UNDEFINED.vc, 0, nil)
 
-proc postMessageJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
-    JSValue {.cdecl.} =
-  assert argc == 2
-  var windowp: pointer
-  ?ctx.fromJS(argv[0], event.windowClassID, windowp)
+type PostMessageEnv = ref object of JSTaskEnv
+  data: JSValueTraced
+
+proc postMessageJob(ctx: JSContext; env: JSTaskEnv): Opt[void] =
+  let env = PostMessageEnv(env)
   let event = ctx.newMessageEvent(satMessage.view(),
-    MessageEventInit(data: ctx.dupTrace(argv[1])))
+    MessageEventInit(data: move(env.data)))
   if event != nil:
-    cast[Window](windowp).fireEvent(event.asEvent, cast[EventTarget](windowp))
-  return JS_UNDEFINED
+    let window = ctx.getWindow()
+    window.fireEvent(event.asEvent, window.asEventTarget)
+  ok()
 
 proc animationFrameHandler(ctx: JSContext; this: JSValueConst; argc: cint;
     argv: JSValueConstArray): JSValue {.cdecl.} =
   let arg0 = ?trace(ctx.toJS(getUnixMillis()))
-  return ctx.call(argv[0], this, arg0.vc)
+  JS_Call(ctx, argv[0], this, 1, cast[JSValueConstArray](unsafeAddr arg0.vc))
 
 jsClassDef(Window):
   jsextends EventTargetDef
 
-  event.windowClassID = classDef.id
-
-  jsget Window, referrer
-  jsget Window, performance
-  jsget Window, customElements
   jsufget Window, document
 
   proc addWindowEvents(ctx: JSContext): Opt[void] =
@@ -881,8 +885,9 @@ jsClassDef(Window):
     if ctx.fromJS(data.vc, s).isErr:
       return JS_ThrowDOMException(ctx, "InvalidCharacterError",
         "invalid character in string")
-    let res = btoa(s.toOpenArray())
-    ctx.toJS(res)
+    var buf = initGrowbuf()
+    buf.addBtoa(s.toOpenArray())
+    ctx.toJS(buf)
 
   proc alert(window: Window; s: DOMString) {.jsfunc.} =
     window.console.error(s.toStr())
@@ -892,21 +897,18 @@ jsClassDef(Window):
       return JS_UNDEFINED
     return ctx.toJS(window.event)
 
-  proc postMessage(ctx: JSContext; this, value: JSValueConst): Opt[void]
-      {.jsfunc.} =
-    var window: ptr WindowObj
-    ?ctx.fromJS(this, window)
+  proc postMessage(ctx: JSContext; window: Window; value: JSValueConst):
+      Opt[void] {.jsfunc.} =
     let s = ?ctx.serialize(value)
     let ctx = window.jsctx # target realm
     let data = ?trace(ctx.deserialize(s))
-    #TODO global task queue
-    ?ctx.enqueueJob(postMessageJob, this, data.vc)
-    ok()
+    ctx.queueTask(jtsPostMessage, postMessageJob, PostMessageEnv(data: data))
 
   proc requestAnimationFrame(ctx: JSContext; window: Window;
       callback: JSCallback): JSValue {.jsfunc.} =
     let handler = ?ctx.newCFunction(animationFrameHandler,
       "animation frame handler", 1)
+    #TODO hack, do this properly
     let res = window.timeouts.setTimeout(ctx, ttTimeout, handler.value, 0,
       callback.value)
     ctx.toJS(res)
@@ -927,6 +929,16 @@ jsClassDef(Window):
       matches: mqlist.appliesScript(addr window.settings),
       media: mqlist.toStr()
     )
+
+  proc getPerformance(ctx: JSContext; window: Window): JSValue {.
+      jsrfget: "performance".} =
+    if window.internalPerformance == nil:
+      window.internalPerformance = newPerformance(window.timeOrigin,
+        window.settings.scripting)
+    ctx.toJSNew(window.internalPerformance)
+
+  proc customElements(window: Window): CustomElementRegistry {.jsfget.} =
+    window.document.customElements
 
 proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
@@ -1066,7 +1078,9 @@ proc addWindowProperties(ctx: JSContext): JSValue =
 proc addWindowModule(ctx: JSContext): JSCode =
   ?ctx.addEventTarget()
   let proto = ?trace(ctx.addWindowProperties())
-  ctx.registerGlobalClass(WindowDef, proto.vc)
+  ?ctx.registerGlobalClass(WindowDef, proto.vc)
+  event.windowClassID = WindowDef.id
+  fjOk
 
 proc addCommonModules(ctx: JSContext; window: Window; url: URL): Opt[void] =
   ?ctx.setGlobal(window)
@@ -1095,12 +1109,7 @@ proc addCommonModules(ctx: JSContext; window: Window; url: URL): Opt[void] =
   ?ctx.addRequestModule()
   ?ctx.addResponseModule()
   ?ctx.addEncodingModule()
-  ?ctx.addPerformanceModule()
-  window.performance = newPerformance(window.settings.scripting)
-  if window.performance == nil:
-    JS_ThrowOutOfMemory(ctx)
-    return err()
-  ok()
+  ctx.addPerformanceModule()
 
 proc getConsole(ctx: JSContext): Console {.exportc: "cha_$1".} =
   ctx.getGlobal().console
@@ -1109,7 +1118,7 @@ proc getLoader(ctx: JSContext): FileLoader {.exportc: "cha_$1".} =
   ctx.getGlobal().loader
 
 proc addScripting(window: Window; ctx: JSContext; url: URL): Opt[void] =
-  if window == nil or window.customElements == nil:
+  if window == nil:
     JS_ThrowOutOfMemory(ctx)
     return err()
   let rt = JS_GetRuntime(ctx)
@@ -1146,6 +1155,7 @@ proc newWindow*(rt: JSRuntime; scripting: ScriptingMode;
     console.writeException(ctx)
     quit(1)
   let window = jsNew WindowObj(
+    jsctx: ctx,
     console: console,
     loader: loader,
     settings: EnvironmentSettings(
@@ -1156,26 +1166,26 @@ proc newWindow*(rt: JSRuntime; scripting: ScriptingMode;
       images: images,
       autofocus: autofocus,
       headless: headless,
-      contentType: contentType.toAtom()
+      contentType: contentType.toAtom(),
     ),
     imageTypes: imageTypes,
     userAgent: userAgent,
     referrer: referrer,
     urandom: urandom,
-    customElements: newCustomElementRegistry(),
     importMapsAllowed: true,
-    jsctx: ctx
+    timeOrigin: getTime(scripting)
   )
   if addScripting(window, ctx, url).isErr:
     console.error("failed to initialize JS")
     console.writeException(ctx)
     quit(1)
+  rt.getOpaque().logExceptionCb = script.logException
   return window
 
 proc newClient*(ctx: JSContext; loader: FileLoader; urandom: PosixStream):
     Window =
   # global object in the pager
-  if ctx.addWindowModule().isErr:
+  if ctx.addWindowModule().isErr or ctx.addURLModule().isErr:
     return Window(nil)
   let console = newConsole(chaStderr)
   let window = jsNew WindowObj(
@@ -1185,12 +1195,17 @@ proc newClient*(ctx: JSContext; loader: FileLoader; urandom: PosixStream):
     console: console,
     settings: EnvironmentSettings(scripting: smApp),
     dangerAlwaysSameOrigin: true,
-    document: newDocument(parseURL0("about:blank"))
+    timeOrigin: getTime(smApp)
   )
-  if window == nil or window.document == nil:
+  let url = parseURL0("about:blank")
+  if window == nil or url == nil:
     JS_ThrowOutOfMemory(ctx)
     return Window(nil)
-  if ctx.addCommonModules(window, window.document.url).isErr:
+  if ctx.addCommonModules(window, url).isErr:
+    return Window(nil)
+  window.document = newDocument(url)
+  if window.document == nil:
+    JS_ThrowOutOfMemory(ctx)
     return Window(nil)
   window
 

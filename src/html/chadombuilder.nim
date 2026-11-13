@@ -145,14 +145,15 @@ proc toStaticAtom(namespace: Namespace): StaticAtom =
   of nsXmlns: satNamespaceXMLNS
 
 proc createHTMLElementImpl(builder: ChaDOMBuilder): ParentNode =
-  return builder.document.newHTMLElement(ttHtml).asParentNode
+  return builder.document.newHTMLElement(builder.ctx, ttHtml).asParentNode
 
 proc createElementForTokenImpl(builder: ChaDOMBuilder; localName: CAtom;
     namespace: Namespace; intendedParent: ParentNode;
     attrs: sink seq[AttrData]): ParentNode =
   let document = builder.document
-  let element = document.newElement(localName, namespace.toStaticAtom())
-  element.sinkAttrs(move(attrs))
+  let element = document.newElement(builder.ctx, localName,
+    namespace.toStaticAtom())
+  element.sinkAttrs(builder.ctx, move(attrs))
   element.resetElement(builder.ctx)
   if (let script = element as HTMLScriptElement; script != nil):
     script.parserDocument = document
@@ -212,7 +213,7 @@ proc moveChildrenImpl(builder: ChaDOMBuilder; fromNode, toNode: ParentNode) =
 proc addAttrsIfMissingImpl(builder: ChaDOMBuilder; handle: ParentNode;
     attrs: seq[AttrData]) =
   let element = handle as Element
-  element.addAttrsIfMissing(attrs)
+  element.addAttrsIfMissing(builder.ctx, attrs)
 
 proc setScriptAlreadyStartedImpl(builder: ChaDOMBuilder; script: ParentNode) =
   (script as HTMLScriptElement).alreadyStarted = true
@@ -235,7 +236,7 @@ proc elementPoppedImpl(builder: ChaDOMBuilder; element: ParentNode) =
       assert builder.poppedScript == nil
       inc document.throwOnDynamicMarkupInsertion
       #TODO I think this has to be moved for custom elements
-      document.window.performMicrotaskCheckpoint()
+      document.window.runMicrotasks()
       dec document.throwOnDynamicMarkupInsertion
     builder.poppedScript = script
   elif (let svg = element as SVGSVGElement; svg != nil):
@@ -256,6 +257,9 @@ proc newChaDOMBuilder(url: URL; window: Window; confidence: CharsetConfidence;
   document.quirksMode = quirksMode
   document.charset = charset
   document.contentType = satTextHtml
+  document.customElements = newCustomElementRegistry()
+  if document.customElements == nil:
+    return nil
   if window != nil:
     document.window = window
     window.document = document
@@ -274,7 +278,7 @@ proc parseHTMLFragment(ctx: JSContext; element: Element; s: openArray[char]):
     quirksMode = element.asNode.document.quirksMode)
   if builder == nil:
     return @[]
-  let root = builder.document.newHTMLElement(ttHtml)
+  let root = builder.document.newHTMLElement(builder.ctx, ttHtml)
   if root == nil:
     return @[]
   builder.document.asParentNode.append(ctx, root.asNode)

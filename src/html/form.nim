@@ -243,30 +243,31 @@ proc cloningStepsForm(old, clone: Element) {.exportc: "cha_$1".} =
     clone.setChecked(old.checked)
     #TODO dirty checkedness flag
 
-proc reflectAttributeForm(element: Element; name: StaticAtom; has: bool;
-    value: Str) {.exportc: "cha_$1".} =
+proc reflectAttributeForm(element: Element; name: StaticAtom; value: StrNil)
+    {.exportc: "cha_$1".} =
   case element.tagType
   of ttInput:
     let input = element as HTMLInputElement
     case name
-    of satValue: input.setValue(value)
-    of satChecked: input.setChecked(has)
+    of satValue: input.setValue(value.asStr)
+    of satChecked: input.setChecked(value != nil)
     of satType:
-      input.inputType = parseEnumNoCase[InputType](value.toOpenArray())
-        .get(itText)
+      input.inputType =
+        parseEnumNoCase[InputType](value.asStr.toOpenArray()).get(itText)
     else: discard
   of ttOption:
     let option = element as HTMLOptionElement
     if name == satSelected:
-      option.selected = has
+      option.selected = value != nil
   of ttButton:
     let button = element as HTMLButtonElement
     if name == satType:
-      button.buttonType = parseEnumNoCase[ButtonType](value).get(btSubmit)
+      button.buttonType =
+        parseEnumNoCase[ButtonType](value.asStr).get(btSubmit)
   of ttArea:
     let area = element as HTMLAreaElement
     if name == satRel:
-      area.asElement.reflectTokens(area.relList, satRel, value)
+      area.asElement.reflectTokens(area.relList, satRel, value.asStr)
   else: discard
 
 proc getElementForm(element: Element): HTMLElement {.exportc: "cha_$1".} =
@@ -502,7 +503,7 @@ jsClassDef(HTMLOptionsCollection):
         let parent = this.root as ParentNode
         let document = parent.asNode.document
         for i in 0 ..< n - len:
-          let option = document.newHTMLElement(ttOption)
+          let option = document.newHTMLElement(ctx, ttOption)
           if option == nil:
             break
           parent.append(ctx, option.asNode)
@@ -529,7 +530,7 @@ jsClassDef(HTMLOptionsCollection):
     let len = this.length
     let document = parent.asNode.document
     for i in len ..< u:
-      let option = document.newHTMLElement(ttOption)
+      let option = document.newHTMLElement(ctx, ttOption)
       if option == nil:
         return JS_ThrowOutOfMemory(ctx)
       parent.append(ctx, option.asNode)
@@ -876,7 +877,7 @@ jsClassDef(HTMLLabelElement):
 proc newOption(ctx: JSContext; _: JSValueConst; argc: cint;
     argv: JSValueConstArray): JSValue {.cdecl.} =
   let document = ctx.getDocument()
-  let this = document.newHTMLElement(ttOption) as HTMLOptionElement
+  let this = document.newHTMLElement(ctx, ttOption) as HTMLOptionElement
   if argc >= 1 and not JS_IsUndefined(argv[0]):
     var text: DOMString
     ?ctx.fromJS(argv[0], text)

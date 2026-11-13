@@ -57,6 +57,7 @@ macro makeStaticAtom =
       satClass = "class"
       satClear = "clear"
       satClick = "click"
+      satClosed = "closed"
       satCodetype = "codetype"
       satColorDashProfile = "color-profile"
       satCols = "cols"
@@ -166,6 +167,7 @@ macro makeStaticAtom =
       satText = "text"
       satTextHtml = "text/html"
       satTimeout = "timeout"
+      satToggle = "toggle"
       satTouchmove = "touchmove"
       satTouchstart = "touchstart"
       satUempty = ""
@@ -377,6 +379,12 @@ proc toAtom*(s: openArray[char]): CAtom =
 
 proc toAtom*(s: Str): CAtom =
   CAtom(getFactory().toAtomRaw(s))
+
+proc toAtom*(s: StrNil): CAtom =
+  if s != nil:
+    s.asStr.toAtom()
+  else:
+    CAtomNull
 
 proc toAtom*(s: DOMString): CAtom =
   s.toStr().toAtom()

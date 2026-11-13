@@ -129,8 +129,8 @@ type
     imageTypes*: MimeTypesImages
     userAgent*: Str
     referrer*: Str
-    performance*: Performance
-    customElements*: CustomElementRegistry
+    internalPerformance*: Performance # may be nil
+    timeOrigin*: float64
     urandom*: PosixStream
 
   CECallbackType = enum
@@ -159,14 +159,14 @@ type
     flags: set[CustomElementFlag]
     next: CustomElementDef
 
-  CustomElementRegistryObj* = object
+  CustomElementRegistryObj = object
     defsHead: CustomElementDef
     defsTail: CustomElementDef
     inDefine: bool
     scoped: bool
     scopedDocuments: seq[Document]
 
-  CustomElementRegistry = JSRef[CustomElementRegistryObj]
+  CustomElementRegistry* = JSRef[CustomElementRegistryObj]
 
   ElementAccessor = JSRef[ElementAccessorObj]
 
@@ -208,6 +208,11 @@ type
     finish: LoadSheetFinish
     parent: ParseSheetEnv
     i: int
+
+  DetailsTaskEnv {.final.} = ref object of JSTaskEnv
+    element: Element
+    oldState: bool
+    open: bool
 
   LoadSheetFinish = proc(window: Window; this: SheetElement;
     res: LoadSheetResult; env: ParseSheetEnv; i: int) {.  nimcall, raises: [].}
@@ -377,7 +382,7 @@ type
     parser*: RootRef
     liveCollections: seq[ptr CollectionLikeObj]
     liveCollectionsLoad: int
-    customElements: CustomElementRegistry #TODO ?
+    customElements*: CustomElementRegistry
 
   XMLDocumentObj {.pure, final.} = object of DocumentObj
 
@@ -591,9 +596,10 @@ type
 
   HTMLObjectElementObj {.pure, final.} = object of HTMLElementObj
 
-  HTMLSlotElement = JSRef[HTMLSlotElementObj]
+  HTMLSlotElement* = JSRef[HTMLSlotElementObj]
 
   HTMLSlotElementObj {.pure, final.} = object of HTMLElementObj
+    nodes*: seq[Node]
 
 # Forward declarations
 proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
@@ -611,11 +617,12 @@ proc newDocumentType*(document: Document; name, publicId, systemId: sink Str):
 proc newDocumentFragment(document: Document): DocumentFragment
 proc newProcessingInstruction(document: Document; target, data: Str):
   ProcessingInstruction
-proc newElement*(document: Document; localName: CAtom;
+proc newElement*(document: Document; ctx: JSContext; localName: CAtom;
   namespace = satNamespaceHTML): Element
-proc newElement(document: Document;
+proc newElement(document: Document; ctx: JSContext;
   localName, namespaceURI, tagName: sink CAtom): Element
-proc newHTMLElement*(document: Document; tagType: TagType): HTMLElement
+proc newHTMLElement*(document: Document; ctx: JSContext; tagType: TagType):
+  HTMLElement
 proc newHTMLCollection(root: Node; match: CollectionMatchFun;
   mode: CollectionMode; name: CollectionName): HTMLCollection
 proc newEmptyNodeList(): NodeList
@@ -674,8 +681,8 @@ proc newAttr(document: Document; data: AttrData): Attr
 proc data(attr: Attr): lent AttrData
 proc setValue(ctx: JSContext; attr: Attr; ds: DOMString)
 
-proc attachShadow(ctx: JSContext; this: Element; init: ShadowRootInit):
-  Opt[ShadowRoot]
+proc attachShadowInternal(this: Element; init: ShadowRootInit;
+  customElements: CustomElementRegistry): ShadowRoot
 proc setAttr(element: Element; ctx: JSContext; name: CAtom;
   value: sink DOMString)
 proc setAttr*(element: Element; ctx: JSContext; name: StaticAtom;
@@ -697,7 +704,7 @@ proc getCharset(element: Element): Charset
 proc getComputedStyle*(element: Element; pseudo: PseudoElement): CSSValues
 proc hasClass*(element: Element; class: CAtom): bool
 proc hasInsertionSteps(element: Element): bool
-proc insertionSteps(element: Element): bool
+proc insertionSteps(element: Element; ctx: JSContext): bool
 proc movingSteps(element: Element; isSubtreeRoot: bool; oldParent: ParentNode)
 proc invalidate*(element: Element)
 proc invalidate*(element: Element; dep: DependencyType)
@@ -731,6 +738,10 @@ proc fetchSingleModule(element: HTMLScriptElement; url: URL;
   isTopLevel: bool; onComplete: OnCompleteProc)
 proc updateSheet*(this: HTMLStyleElement)
 
+proc filterDetailsTask(env: JSTaskEnv; opaque: RootRef): bool
+proc findOpenDetailsInGroup(element: Element; value: Str): Element
+proc toggleDetailsTask(ctx: JSContext; env: JSTaskEnv): Opt[void]
+
 proc cssText(this: CSSStyleDeclaration): Str
 
 proc getClassID(t: typedesc[AttrDummyElement]): JSClassID
@@ -747,6 +758,7 @@ proc getClassID(t: typedesc[DocumentType]): JSClassID
 proc getClassID(t: typedesc[HTMLAllCollection]): JSClassID
 proc getClassID(t: typedesc[HTMLHeadElement]): JSClassID
 proc getClassID(t: typedesc[HTMLLinkElement]): JSClassID
+proc getClassID(t: typedesc[HTMLSlotElement]): JSClassID
 proc getClassID(t: typedesc[HTMLTableRowElement]): JSClassID
 proc getClassID(t: typedesc[HTMLTableSectionElement]): JSClassID
 proc getClassID(t: typedesc[NamedNodeMap]): JSClassID
@@ -790,8 +802,8 @@ proc insertionStepsForm(element: Element) {.importc: "cha_$1".}
 proc removingStepsForm(element: Element) {.importc: "cha_$1".}
 proc movingStepsForm(element: Element) {.importc: "cha_$1".}
 proc cloningStepsForm(old, clone: Element) {.importc: "cha_$1".}
-proc reflectAttributeForm(element: Element; name: StaticAtom; has: bool;
-  value: Str) {.importc: "cha_$1".}
+proc reflectAttributeForm(element: Element; name: StaticAtom; value: StrNil)
+  {.importc: "cha_$1".}
 proc hasInsertionStepsForm(element: Element): bool {.importc: "cha_$1".}
 proc getElementForm(element: Element): HTMLElement {.importc: "cha_$1".}
 proc getFormMethodAttr(element: Element; name: StaticAtom): Str {.
@@ -1464,20 +1476,9 @@ proc click(window: Window; element: HTMLElement) =
   if window.bc != nil:
     clickCallback(window.bc, element)
 
-proc runJSJobs*(window: Window) =
+proc runMicrotasks*(window: Window) =
   let rt = JS_GetRuntime(window.jsctx)
-  while true:
-    let ctx = rt.runJSJobs()
-    if ctx == nil:
-      break
-    window.console.writeException(ctx)
-
-proc performMicrotaskCheckpoint*(window: Window) =
-  if window.inMicrotaskCheckpoint:
-    return
-  window.inMicrotaskCheckpoint = true
-  window.runJSJobs()
-  window.inMicrotaskCheckpoint = false
+  rt.runMicrotasks()
 
 proc windowChange*(window: Window) =
   let document = window.document
@@ -1822,7 +1823,7 @@ proc checkParentValidity(parent: Node): Result[ParentNode, cstring] =
   return err("parent must be a document, a document fragment, or an element")
 
 proc rootNode*(node: Node): Node =
-  # If connected, return root; otherwise, return the owner document.
+  # Return the root node (may be shadow root, or a disconnected element)
   let parent = node.parentNode
   if parent == nil:
     return node
@@ -1876,11 +1877,11 @@ proc find(observers: openArray[ObserverItem]; observer: MutationObserver):
 
 #TODO put this in runtime opaque
 var pendingObservers {.global.}: seq[MutationObserver]
-var mutationJobQueued {.global.}: bool
 
 proc mutationJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
     JSValue {.cdecl.} =
-  mutationJobQueued = false
+  let rt = JS_GetRuntime(ctx)
+  rt.getOpaque().mutationJobQueued = false
   let observers = move(pendingObservers)
   #TODO signal slots
   for observer in observers:
@@ -1890,12 +1891,15 @@ proc mutationJob(ctx: JSContext; argc: cint; argv: JSValueConstArray):
       let records = ?trace(ctx.toJS(records))
       let this = trace(ctx.toJS(observer)) # cannot fail
       #TODO invoke (with all the ceremony that entails)
+      let inScript = rt.getOpaque().inScript
       discard ?trace(ctx.call(observer.callback, this.vc, records.vc, this.vc))
+      rt.cleanUpCallback(inScript)
   return JS_UNDEFINED
 
 proc queueMutationJob(ctx: JSContext) =
-  if not mutationJobQueued and ctx.enqueueJob(mutationJob) == fjOk:
-    mutationJobQueued = true
+  let rtOpaque = JS_GetRuntime(ctx).getOpaque()
+  if not rtOpaque.mutationJobQueued and ctx.enqueueJob(mutationJob) == fjOk:
+    rtOpaque.mutationJobQueued = true
 
 proc queueMutationRecord(target: Node; ctx: JSContext; t: MutationRecordType;
     name, namespace: CAtom; oldValue: StrNil; added, removed: openArray[Node];
@@ -2026,13 +2030,25 @@ proc removeNodeInternal(node, next: Node; parent: ParentNode;
   node.internalPrev = Node(nil)
   node.internalNext = document.asNode
   node.parentNode = ParentNode(nil)
+  let nodeAsElement = node as Element
   let parentAsElement = parent as Element
   if parentAsElement != nil:
     parentAsElement.invalidate()
+    if parentAsElement.tagType == ttDetails and
+        (let shadow = parentAsElement.shadowRoot; shadow != nil):
+      # idk where this belongs, I'll just put it here
+      if (let slot1 = shadow.asParentNode.firstChild as HTMLSlotElement;
+          slot1 != nil):
+        if (let i = slot1.nodes.find(node); i >= 0):
+          slot1.nodes.delete(i)
+        elif (let slot2 = slot1.asNode.nextSibling as HTMLSlotElement;
+            slot2 != nil):
+          let i = slot2.nodes.find(node)
+          if i >= 0:
+            slot2.nodes.delete(i)
   else:
     # we're removing all elements; the document must still be invalidated
     document.invalid = true
-  let nodeAsElement = node as Element
   if nodeAsElement != nil:
     if parentAsElement != nil and next.parentNode == parent:
       # removed node was not the last one
@@ -2146,11 +2162,11 @@ proc replaceChildWithThrow*(ctx: JSContext; parent, child, node: Node):
     return ctx.insertThrow(res.error)
   return JS_UNDEFINED
 
-proc clone(node: Node; document: Document; deep: bool;
+proc clone(node: Node; ctx: JSContext; document: Document; deep: bool;
     fallbackRegistry: CustomElementRegistry): Node =
   let copy = if (let element = node as Element; element != nil):
     #TODO is value
-    let x = document.newElement(element.localName, element.namespaceURI,
+    let x = document.newElement(ctx, element.localName, element.namespaceURI,
       element.tagName)
     x.id = element.id
     x.name = element.name
@@ -2192,7 +2208,7 @@ proc clone(node: Node; document: Document; deep: bool;
 
 proc cloneNodeImpl(ctx: JSContext; node: Node; document: Document; deep: bool;
     parent: ParentNode; fallbackRegistry: CustomElementRegistry): Opt[Node] =
-  let copy = node.clone(document, deep, fallbackRegistry)
+  let copy = node.clone(ctx, document, deep, fallbackRegistry)
   if copy == nil:
     JS_ThrowOutOfMemory(ctx)
     return err()
@@ -2207,14 +2223,15 @@ proc cloneNodeImpl(ctx: JSContext; node: Node; document: Document; deep: bool;
   if (let element = node as Element; element != nil):
     let shadow = element.shadowRoot
     if shadow != nil:
-      let customElements = shadow.globalCustomElements
-      let copyShadow = ?ctx.attachShadow(copy as Element, ShadowRootInit(
+      let copyShadow = (copy as Element).attachShadowInternal(ShadowRootInit(
         mode: shadow.mode,
         serializable: shadow.serializable,
         delegatesFocus: shadow.delegatesFocus,
         slotAssignment: shadow.slotAssignment,
-        customElementRegistry: customElements
-      ))
+      ), shadow.globalCustomElements)
+      if copyShadow == nil:
+        JS_ThrowOutOfMemory(ctx)
+        return err()
       copyShadow.declarative = shadow.declarative
       copyShadow.unsetCustomElements = shadow.unsetCustomElements
       for child in shadow.asParentNode.childList:
@@ -2386,8 +2403,6 @@ type GetRootNodeOptions {.pure.} = object of JSDict
 
 jsClassDef(Node):
   jsextends EventTargetDef
-
-  event.nodeClassID = classDef.id
 
   jsget Node, parentNode
 
@@ -2732,7 +2747,7 @@ proc lastElementChild*(node: ParentNode): Element =
     return child
   return Element(nil)
 
-proc findFirstChildOf(node: ParentNode; tagType: TagType): Element =
+proc findFirstChildOf*(node: ParentNode; tagType: TagType): Element =
   for element in node.elementList:
     if element.tagType == tagType:
       return element
@@ -2745,7 +2760,7 @@ proc findFirstChildOf(node: ParentNode; localName, namespace: StaticAtom):
       return element
   return Element(nil)
 
-proc findLastChildOf(node: ParentNode; tagType: TagType): Element =
+proc findLastChildOf*(node: ParentNode; tagType: TagType): Element =
   for element in node.relementList:
     if element.tagType == tagType:
       return element
@@ -2869,6 +2884,17 @@ proc insertNodeInternal(parent: ParentNode; node, before: Node;
       nodeAsElement.setMagic(prev.getMagic() + 1)
     else:
       nodeAsElement.setMagic(0)
+  if parentAsElement != nil and parentAsElement.tagType == ttDetails and
+      (let shadow = parentAsElement.shadowRoot; shadow != nil):
+    # idk where this belongs, I'll just put it here
+    if (let slot1 = shadow.asParentNode.firstChild as HTMLSlotElement;
+        slot1 != nil):
+      if node of Element and Element(node).tagType == ttSummary and
+          slot1.nodes.len == 0:
+        slot1.nodes.add(node)
+      elif (let slot2 = slot1.asNode.nextSibling as HTMLSlotElement;
+          slot2 != nil):
+        slot2.nodes.add(node)
 
 proc insert1(parent: ParentNode; ctx: JSContext; node, before: Node;
     postConnectionNodes: var seq[Element]) =
@@ -2917,7 +2943,7 @@ proc insert1(parent: ParentNode; ctx: JSContext; node, before: Node;
   # inconsistent.  So we just cache the first node with insertion steps
   # and traverse the tree again if needed.
   while specialElement != nil:
-    if specialElement.insertionSteps():
+    if specialElement.insertionSteps(ctx):
       postConnectionNodes.add(specialElement)
     specialElement = specialElement.nextElementDescendantShadow(node)
 
@@ -3995,7 +4021,7 @@ jsClassPublicDef(Document):
       else:
         document.head.asElement
       if head != nil:
-        title = document.newElement(satTitle.view(), namespace)
+        title = document.newElement(ctx, satTitle.view(), namespace)
         if title != nil:
           var before = Node(nil)
           if head == root:
@@ -4059,7 +4085,7 @@ jsClassPublicDef(Document):
       satNamespaceHTML
     else:
       satUempty
-    ctx.toJSNew(document.newElement(localName, namespace))
+    ctx.toJSNew(document.newElement(ctx, localName, namespace))
 
   proc createElementNS(ctx: JSContext; document: Document;
       namespace: CAtomNullable; qualifiedName: CAtom): Opt[Element]
@@ -4068,7 +4094,7 @@ jsClassPublicDef(Document):
     var localName = qualifiedName
     ?ctx.validateAndExtract(namespace, localName, nvElement)
     #TODO custom elements (is)
-    ok(document.newElement(localName, namespace, qualifiedName))
+    ok(document.newElement(ctx, localName, namespace, qualifiedName))
 
   proc createDocumentFragment(document: Document): DocumentFragment
       {.jsnfunc.} =
@@ -4295,9 +4321,9 @@ jsClassRaw(DOMImplementationDef, "DOMImplementation"):
     let doc = newDocument(ctx)
     doc.contentType = satTextHtml
     let doctype = doc.newDocumentType(str("html"), str(""), str(""))
-    let html = doc.newHTMLElement(ttHtml)
-    let head = doc.newHTMLElement(ttHead)
-    let body = doc.newHTMLElement(ttBody)
+    let html = doc.newHTMLElement(ctx, ttHtml)
+    let head = doc.newHTMLElement(ctx, ttHead)
+    let body = doc.newHTMLElement(ctx, ttBody)
     if doctype == nil or html == nil or head == nil or body == nil:
       return JS_ThrowOutOfMemory(ctx)
     doc.asParentNode.append(ctx, doctype.asNode)
@@ -4306,7 +4332,7 @@ jsClassRaw(DOMImplementationDef, "DOMImplementation"):
     if not JS_IsUndefined(title):
       var ds: DOMString
       ?ctx.fromJS(title, ds)
-      let titleElement = doc.newHTMLElement(ttTitle)
+      let titleElement = doc.newHTMLElement(ctx, ttTitle)
       let text = doc.newText(ds)
       if titleElement == nil or text == nil:
         return JS_ThrowOutOfMemory(ctx)
@@ -5258,18 +5284,19 @@ proc reflectTokens*(element: Element; arr: var DOMTokenArray; name: StaticAtom;
     # references element
     list.toks = DOMTokenArrayView(arr)
 
-proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
-    value: Str) =
+proc reflectLocalAttr(element: Element; ctx: JSContext; name: StaticAtom;
+    value, oldValue: StrNil) =
   case element.tagType
   of ttLink:
     let link = element as HTMLLinkElement
     if name == satRel:
-      link.asElement.reflectTokens(link.relList, satRel, value) # do not return
+      link.asElement.reflectTokens(link.relList, satRel, value.asStr)
+      # do not return
     let document = link.asNode.document
     let connected = link.asNode.isConnected()
     if name == satDisabled:
       let wasDisabled = link.isDisabled()
-      link.enabled = (not has).toOptionalBool()
+      link.enabled = (value == nil).toOptionalBool()
       let disabled = link.isDisabled()
       if wasDisabled != disabled:
         for sheet in link.asSheetElement.sheets:
@@ -5287,7 +5314,7 @@ proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
   of ttA:
     let anchor = element as HTMLAnchorElement
     if name == satRel:
-      anchor.asElement.reflectTokens(anchor.relList, satRel, value)
+      anchor.asElement.reflectTokens(anchor.relList, satRel, value.asStr)
   of ttCanvas:
     if element.scriptingEnabled and name in {satWidth, satHeight}:
       let w = element.attrul(satWidth).get(300)
@@ -5319,59 +5346,87 @@ proc reflectLocalAttr(element: Element; name: StaticAtom; has: bool;
       let window = image.asNode.document.window
       if window != nil:
         window.loadImage(image)
+  of ttDetails:
+    if name == satName and value.asStr != "":
+      let i = element.findAttr(satOpen)
+      if i >= 0 and element.findOpenDetailsInGroup(value.asStr) != nil:
+        element.delAttr(ctx, i)
+    if name == satOpen and (oldValue == nil) != (value == nil):
+      let rt = JS_GetRuntime(ctx)
+      let env = DetailsTaskEnv(
+        element: element,
+        open: value != nil,
+        oldState: oldValue != nil
+      )
+      if ctx.getOpaque() != nil:
+        rt.filterTasks(filterDetailsTask, env)
+        discard ctx.queueTask(jtsDOMManipulation, toggleDetailsTask, env)
+      if value != nil and (let name = element.attr(satName); name != ""):
+        let other = element.findOpenDetailsInGroup(name)
+        if other != nil:
+          other.delAttr(ctx, satOpen.view())
+      if (let shadow = element.shadowRoot; shadow != nil):
+        if (let first = shadow.asParentNode.firstChild; first != nil):
+          if (let defaultSummary = first.firstChild as Element;
+              defaultSummary != nil):
+            let style = if value != nil:
+              str("display: list-item; counter-increment: list-item 0;" &
+                  "list-style: disclosure-open inside")
+            else:
+              str("display: list-item; counter-increment: list-item 0;" &
+                  "list-style: disclosure-closed inside")
+            defaultSummary.setAttr(ctx, satStyle, style)
+          if (let next = first.nextSibling as Element; next != nil):
+            #TODO content-visibility
+            let style = if value != nil:
+              str("display: block")
+            else:
+              str("display: none")
+            next.setAttr(ctx, satStyle, style)
   else:
-    element.reflectAttributeForm(name, has, value)
+    element.reflectAttributeForm(name, value)
 
 # Called whenever an attribute changes on the element.
-# If `has' is false, then value is "".  Otherwise, value is the new
-# attribute value.
-proc reflectAttr0(element: Element; name: CAtom; has: bool; value: Str) =
+# If the value was removed, a nil `value' is passed; otherwise the new
+# attribute's value.
+proc reflectAttr(element: Element; ctx: JSContext; name: CAtom;
+    value, oldValue: StrNil) =
   let name = name.toStaticAtom()
   case name
   of satId:
     let root = element.asNode.rootNode as RootNode
     if element.id != satUempty and root != nil:
       root.removeElementId(element)
-    if has:
-      element.id = value.toAtom()
-    else:
-      element.id = satUempty.view()
+    element.id = value.asStr.toAtom()
     if element.id != satUempty and root != nil:
       root.addElementId(element)
   of satName:
-    if has:
-      element.name = value.toAtom()
-    else:
-      element.name = CAtomNull
+    element.name = value.toAtom()
   of satClass:
-    element.reflectTokens(element.classList, satClass, value)
+    element.reflectTokens(element.classList, satClass, value.asStr)
   #TODO internalNonce
   of satStyle:
-    if has:
+    if value != nil:
       if element.cachedStyle == nil:
-        element.cachedStyle = newCSSStyleDeclaration(element, value)
+        element.cachedStyle = newCSSStyleDeclaration(element, value.asStr)
       elif element.cachedStyle.updating: # no need to re-parse
         element.cachedStyle.updating = false
       else:
-        element.cachedStyle.decls = value.parseDeclarations()
+        element.cachedStyle.decls = value.asStr.parseDeclarations()
     else:
       element.cachedStyle.decls.setLen(0)
   of satUnknown: discard # early return
-  elif element.scriptingEnabled and element.reflectScriptAttr(name, value):
+  elif element.scriptingEnabled and
+      element.reflectScriptAttr(name, value.asStr):
     discard
   else:
-    element.reflectLocalAttr(name, has, value)
-
-proc reflectAttr(element: Element; name: CAtom; has: bool; value: Str) =
-  element.reflectAttr0(name, has, value)
+    element.reflectLocalAttr(ctx, name, value, oldValue)
   element.asNode.document.invalidateCollections()
   element.invalidate()
 
-proc reflectAttrDel(element: Element; name: CAtom) =
-  element.reflectAttr(name, false, str(""))
-
-proc reflectAttr(element: Element; attr: AttrData) =
-  element.reflectAttr(attr.name, true, attr.value)
+proc reflectAttr(element: Element; ctx: JSContext; attr: AttrData;
+    oldValue: StrNil) =
+  element.reflectAttr(ctx, attr.name, attr.value.toStrNil(), oldValue)
 
 proc elIndex*(this: Element): uint32 =
   if this.parentNode == nil:
@@ -5379,7 +5434,7 @@ proc elIndex*(this: Element): uint32 =
   let parent = this.asNode.parentElement
   if parent == nil:
     return 0 # <html>
-  if parent.asNode.firstChild == this:
+  if parent.asParentNode.firstChild == this:
     return 0
   if efChildElIndicesInvalid in parent.flags:
     var n = 0'u32
@@ -5403,7 +5458,7 @@ proc isDisabled*(this: Element): bool =
       of ttLegend: lastLegend = it
       of ttFieldset:
         if it.attrb(satDisabled):
-          return it.asNode.firstChild != lastLegend
+          return it.asParentNode.firstChild != lastLegend
       else: discard
     return false
   of ttOptgroup:
@@ -5415,10 +5470,10 @@ proc isDisabled*(this: Element): bool =
   else: #TODO form-associated custom element
     return false
 
-proc newElement*(document: Document; localName: CAtom;
+proc newElement*(document: Document; ctx: JSContext; localName: CAtom;
     namespace = satNamespaceHTML): Element =
   let tagName = localName.toStr().toUpperAscii().toAtom()
-  return document.newElement(localName, namespace.view(), tagName)
+  return document.newElement(ctx, localName, namespace.view(), tagName)
 
 proc isRenderBlocking(element: Element): bool =
   if element.attr(satBlocking).containsToken("render"):
@@ -5451,11 +5506,6 @@ proc ensureStyle*(element: Element) =
     element.flags.excl(efRestyle)
     element.applyStyle()
 
-proc hasInsertionSteps(element: Element): bool =
-  element.tagType in {ttLink, ttImg, ttStyle, ttScript} or
-    element.tagType(satNamespaceSVG) == ttSvg or
-    element.hasInsertionStepsForm()
-
 proc hasClass*(element: Element; class: CAtom): bool =
   if efQuirks in element.flags:
     return element.classList.containsIgnoreCase(class)
@@ -5466,8 +5516,13 @@ proc hasId*(element: Element; id: CAtom): bool =
     return element.id.equalsIgnoreCase(id)
   return element.id == id
 
+proc hasInsertionSteps(element: Element): bool =
+  element.tagType in {ttLink, ttImg, ttStyle, ttScript, ttDetails} or
+    element.tagType(satNamespaceSVG) == ttSvg or
+    element.hasInsertionStepsForm()
+
 # Returns true if has post-connection steps.
-proc insertionSteps(element: Element): bool =
+proc insertionSteps(element: Element; ctx: JSContext): bool =
   case element.tagType
   of ttLink:
     let link = element as HTMLLinkElement
@@ -5492,6 +5547,12 @@ proc insertionSteps(element: Element): bool =
       if document.sheetTitle == "":
         document.sheetTitle = style.asElement.attr(satTitle)
       style.updateSheet()
+  of ttDetails:
+    let i = element.findAttr(satOpen)
+    if i >= 0:
+      let name = element.attr(satName)
+      if name != "" and element.findOpenDetailsInGroup(name) != nil:
+        element.delAttr(ctx, i)
   of ttScript:
     return true
   elif element.namespaceURI == satNamespaceSVG:
@@ -5534,8 +5595,9 @@ proc delAttr(element: Element; ctx: JSContext; i: int) =
     let i = name.find(':')
     if i >= 0:
       name = name.substr(i)
+  let oldValue = move(element.attrs[i].value)
   element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
-    element.attrs[i].namespace, element.attrs[i].value.toStrNil(), [], [],
+    element.attrs[i].namespace, oldValue.toStrNil(), [], [],
     Node(nil), Node(nil))
   let map = element.getCachedAttributes()
   if map != nil:
@@ -5553,10 +5615,11 @@ proc delAttr(element: Element; ctx: JSContext; i: int) =
         internalNext: attr.asNode.document.asNode,
         attrs: @[attr.data]
       )).asElement
+      attr.ownerElement.attrs[0].value = oldValue
       attr.dataIdx = 0
       map.attrlist.del(j) # ordering does not matter
   element.attrs.delete(i) # ordering matters
-  element.reflectAttrDel(name)
+  element.reflectAttr(ctx, name, str(nil), oldValue.toStrNil())
 
 proc delAttr(element: Element; ctx: JSContext; name: CAtom) =
   let i = element.findAttr(name)
@@ -5567,15 +5630,17 @@ proc setAttr(element: Element; ctx: JSContext; name: CAtom; value: sink Str) =
   var i = element.attrs.upperBound(name, cmpAttrName)
   if i > 0 and element.attrs[i - 1].name == name:
     dec i
+    let oldValue = move(element.attrs[i].value)
     element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
-      CAtomNull, element.attrs[i].value.toStrNil(), [], [], Node(nil),
+      CAtomNull, oldValue.toStrNil(), [], [], Node(nil),
       Node(nil))
     element.attrs[i].value = value
+    element.reflectAttr(ctx, element.attrs[i], oldValue.toStrNil)
   else:
     element.asNode.queueMutationRecord(ctx, mrtAttributes, name,
       CAtomNull, str(nil), [], [], Node(nil), Node(nil))
     element.attrs.insert(AttrData(name: name, value: value), i)
-  element.reflectAttr(element.attrs[i])
+    element.reflectAttr(ctx, element.attrs[i], str(nil))
 
 proc setAttr*(element: Element; ctx: JSContext; name: StaticAtom;
     value: sink Str) =
@@ -5596,10 +5661,11 @@ proc setAttrNS(element: Element; ctx: JSContext; namespace: CAtomNullable;
   ?ctx.validateAndExtract(namespace, localName, nvAttribute)
   var i = element.findAttrNS(namespace, localName)
   if i >= 0:
+    let old = move(element.attrs[i].value)
     element.asNode.queueMutationRecord(ctx, mrtAttributes, localName,
-      namespace, element.attrs[i].value.toStrNil(), [], [], Node(nil),
-      Node(nil))
+      namespace, old.toStrNil(), [], [], Node(nil), Node(nil))
     element.attrs[i].value = value
+    element.reflectAttr(ctx, element.attrs[i], old.toStrNil())
   else:
     element.asNode.queueMutationRecord(ctx, mrtAttributes, localName,
       namespace, str(nil), [], [], Node(nil), Node(nil))
@@ -5609,20 +5675,21 @@ proc setAttrNS(element: Element; ctx: JSContext; namespace: CAtomNullable;
       name: qualifiedName,
       value: value
     ), i)
-  element.reflectAttr(element.attrs[i])
+    element.reflectAttr(ctx, element.attrs[i], str(nil))
   ok()
 
-proc sinkAttrs*(element: Element; attrs: sink seq[AttrData]) =
+proc sinkAttrs*(element: Element; ctx: JSContext; attrs: sink seq[AttrData]) =
   element.attrs = move(attrs)
   for attr in element.attrs:
-    element.reflectAttr(attr)
+    element.reflectAttr(ctx, attr, str(nil))
 
-proc addAttrsIfMissing*(element: Element; attrs: seq[AttrData]) =
+proc addAttrsIfMissing*(element: Element; ctx: JSContext;
+    attrs: seq[AttrData]) =
   for attr in attrs:
     var i = element.attrs.upperBound(attr.name, cmpAttrName)
     if i <= 0 or element.attrs[i - 1].name != attr.name:
       element.attrs.insert(attr, i)
-      element.reflectAttr(element.attrs[i])
+      element.reflectAttr(ctx, element.attrs[i], str(nil))
 
 proc hint*(element: Element): bool =
   efHint in element.flags
@@ -5691,6 +5758,22 @@ proc getDOMTokenList*(element: Element; arr: DOMTokenArray; name: StaticAtom):
 proc shadowRoot(this: Element): ShadowRoot =
   this.internalFirst as ShadowRoot
 
+proc attachShadowInternal(this: Element; init: ShadowRootInit;
+    customElements: CustomElementRegistry): ShadowRoot =
+  let shadow = jsNew ShadowRootObj(
+    host: this,
+    mode: init.mode,
+    delegatesFocus: init.delegatesFocus,
+    #TODO available to internals
+    slotAssignment: init.slotAssignment,
+    clonable: init.clonable,
+    serializable: init.serializable,
+    customElements: customElements
+  )
+  if shadow != nil:
+    this.setShadowRoot(shadow)
+  shadow
+
 proc toInnerText(this: Element; ctx: JSContext; s: openArray[char]):
     DocumentFragment =
   var text = initGrowbufOfCap(s.len)
@@ -5703,7 +5786,7 @@ proc toInnerText(this: Element; ctx: JSContext; s: openArray[char]):
     cr = c == '\r'
   if cr:
     text &= "<br>"
-  let root = this.asNode.document.newHTMLElement(ttDiv)
+  let root = this.asNode.document.newHTMLElement(ctx, ttDiv)
   if root != nil:
     return ctx.parseFragment(root.asParentNode, text.toOpenArray())
   return DocumentFragment(nil)
@@ -5860,7 +5943,7 @@ jsClassPublicDef(Element):
       return JS_ThrowDOMException(ctx, "NoModificationAllowedError",
         "outerHTML is disallowed for document elements")
     let parent = if parent0 of DocumentFragment:
-      element.asNode.document.newHTMLElement(ttBody).asElement
+      element.asNode.document.newHTMLElement(ctx, ttBody).asElement
     else:
       # neither a document, nor a document fragment => parent must be an
       # element node
@@ -5884,7 +5967,7 @@ jsClassPublicDef(Element):
       nodeCtx = this.asNode.parentElement
     if nodeCtx == nil or
         not this.asNode.document.isxml and nodeCtx.tagType == ttHtml:
-      nodeCtx = this.asNode.document.newHTMLElement(ttBody).asElement
+      nodeCtx = this.asNode.document.newHTMLElement(ctx, ttBody).asElement
       if nodeCtx == nil:
         return JS_ThrowOutOfMemory(ctx)
     let fragment = ctx.parseFragment(nodeCtx.asParentNode,
@@ -5894,7 +5977,7 @@ jsClassPublicDef(Element):
     case position
     of iapBeforeBegin: this.parentNode.insert(ctx, fragment, this.asNode)
     of iapAfterBegin:
-      this.asParentNode.insert(ctx, fragment, this.asNode.firstChild)
+      this.asParentNode.insert(ctx, fragment, this.asParentNode.firstChild)
     of iapBeforeEnd: this.asParentNode.append(ctx, fragment)
     of iapAfterEnd:
       this.parentNode.insert(ctx, fragment, this.asNode.nextSibling)
@@ -6128,18 +6211,7 @@ jsClassPublicDef(Element):
         child.removeImpl(ctx)
       old.declarative = false
       return ok(old)
-    let shadow = jsNew ShadowRootObj(
-      host: this,
-      mode: init.mode,
-      delegatesFocus: init.delegatesFocus,
-      #TODO available to internals
-      slotAssignment: init.slotAssignment,
-      clonable: init.clonable,
-      serializable: init.serializable,
-      customElements: customElements
-    )
-    if shadow != nil:
-      this.setShadowRoot(shadow)
+    let shadow = this.attachShadowInternal(init, customElements)
     ok(shadow)
 
   proc closest(ctx: JSContext; this: Element; q: DOMString): JSValue
@@ -6196,7 +6268,7 @@ jsClassPublicDef(Element):
     let fragment = this.toInnerText(ctx, DOMString(ds).toOpenArray())
     if fragment == nil:
       return JS_ThrowOutOfMemory(ctx)
-    if fragment.asNode.firstChild == nil:
+    if fragment.asParentNode.firstChild == nil:
       let text = newText(this.asNode.document, str(""))
       if text != nil:
         fragment.asParentNode.append(ctx, text.asNode)
@@ -6536,8 +6608,9 @@ jsClassDef(CSSStyleDeclaration):
       return JS_EXCEPTION
 
 # HTMLElement
-proc newHTMLElement*(document: Document; tagType: TagType): HTMLElement =
-  let element = document.newElement(tagType.toStaticAtom().view(),
+proc newHTMLElement*(document: Document; ctx: JSContext; tagType: TagType):
+    HTMLElement =
+  let element = document.newElement(ctx, tagType.toStaticAtom().view(),
     satNamespaceHTML)
   return element as HTMLElement
 
@@ -6851,8 +6924,6 @@ proc jsReflectEventSet(ctx: JSContext; this, val: JSValueConst; magic: cint):
 jsClassPublicDef(HTMLElement):
   jsextends ElementDef
 
-  event.htmlElementClassID = classDef.id
-
   proc dataset(element: HTMLElement): DOMStringMap {.jsnfget.} =
     var dataset = element.asElement.getAccessor(satDataset) as DOMStringMap
     if dataset == nil:
@@ -6942,7 +7013,7 @@ jsClassPublicDef(HTMLAnchorElement):
 proc newAudio(ctx: JSContext; this_target: JSValueConst; argc: cint;
     argv: JSValueConstArray): JSValue {.cdecl.} =
   let document = ctx.getDocument()
-  let this = document.newHTMLElement(ttAudio)
+  let this = document.newHTMLElement(ctx, ttAudio)
   if argc >= 1 and not JS_IsUndefined(argv[0]):
     var ds: DOMString
     ?ctx.fromJS(argv[0], ds)
@@ -6986,10 +7057,14 @@ proc onFinishToBlob(response: Response; success: bool) =
     JS_FreeContext(ctx)
     return
   let window = this.asNode.document.window
+  #TODO invoke (with all the ceremony that entails)
   let res = trace(ctx.callSink(callback, JS_UNDEFINED.vc, jsBlob))
+  let rt = JS_GetRuntime(ctx)
+  let inScript = rt.getOpaque().inScript
   if JS_IsException(res.vc):
     window.console.error(str("Exception in canvas toBlob:"),
       ctx.getExceptionMsg())
+  rt.cleanUpCallback(inScript)
   JS_FreeContext(ctx)
 
 proc toBlob1(opaque: RootRef; response: Response) =
@@ -7088,11 +7163,76 @@ jsClassDef(HTMLCanvasElement):
     let window = this.asNode.document.window
     window.corsFetch(request, toBlob0, env)
 
+# <details>
+proc initDetails(this: HTMLElement; ctx: JSContext; document: Document):
+    Opt[void] =
+  let shadow = this.asElement.attachShadowInternal(ShadowRootInit(),
+    document.customElements)
+  let defaultSummary = document.newHTMLElement(ctx, ttSummary)
+  let text = document.newText(str("Details"))
+  let slot1 = document.newHTMLElement(ctx, ttSlot)
+  let slot2 = document.newHTMLElement(ctx, ttSlot)
+  if shadow == nil or defaultSummary == nil or text == nil or slot1 == nil or
+      slot2 == nil:
+    return err()
+  defaultSummary.asParentNode.append(ctx, text.asNode)
+  slot1.asParentNode.append(ctx, defaultSummary.asNode)
+  shadow.asParentNode.append(ctx, slot1.asNode)
+  shadow.asParentNode.append(ctx, slot2.asNode)
+  #TODO content-visibility
+  slot2.asElement.setAttr(ctx, satStyle, str("display: none"))
+  defaultSummary.asElement.setAttr(ctx, satStyle,
+    str("display: list-item; counter-increment: list-item 0;" &
+        "list-style: disclosure-closed inside"))
+  ok()
+
+proc clickSummary*(this: HTMLElement; ctx: JSContext) =
+  var parent = this.asNode.parentElement
+  if parent.tagType == ttSlot:
+    let root = parent.asNode.parentNode as ShadowRoot
+    if root != nil:
+      parent = root.host
+  if parent.tagType == ttDetails:
+    let i = parent.findAttr(satOpen)
+    if i < 0:
+      parent.setAttr(ctx, satOpen, str(""))
+    else:
+      parent.delAttr(ctx, i)
+
+proc filterDetailsTask(env: JSTaskEnv; opaque: RootRef): bool =
+  let aux = DetailsTaskEnv(opaque)
+  if env of DetailsTaskEnv:
+    let env = DetailsTaskEnv(env)
+    if env.element == aux.element:
+      aux.oldState = env.oldState
+      return true
+  false
+
+proc findOpenDetailsInGroup(element: Element; value: Str): Element =
+  let root = element.asNode.rootNode as ParentNode
+  for other in root.elementDescendants(ttDetails):
+    if other.asElement != element and
+        other.asElement.attr(satName) == value and
+        other.asElement.attrb(satOpen):
+      return other.asElement
+  Element(nil)
+
+proc toggleDetailsTask(ctx: JSContext; env: JSTaskEnv): Opt[void] =
+  let env = DetailsTaskEnv(env)
+  let element = move(env.element)
+  let event = newToggleEvent(satToggle.view(), ToggleEventInit(
+    oldState: if env.oldState: satOpen.view() else: satClosed.view(),
+    newState: if env.open: satOpen.view() else: satClosed.view()
+  ))
+  if event != nil:
+    discard ctx.dispatch(element.asEventTarget, event.asEvent)
+  ok()
+
 # <img>
 proc newImage(ctx: JSContext; _: JSValueConst; argc: cint;
     argv: JSValueConstArray): JSValue {.cdecl.} =
   let document = ctx.getDocument()
-  let this = document.newHTMLElement(ttImg)
+  let this = document.newHTMLElement(ctx, ttImg)
   if argc >= 1 and not JS_IsUndefined(argv[0]):
     var x: uint32
     ?ctx.fromJS(argv[0], x)
@@ -7350,9 +7490,14 @@ proc fetchDescendantsAndLink(element: HTMLScriptElement; script: Script;
       ctx.setImportMeta(record.vc, true) == fjErr:
     window.logException(script.baseURL)
   else:
-    let res = ctx.evalFunction(record.toJSValue()) # consumes record
-    if JS_IsException(res):
-      window.logException(script.baseURL)
+    let rt = JS_GetRuntime(ctx)
+    let inScript = rt.getOpaque().inScript
+    block:
+      let res = ctx.evalFunction(record.toJSValue()) # consumes record
+      if JS_IsException(res):
+        window.logException(script.baseURL)
+      # note: res is discarded in the spec too
+    rt.cleanUpScript(inScript)
 
 type
   FetchModuleEnv* {.final.} = ref object of BlobOpaque
@@ -7486,10 +7631,13 @@ proc execute*(element: HTMLScriptElement) =
       let ctx = window.jsctx
       if window.settings.scripting != smFalse:
         element.prepare(ctx)
+        let rt = JS_GetRuntime(ctx)
+        let inScript = rt.getOpaque().inScript
         let record = move(script.record).toJSValue()
         let ret = ctx.evalFunction(record) # consumes record
         if JS_IsException(ret):
           window.logException(script.baseURL)
+        rt.cleanUpScript(inScript)
     document.currentScript = oldCurrentScript
   else: discard #TODO
   if needsInc:
@@ -7649,6 +7797,14 @@ jsClassPublicDef(HTMLScriptElement):
       {.jsfset: "text".} =
     this.asParentNode.replaceAll(ctx, ds)
 
+jsClassDef(HTMLSlotElement):
+  jsextends HTMLElementDef
+
+  proc mark(rt: JSRuntime; this: HTMLSlotElement; markFunc: JS_MarkFunc)
+      {.jsmark.} =
+    for it in this.nodes:
+      rt.markObj(it, markFunc)
+
 # <table>
 proc deleteRow(ctx: JSContext; rows: HTMLCollection; index: int32): Opt[void] =
   let nrows = rows.length
@@ -7704,7 +7860,7 @@ jsClassDef(HTMLTableElement):
     else: Node(nil) # tfoot
     var element = this.asParentNode.findFirstChildOf(tagType)
     if element == nil:
-      element = this.asNode.document.newHTMLElement(tagType).asElement
+      element = this.asNode.document.newHTMLElement(ctx, tagType).asElement
       if element != nil:
         this.asParentNode.insert(ctx, element.asNode, before)
     return element
@@ -7726,7 +7882,7 @@ jsClassDef(HTMLTableElement):
     if index < -1 or index > int64(nrows):
       JS_ThrowDOMException(ctx, "IndexSizeError", "index out of bounds")
       return err()
-    let tr = this.asNode.document.newHTMLElement(ttTr)
+    let tr = this.asNode.document.newHTMLElement(ctx, ttTr)
     if nrows == 0:
       let tbody = ctx.createTableChild(this, ttTbody)
       if tbody != nil:
@@ -7761,7 +7917,7 @@ jsClassDef(HTMLTableSectionElement):
     if index < -1 or index > int64(nrows):
       JS_ThrowDOMException(ctx, "IndexSizeError", "index out of bounds")
       return err()
-    let tr = this.asNode.document.newHTMLElement(ttTr)
+    let tr = this.asNode.document.newHTMLElement(ctx, ttTr)
     let before = if index == -1 or index == int64(nrows):
       Node(nil)
     else:
@@ -7832,7 +7988,6 @@ htmlClassDef(HTMLIFrameElement)
 htmlClassDef(HTMLFrameElement)
 htmlClassDef(HTMLHeadElement)
 htmlClassDef(HTMLObjectElement)
-htmlClassDef(HTMLSlotElement)
 
 template htmlClassRaw(name: untyped) =
   jsClassRaw(`name Def`, astToStr(name)):
@@ -7983,7 +8138,7 @@ proc newHTMLElementInternal(tagType: TagType; document: Document):
   jsNewOf(HTMLElementObj(), classid)
 
 #TODO custom elements
-proc newElement(document: Document;
+proc newElement(document: Document; ctx: JSContext;
     localName, namespaceURI, tagName: sink CAtom): Element =
   let tagType = localName.toTagType()
   let element = if namespaceURI == satNamespaceHTML:
@@ -7997,12 +8152,15 @@ proc newElement(document: Document;
     cesUndefined
   else:
     cesUncustomized
+  let isDetails = namespaceURI == satNamespaceHTML and localName == satDetails
   element.localName = localName
   element.namespaceURI = namespaceURI
   element.tagName = tagName
   element.internalNext = document.asNode
   if document.quirksMode == qmQuirks:
     element.flags.incl(efQuirks)
+  if isDetails and HTMLElement(element).initDetails(ctx, document).isErr:
+    return Element(nil)
   element
 
 proc addHTMLElementReflection(ctx: JSContext): Opt[void] =
@@ -8062,6 +8220,7 @@ proc registerElements(ctx: JSContext): Opt[void] =
   ?ctx.registerClass(ElementDef)
   ?ctx.registerFakeClass(AttrDummyElementDef)
   ?ctx.registerClass(HTMLElementDef)
+  event.htmlElementClassID = HTMLElementDef.id
   ?ctx.addHTMLElementReflection()
   ?ctx.registerFakeClass(SheetElementDef)
   ?ctx.registerClass(HTMLMediaElementDef)
@@ -8166,6 +8325,7 @@ proc registerElements(ctx: JSContext): Opt[void] =
 
 proc addDOMModule*(ctx: JSContext): JSCode =
   ?ctx.registerClass(NodeDef)
+  event.nodeClassID = NodeDef.id
   ?ctx.defineConsts(NodeDef.id, NodeType)
   ?ctx.registerFakeClass(ParentNodeDef)
   ?ctx.registerFakeClass(RootNodeDef)

@@ -1400,8 +1400,6 @@ proc loadAbout(ctx: var LoaderContext; handle: InputHandle;
     ctx.loadDataSend(handle, body, str("text/html"))
   elif url.pathname == "downloads":
     ctx.loadDownloads(handle, request)
-  elif url.pathname == "cookie-stream":
-    ctx.loadCookieStream(handle, request)
   elif url.pathname == "license":
     const body = str(staticRead"res/license.md")
     ctx.loadDataSend(handle, body, str("text/markdown"))
@@ -1452,6 +1450,8 @@ proc loadXChaCookie(ctx: var LoaderContext; client: ClientHandle;
     ctx.loadGetCookie(client, handle)
   elif url.pathname == "set":
     ctx.loadSetCookie(client, handle, request)
+  elif url.pathname == "stream":
+    ctx.loadCookieStream(handle, request)
   else:
     ctx.rejectHandle(handle, ceInvalidURL)
 
@@ -1481,7 +1481,7 @@ proc loadResource(ctx: var LoaderContext; client: ClientHandle;
         if auth != nil:
           let buf = initGrowbufM(auth.username, ':', auth.password)
           var buf2 = initGrowbuf("Basic ")
-          buf2 &= btoa(buf.toOpenArray())
+          buf2.addBtoa(buf.toOpenArray())
           request.headers.addIfNotFound(byteStr("Authorization"),
             buf2.toStr().asByteString)
         if mfUrimethodmap in entry.flags: # backwards-compat
