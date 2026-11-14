@@ -479,9 +479,9 @@ jsClassDef(HTMLOptionsCollection):
       if beforeEl == nil:
         beforeEl = this.asHTMLCollection.item(uint32(beforeIdx)) as HTMLElement
       let parent = if beforeEl != nil:
-        beforeEl.parentNode.asNode
+        beforeEl.parentNode
       else:
-        this.root
+        this.root as ParentNode
       return ctx.insertBeforeUndefined(parent, element.asNode,
         jsNull(beforeEl.asNode))
     return JS_UNDEFINED
@@ -526,7 +526,7 @@ jsClassDef(HTMLOptionsCollection):
       return JS_UNDEFINED
     let parent = this.root as ParentNode
     if element != nil:
-      return ctx.replaceChildWithThrow(parent.asNode, element.asNode, value)
+      return ctx.replaceChildWithThrow(parent, element.asNode, value)
     let len = this.length
     let document = parent.asNode.document
     for i in len ..< u:
@@ -534,7 +534,7 @@ jsClassDef(HTMLOptionsCollection):
       if option == nil:
         return JS_ThrowOutOfMemory(ctx)
       parent.append(ctx, option.asNode)
-    return ctx.insertBeforeUndefined(parent.asNode, value, jsNull(Node))
+    ctx.insertBeforeUndefined(parent, value, jsNull(Node))
 
   proc selectedIndex(this: HTMLOptionsCollection): int {.jsfget.} =
     return (this.root as HTMLSelectElement).selectedIndex
@@ -821,7 +821,7 @@ jsClassPublicDef(HTMLInputElement):
 
   proc setValue(this: HTMLInputElement; ds: sink DOMString) {.
       jsfset: "value".} =
-    this.setValue(ds.toStr())
+    this.setValue(ds.asStr)
 
   proc setType(ctx: JSContext; this: HTMLInputElement; s: DOMString) {.
       jsfset: "type".} =
@@ -967,9 +967,9 @@ jsClassDef(HTMLOutputElement):
       ds: sink DOMString) {.jsfset: "defaultValue".} =
     if this.dirty:
       this.dirty = true
-      this.internalValue = ds.toStr()
+      this.internalValue = ds.asStr
     else:
-      this.asParentNode.replaceAll(ctx, ds.toStr())
+      this.asParentNode.replaceAll(ctx, ds.asStr)
 
   proc value(this: HTMLOutputElement): Str {.jsfget.} =
     return this.asNode.textContent
@@ -1145,7 +1145,7 @@ jsClassDef(HTMLTextAreaElement):
 
   proc setValue(this: HTMLTextAreaElement; ds: sink DOMString) {.
       jsfset: "value".} =
-    this.setValue(ds.toStr())
+    this.setValue(ds.asStr)
 
   proc defaultValue(this: HTMLTextAreaElement): Str {.jsfget.} =
     this.asParentNode.childTextContent

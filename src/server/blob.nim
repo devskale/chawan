@@ -195,8 +195,8 @@ proc init(ctx: JSContext; blob: Blob; parts: seq[BlobPart];
     copyMem(addr buffer[i], p, n)
     i += n
   blob.size = len
-  if AllChars - {char(0x20)..char(0x7E)} notin blobType.toOpenArray():
-    blob.contentType = blobType.toStr().toLowerAscii()
+  if AllChars - {char(0x20)..char(0x7E)} notin blobType.asStr:
+    blob.contentType = blobType.asStr.toLowerAscii()
   ok()
 
 proc init(ctx: JSContext; blob: Blob; parts: seq[BlobPart];
@@ -416,6 +416,10 @@ proc startReadTask(ctx: JSContext; env: JSTaskEnv): Opt[void] =
   env.len = len
   ctx.queueTask(jtsFileReader, fulfillReadTask, env)
 
+proc filterFileReaderTask(source: JSTaskSource; env: JSTaskEnv;
+    opaque: RootRef): bool =
+  source == jtsFileReader
+
 jsClassDef(FileReader):
   jsextends EventTargetDef
 
@@ -434,7 +438,7 @@ jsClassDef(FileReader):
     if packageType == ptText and not JS_IsUndefined(jsEncoding):
       var ds: DOMString
       ?ctx.fromJS(jsEncoding, ds)
-      encoding = ds.toStr().toStrNil()
+      encoding = ds.asStr.toStrNil()
     if this.readyState == frsLoading:
       return JS_ThrowDOMException(ctx, "InvalidStateError",
         "a file is already being loaded")
@@ -457,7 +461,7 @@ jsClassDef(FileReader):
       if this.abort != nil:
         discard ?trace(ctx.abort(this.abort))
         this.readyState = frsDone
-      JS_GetRuntime(ctx).removeTasks(jtsFileReader)
+      JS_GetRuntime(ctx).filterTasks(filterFileReaderTask, nil)
       ctx.fireProgressEvent(this.asEventTarget, satAbort, 0, 0)
       if this.readyState != frsLoading:
         ctx.fireProgressEvent(this.asEventTarget, satLoadend, 0, 0)

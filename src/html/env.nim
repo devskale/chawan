@@ -197,7 +197,7 @@ jsClassDef(PermissionStatus):
 proc denyPermissionJob(ctx: JSContext; env: JSTaskEnv): Opt[void] =
   let env = PermissionEnv(env)
   let obj = ?trace(ctx.toJSNew(jsNew PermissionStatusObj(
-    name: move(env.name).toStr(),
+    name: move(env.name).asStr,
     state: psDenied
   )))
   #TODO call?
@@ -356,8 +356,7 @@ jsClassRaw(LocationDef, "Location"):
     return location.url.serialize()
 
   proc setHref(ctx: JSContext; location: Location; s: Str): JSValue {.
-      jsuffunc: "open", jsfset: "href", jsuffunc: "assign",
-      jsuffunc: "replace".} =
+      jsfset: "href", jsuffunc: "assign", jsuffunc: "replace".} =
     let window = location.window
     return ctx.setLocation(window, s)
 
@@ -890,7 +889,7 @@ jsClassDef(Window):
     ctx.toJS(buf)
 
   proc alert(window: Window; s: DOMString) {.jsfunc.} =
-    window.console.error(s.toStr())
+    window.console.error(s.asStr)
 
   proc getEvent(ctx: JSContext; window: Window): JSValue {.jsrfget: "event".} =
     if window.event == nil:
@@ -939,6 +938,9 @@ jsClassDef(Window):
 
   proc customElements(window: Window): CustomElementRegistry {.jsfget.} =
     window.document.customElements
+
+  proc open(ctx: JSContext; window: Window; s: Str): JSValue {.jsuffunc.} =
+    ctx.open(window, s)
 
 proc normalizeModuleName(ctx: JSContext; baseName, name: cstringConst;
     opaque: pointer): cstring {.cdecl.} =
