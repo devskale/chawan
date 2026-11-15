@@ -65,14 +65,14 @@ proc atomToTagTypeImpl(builder: DOMBuilderImpl; atom: AtomImpl): TagType {.doc.}
   ## Turn an Atom `atom` into a TagType. This is the inverse function of
   ## `tagTypeToAtomImpl`.
 
-proc getDocumentImpl(builder: DOMBuilderImpl): HandleImpl {.doc.}
+proc getDocumentImpl(builder: DOMBuilderImpl): lent HandleImpl {.doc.}
   ## Get the root document node's handle.
   ## This must not return nil, not even in the fragment parsing case.
 
 proc getParentNodeImpl(builder: DOMBuilderImpl; handle: HandleImpl):
-    HandleImpl {.doc.}
+    lent HandleImpl {.doc.}
   ## Retrieve a handle to the parent node.
-  ## May return none(Handle) if no parent node exists.
+  ## May return default(HandleImpl) if no parent node exists.
 
 proc createHTMLElementImpl(builder: DOMBuilderImpl): HandleImpl {.doc.}
   ## Create a new <html> element node. The tag type of the created element must
@@ -83,7 +83,7 @@ proc createHTMLElementImpl(builder: DOMBuilderImpl): HandleImpl {.doc.}
 
 proc createElementForTokenImpl(builder: DOMBuilderImpl; localName: AtomImpl;
     namespace: Namespace; intendedParent: HandleImpl;
-    attrs: sink seq[AttrData]): HandleImpl {.doc.}
+    attrs: sink AttrDataList): HandleImpl {.doc.}
   ## Create a new element node.
   ##
   ## `localName` is an Atom representing the tag name of the start token.
@@ -137,7 +137,7 @@ proc getNamespaceImpl(builder: DOMBuilderImpl; handle: HandleImpl): Namespace
   ## `createElement`.)
 
 proc getTemplateContentImpl(builder: DOMBuilderImpl; handle: HandleImpl):
-    HandleImpl {.doc.}
+    lent HandleImpl {.doc.}
   ## Retrieve a handle to the template element's contents. Every element
   ## where `builder.atomToTagTypeImpl(element.localName)` equals ttTemplate
   ## and `builder.getNamespaceImpl(element)` equals `Namespace.HTML` must have
@@ -145,7 +145,7 @@ proc getTemplateContentImpl(builder: DOMBuilderImpl; handle: HandleImpl):
 
 #TODO I guess this could be `sink attrs` too
 proc addAttrsIfMissingImpl(builder: DOMBuilderImpl; handle: HandleImpl,
-    attrs: seq[AttrData]) {.doc.}
+    attrs: AttrDataList) {.doc.}
   ## Add the attributes in `attrs` to the element node `element`.
   ## This is only called with the HTML and BODY tags, when more than one
   ## exists in a document.
@@ -175,11 +175,14 @@ proc insertBeforeImpl(builder: DOMBuilderImpl; parent, child: HandleImpl;
 
 proc insertTextImpl(builder: DOMBuilderImpl; parent: HandleImpl;
     text: sink Str; before: HandleImpl) {.doc.}
-  ## Insert a text node at the specified location with contents `text`. If
-  ## the specified location has a previous sibling that is a text node, no new
-  ## text node should be created, but instead `text` should be appended to the
-  ## previous sibling's character data (or if `before` is `none(Handle)`,
-  ## to the last element).
+  ## Insert a text node at the specified location with contents `text`.
+  ##
+  ## If the specified location has a previous sibling that is a text node,
+  ## no new text node should be created, but instead `text` should be
+  ## appended to the previous sibling's character data (or if `before` is
+  ## `default(Handle)`, to the last element).
+  ##
+  ## If `parent` is the document node, the text must be discarded.
 
 proc removeImpl(builder: DOMBuilderImpl; child: HandleImpl) {.doc.}
   ## If `child` does not have a parent node, do nothing. Otherwise, remove
@@ -236,18 +239,18 @@ when defined(nimdocdummy):
   proc atomToTagTypeImpl(builder: DOMBuilderImpl; atom: AtomImpl): TagType =
     discard
 
-  proc getDocumentImpl(builder: DOMBuilderImpl): HandleImpl =
+  proc getDocumentImpl(builder: DOMBuilderImpl): lent HandleImpl =
     discard
 
   proc getParentNodeImpl(builder: DOMBuilderImpl; handle: HandleImpl):
-      HandleImpl =
+      lent HandleImpl =
     discard
 
   proc createHTMLElementImpl(builder: DOMBuilderImpl): HandleImpl = discard
 
   proc createElementForTokenImpl(builder: DOMBuilderImpl; localName: AtomImpl;
       namespace: Namespace; intendedParent: HandleImpl;
-      attrs: sink seq[AttrData]): HandleImpl = discard
+      attrs: sink AttrDataList): HandleImpl = discard
 
   proc getLocalNameImpl(builder: DOMBuilderImpl; handle: HandleImpl): AtomImpl =
     discard
@@ -257,11 +260,11 @@ when defined(nimdocdummy):
     discard
 
   proc getTemplateContentImpl(builder: DOMBuilderImpl; handle: HandleImpl):
-      HandleImpl =
+      lent HandleImpl =
     discard
 
   proc addAttrsIfMissingImpl(builder: DOMBuilderImpl; handle: HandleImpl;
-      attrs: seq[AttrData]) =
+      attrs: AttrDataList) =
     discard
 
   proc insertCommentImpl(builder: DOMBuilderImpl; parent: HandleImpl;

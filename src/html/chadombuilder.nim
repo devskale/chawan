@@ -46,8 +46,8 @@ include chame/htmlparseriface
 proc setActiveParser(document: Document; wrapper: HTML5ParserWrapper) =
   document.parser = wrapper
 
-proc getDocumentImpl(builder: ChaDOMBuilder): ParentNode =
-  return builder.document.asParentNode
+proc getDocumentImpl(builder: ChaDOMBuilder): lent ParentNode =
+  builder.document.asParentNode
 
 proc atomToTagTypeImpl(builder: ChaDOMBuilder; atom: CAtom): TagType =
   return atom.toTagType()
@@ -113,15 +113,14 @@ proc setEncodingImpl(builder: ChaDOMBuilder; encoding: Str):
   return seStop
 
 proc getTemplateContentImpl(builder: ChaDOMBuilder; handle: ParentNode):
-    ParentNode =
+    lent ParentNode =
   return (handle as HTMLTemplateElement).content.asParentNode
 
 proc getParentNodeImpl(builder: ChaDOMBuilder; handle: ParentNode):
-    ParentNode =
+    lent ParentNode =
   return handle.parentNode
 
-proc getLocalNameImpl(builder: ChaDOMBuilder; handle: ParentNode):
-    CAtom =
+proc getLocalNameImpl(builder: ChaDOMBuilder; handle: ParentNode): CAtom =
   return (handle as Element).localName
 
 proc getNamespaceImpl(builder: ChaDOMBuilder; handle: ParentNode): Namespace =
@@ -149,7 +148,7 @@ proc createHTMLElementImpl(builder: ChaDOMBuilder): ParentNode =
 
 proc createElementForTokenImpl(builder: ChaDOMBuilder; localName: CAtom;
     namespace: Namespace; intendedParent: ParentNode;
-    attrs: sink seq[AttrData]): ParentNode =
+    attrs: sink AttrDataList): ParentNode =
   let document = builder.document
   let element = document.newElement(builder.ctx, localName,
     namespace.toStaticAtom())
@@ -189,16 +188,17 @@ proc insertBeforeImpl(builder: ChaDOMBuilder; parent, child: ParentNode;
 
 proc insertTextImpl(builder: ChaDOMBuilder; parent: ParentNode; text: sink Str;
     before: ParentNode) =
-  let prevText = parent.lastChildBefore(before.asNode) as Text
-  if prevText != nil:
-    prevText.data &= text
-    let parent = parent as Element
-    if parent != nil:
-      parent.invalidate()
-  else:
-    let text = builder.document.newText(text)
-    if text != nil:
-      builder.insertBefore(parent, text.asNode, before)
+  if parent != builder.document: # I guess it can happen with scripts?
+    let prevText = parent.lastChildBefore(before.asNode) as Text
+    if prevText != nil:
+      prevText.data &= text
+      let parent = parent as Element
+      if parent != nil:
+        parent.invalidate()
+    else:
+      let text = builder.document.newText(text)
+      if text != nil:
+        builder.insertBefore(parent, text.asNode, before)
 
 proc removeImpl(builder: ChaDOMBuilder; child: ParentNode) =
   child.asNode.removeImpl(builder.ctx, suppressObservers = true)
@@ -211,7 +211,7 @@ proc moveChildrenImpl(builder: ChaDOMBuilder; fromNode, toNode: ParentNode) =
     builder.insertBefore(toNode, child, ParentNode(nil))
 
 proc addAttrsIfMissingImpl(builder: ChaDOMBuilder; handle: ParentNode;
-    attrs: seq[AttrData]) =
+    attrs: AttrDataList) =
   let element = handle as Element
   element.addAttrsIfMissing(builder.ctx, attrs)
 
