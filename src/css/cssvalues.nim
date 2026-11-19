@@ -19,7 +19,7 @@ import utils/tabutil
 import utils/twtstr
 
 type
-  CSSValueType* = enum
+  CSSValueType = enum
     cvtAlignItems = "alignItems"
     cvtAlignSelf = "alignSelf"
     cvtBgcolorIsCanvas = "bgcolorIsCanvas"
@@ -355,18 +355,6 @@ type
     length*: CSSLength
     zIndex*: CSSZIndex
 
-  CSSValue* = ref object
-    case v*: CSSValueType
-    of cvtContent:
-      content*: CSSContent
-    of cvtQuotes:
-      quotes*: CSSQuotes
-    of cvtCounterSet:
-      counterSet*: CSSCounterSetList
-    of cvtImage:
-      image*: NetworkBitmap
-    else: discard
-
   # Linked list of variable maps, except empty maps are skipped.
   CSSVariableMap* = ref object
     parent*: CSSVariableMap
@@ -379,24 +367,27 @@ type
   #TODO: we could split up CSSValues into smaller parts and intern those
   # too for more savings.
   CSSValuesMapObj* = object
-    tab: seq[ptr CSSValuesRootObj]
+    tab: seq[ptr CSSValuesHeader]
     load: int
 
-  CSSValuesRootObj {.pure, inheritable.} = object
+  CSSValuesHeader = object
     hcache: Hash
 
-  CSSValuesRoot = ref CSSValuesRootObj
+  CSSValues* = ref CSSValuesObj
 
-  CSSValuesObj* {.pure.} = object of CSSValuesRoot
+  CSSValuesObj = object
+    header: CSSValuesHeader
     pseudo*: PseudoElement
     bits*: array[CSSPropertyType.low..LastBitPropType, CSSValueBit]
     hwords*: array[FirstHWordPropType..LastHWordPropType, CSSValueHWord]
     words*: array[FirstWordPropType..LastWordPropType, CSSValueWord]
-    objs*: array[FirstObjPropType..CSSPropertyType.high, CSSValue]
+    counters*: array[FirstCounterPropType..LastCounterPropType,
+      CSSCounterSetList]
+    content*: CSSContent
+    quotes*: CSSQuotes
+    image*: NetworkBitmap
     vars*: CSSVariableMap
     next*: CSSValues
-
-  CSSValues* = ref CSSValuesObj
 
   CSSOrigin* = enum
     coUserAgent
@@ -404,7 +395,8 @@ type
     coAuthor
 
   CSSEntryType* = enum
-    ceBit, ceWord, ceHWord, ceObject, ceVar, ceGlobal
+    ceBit, ceHWord, ceWord, ceCounter, ceContent, ceQuotes, ceImage, ceVar,
+    ceGlobal
 
   CSSVarItemType* = enum
     cvitVar, cvitToks
@@ -430,8 +422,14 @@ type
       hword*: CSSValueHWord
     of ceWord:
       word*: CSSValueWord
-    of ceObject:
-      obj*: CSSValue
+    of ceCounter:
+      counter*: CSSCounterSetList
+    of ceContent:
+      content*: CSSContent
+    of ceQuotes:
+      quotes*: CSSQuotes
+    of ceImage:
+      image*: NetworkBitmap
     of ceVar:
       cvar*: CSSVarEntry
     of ceGlobal:
@@ -461,7 +459,7 @@ type
       deg: float32
 
 # Forward declarations
-proc del(map: var CSSValuesMapObj; computed: ptr CSSValuesRootObj)
+proc del(map: var CSSValuesMapObj; computed: ptr CSSValuesHeader)
 proc parseValue(ctx: var CSSParser; t: CSSPropertyType;
   entry: var CSSComputedEntry; attrs: WindowAttributes): Opt[void]
 proc parseCalcSum(ctx: var CSSParser; attrs: ptr WindowAttributes):
@@ -477,7 +475,7 @@ unionHooks(CSSValueBit)
 unionHooks(CSSValueHWord)
 unionHooks(CSSValueWord)
 
-proc `=destroy`*(computed: var CSSValuesRootObj) =
+proc `=destroy`*(computed: var CSSValuesHeader) =
   computedMap.del(addr computed)
 
 iterator items*(content: CSSContent): CSSContent =
@@ -491,7 +489,7 @@ iterator items*(list: CSSCounterSetList): CSSCounterSet =
     for it in list.s:
       yield it
 
-proc newCSSCounterSetList*(s: openArray[CSSCounterSet]): CSSCounterSetList =
+proc newCSSCounterSet*(s: varargs[CSSCounterSet]): CSSCounterSetList =
   CSSCounterSetList(s: @s)
 
 static:
@@ -577,12 +575,14 @@ const ValueTypes = [
   cptWidth: cvtLength,
   cptZIndex: cvtZIndex,
 
-  # pointers
-  cptBackgroundImage: cvtImage,
-  cptContent: cvtContent,
+  # counters
   cptCounterReset: cvtCounterSet,
   cptCounterIncrement: cvtCounterSet,
   cptCounterSet: cvtCounterSet,
+
+  # pointers
+  cptBackgroundImage: cvtImage,
+  cptContent: cvtContent,
   cptQuotes: cvtQuotes,
 ]
 
@@ -661,8 +661,7 @@ const LayoutProperties* = {
 }
 
 proc isSame(a, b: CSSValues): bool =
-  if a.hcache != b.hcache or a.pseudo != b.pseudo or a.vars != b.vars or
-      a.next != b.next:
+  if a.header.hcache != b.header.hcache or a.pseudo != b.pseudo:
     return false
   if cmpMem(addr a.bits, addr b.bits, sizeof(a.bits)) != 0:
     return false
@@ -670,11 +669,14 @@ proc isSame(a, b: CSSValues): bool =
     return false
   if cmpMem(addr a.words, addr b.words, sizeof(a.words)) != 0:
     return false
-  if cmpMem(addr a.objs, addr b.objs, sizeof(a.objs)) != 0:
+  if cmpMem(addr a.counters, addr b.counters, sizeof(a.counters)) != 0:
+    return false
+  if a.content != b.content or a.quotes != b.quotes or a.image != b.image or
+      a.vars != b.vars or a.next != b.next:
     return false
   true
 
-proc putAgain(map: var CSSValuesMapObj; computed: ptr CSSValuesRootObj) =
+proc putAgain(map: var CSSValuesMapObj; computed: ptr CSSValuesHeader) =
   let mask = map.tab.len - 1
   let hcache = computed.hcache
   var home = hcache and mask
@@ -686,8 +688,8 @@ proc putAgain(map: var CSSValuesMapObj; computed: ptr CSSValuesRootObj) =
     if tabSwap(home, it.hcache, i, mask): # displace
       swap(it, current)
 
-proc put0(map: var CSSValuesMapObj; computed: ptr CSSValuesRootObj):
-    ptr CSSValuesRootObj =
+proc put0(map: var CSSValuesMapObj; computed: ptr CSSValuesHeader):
+    ptr CSSValuesHeader =
   let mask = map.tab.len - 1
   let hcache = computed.hcache
   var home = hcache and mask
@@ -722,30 +724,33 @@ proc atomize(map: var CSSValuesMapObj; computed: CSSValues): CSSValues =
     h = h !& cast[int](it.dummy)
   for it in computed.words:
     h = h !& cast[int](it.dummy)
-  for it in computed.objs:
+  for it in computed.counters:
     h = h !& cast[int](it)
-  computed.hcache = !$h
+  h = h !& cast[int](computed.content)
+  h = h !& cast[int](computed.quotes)
+  h = h !& cast[int](computed.image)
+  computed.header.hcache = !$h
   for it in map.tab.prepareTableAdd(map.load, 32):
     if it != nil:
       map.putAgain(it)
-  let res = map.put0(cast[ptr CSSValuesRootObj](computed))
-  if res == cast[ptr CSSValuesRootObj](computed):
+  let res = map.put0(cast[ptr CSSValuesHeader](computed))
+  if res == cast[ptr CSSValuesHeader](computed):
     inc map.load
   cast[CSSValues](res)
 
 proc atomize*(computed: CSSValues): CSSValues =
   computedMap.atomize(computed)
 
-proc tabHashFast(item: ptr CSSValuesRootObj): Hash =
+proc tabHashFast(item: ptr CSSValuesHeader): Hash =
   item.hcache
 
-proc tabIsEmpty(item: ptr CSSValuesRootObj): bool =
+proc tabIsEmpty(item: ptr CSSValuesHeader): bool =
   item == nil
 
-proc tabKeyEq(a, b: ptr CSSValuesRootObj): bool =
+proc tabKeyEq(a, b: ptr CSSValuesHeader): bool =
   a == b
 
-proc del(map: var CSSValuesMapObj; computed: ptr CSSValuesRootObj) =
+proc del(map: var CSSValuesMapObj; computed: ptr CSSValuesHeader) =
   tabDelImpl(map.tab, map.load, computed, computed.hcache)
 
 proc newCSSVariableMap*(parent: CSSVariableMap): CSSVariableMap =
@@ -783,22 +788,26 @@ proc isSame*(map, other: CSSVariableMap): bool =
   other != nil and map.load == other.load and map.tab == other.tab
 
 type CSSPropertyReprType* = enum
-  cprtBit, cprtHWord, cprtWord, cprtObject
+  cprtBit, cprtHWord, cprtWord, cprtCounter, cprtContent, cprtQuotes, cprtImage
 
 proc reprType*(t: CSSPropertyType): CSSPropertyReprType =
-  if t <= LastBitPropType:
-    return cprtBit
-  if t <= LastHWordPropType:
-    return cprtHWord
-  if t <= LastWordPropType:
-    return cprtWord
-  return cprtObject
+  case t
+  of CSSPropertyType.low..LastBitPropType: cprtBit
+  of FirstHWordPropType..LastHWordPropType: cprtHWord
+  of FirstWordPropType..LastWordPropType: cprtWord
+  of FirstCounterPropType..LastCounterPropType: cprtCounter
+  of cptBackgroundImage: cprtImage
+  of cptContent: cprtContent
+  of cptQuotes: cprtQuotes
 
 proc valueType*(prop: CSSPropertyType): CSSValueType =
   return ValueTypes[prop]
 
 proc isSupportedProperty*(s: openArray[char]): bool =
   return anyPropertyType(s).isOk
+
+proc isCurrentColor*(computed: CSSValues; t: CSSPropertyType): bool =
+  valueType(t) == cvtColor and computed.words[t].color.t == cctCurrent
 
 template auto*(length: CSSLength): bool =
   isNaN(length.npx)
@@ -840,18 +849,6 @@ proc add(buf: var Growbuf; length: CSSLength) =
 proc add(buf: var Growbuf; bmp: NetworkBitmap) =
   discard #TODO
 
-proc add(buf: var Growbuf; content: CSSContent) =
-  case content.t
-  of ContentString:
-    buf &= content.s
-  of ContentCounter:
-    buf &= "counter("
-    buf &= content.counter
-    buf.addM(", ", content.counterStyle.toStr(), ')')
-  of ContentOpenQuote, ContentCloseQuote, ContentNoOpenQuote,
-      ContentNoCloseQuote:
-    buf &= content.t.toStr()
-
 proc add(buf: var Growbuf; quotes: CSSQuotes) =
   if quotes == nil:
     buf &= "auto"
@@ -877,27 +874,30 @@ proc add(buf: var Growbuf; zIndex: CSSZIndex) =
   else:
     buf &= zIndex.num
 
-proc add(buf: var Growbuf; val: CSSValue) =
-  case val.v
-  of cvtImage: buf &= val.image
-  of cvtContent:
-    var first = true
-    for x in val.content:
-      if first:
-        first = false
-      else:
-        buf &= ' '
-      buf &= x
-  of cvtQuotes: buf &= val.quotes
-  of cvtCounterSet: buf &= val.counterSet
-  else: assert false
+proc add(buf: var Growbuf; content: CSSContent) =
+  var first = true
+  for x in content:
+    if first:
+      first = false
+    else:
+      buf &= ' '
+    buf &= x
+    case x.t
+    of ContentString:
+      buf &= x.s
+    of ContentCounter:
+      buf &= "counter("
+      buf &= x.counter
+      buf.addM(", ", x.counterStyle, ')')
+    of ContentOpenQuote, ContentCloseQuote, ContentNoOpenQuote,
+        ContentNoCloseQuote:
+      buf &= x.t.toStr()
 
 # https://html.spec.whatwg.org/#serialisation-of-a-color
 proc serialize*(c: ARGBColor; html: bool): Str =
   if html and c.a == 255:
     return c.rgb().toStr()
-  var buf = initGrowbufM("rgba(", uint32(c.r), ", ", uint32(c.g), ", ",
-    uint32(c.b), ", ")
+  var buf = initGrowbufM("rgba(", c.r, ", ", c.g, ", ", c.b, ", ")
   buf.addDouble(float64(c.a) / 255)
   buf &= ')'
   buf.toStr()
@@ -922,13 +922,7 @@ proc add(buf: var Growbuf; c: CSSColor) =
     if c.a != 255:
       buf &= c.serialize(html = false)
     else:
-      buf &= "rgb("
-      buf &= c.r
-      buf &= ", "
-      buf &= c.g
-      buf &= ", "
-      buf &= c.b
-      buf &= ')'
+      buf.addM("rgb(", c.r, ", ", c.g, ", ", c.b, ')')
 
 proc toStr*(c: CSSColor): Str =
   var buf = initGrowbuf()
@@ -987,7 +981,10 @@ proc addProperty(buf: var Growbuf; computed: CSSValues; p: CSSPropertyType) =
   of cprtBit: buf.addProperty(computed.bits[p], valueType(p))
   of cprtHWord: buf.addProperty(computed.hwords[p], valueType(p))
   of cprtWord: buf.addProperty(computed.words[p], valueType(p))
-  of cprtObject: buf &= computed.objs[p]
+  of cprtCounter: buf &= computed.counters[p]
+  of cprtContent: buf &= computed.content
+  of cprtQuotes: buf &= computed.quotes
+  of cprtImage: buf &= computed.image
 
 proc toStr*(computed: CSSValues): Str =
   var buf = initGrowbuf()
@@ -1017,10 +1014,10 @@ when defined(debug):
   proc `$`*(val: CSSValues): string =
     $val.toStr()
 
-  proc serialize(computed: CSSValues; p: CSSPropertyType): string =
+  proc serialize(computed: CSSValues; p: CSSPropertyType): Str =
     var buf = initGrowbuf()
     buf.addProperty(computed, p)
-    $buf
+    buf.toStr()
 
 proc getLength*(computed: CSSValues; p: CSSPropertyType): CSSLength =
   computed.words[p].length
@@ -1047,9 +1044,18 @@ macro `{}`*(vals: CSSValues; s: static string): untyped =
   of cprtWord:
     return quote do:
       `vals`.words[CSSPropertyType(`t`)].`vs`
-  of cprtObject:
+  of cprtCounter:
     return quote do:
-      `vals`.objs[CSSPropertyType(`t`)].`vs`
+      `vals`.counters[CSSPropertyType(`t`)]
+  of cprtContent:
+    return quote do:
+      `vals`.content
+  of cprtQuotes:
+    return quote do:
+      `vals`.quotes
+  of cprtImage:
+    return quote do:
+      `vals`.image
 
 macro `{}=`*(vals: CSSValues; s: static string, val: typed) =
   let t = propertyType(s).get
@@ -1065,12 +1071,18 @@ macro `{}=`*(vals: CSSValues; s: static string, val: typed) =
   of cprtWord:
     return quote do:
       `vals`.words[CSSPropertyType(`t`)] = CSSValueWord(`vs`: `val`)
-  of cprtObject:
+  of cprtCounter:
     return quote do:
-      `vals`.objs[CSSPropertyType(`t`)] = CSSValue(
-        v: CSSValueType(`v`),
-        `vs`: `val`
-      )
+      `vals`.counters[CSSPropertyType(`t`)] = `val`
+  of cprtContent:
+    return quote do:
+      `vals`.content = `val`
+  of cprtQuotes:
+    return quote do:
+      `vals`.quotes = `val`
+  of cprtImage:
+    return quote do:
+      `vals`.image = `val`
 
 proc inherited*(t: CSSPropertyType): bool =
   return t in InheritedProperties
@@ -2105,8 +2117,9 @@ proc parseDisplay(ctx: var CSSParser): Opt[CSSDisplay] =
     else: return err()
   ok(res)
 
-proc makeEntry*(t: CSSPropertyType; obj: CSSValue): CSSComputedEntry =
-  return CSSComputedEntry(et: ceObject, p: wide(t), obj: obj)
+proc makeEntry*(t: CSSPropertyType; counter: CSSCounterSetList):
+    CSSComputedEntry =
+  return CSSComputedEntry(et: ceCounter, p: wide(t), counter: counter)
 
 proc makeEntry(t: CSSPropertyType; hword: CSSValueHWord): CSSComputedEntry =
   return CSSComputedEntry(et: ceHWord, p: wide(t), hword: hword)
@@ -2140,7 +2153,13 @@ proc makeEntry*(t: CSSPropertyType; number: float32): CSSComputedEntry =
   makeEntry(t, CSSValueHWord(number: number))
 
 proc makeEntry(t: CSSPropertyType; image: NetworkBitmap): CSSComputedEntry =
-  makeEntry(t, CSSValue(v: cvtImage, image: image))
+  CSSComputedEntry(et: ceImage, p: wide(t), image: image)
+
+proc makeEntry(t: CSSPropertyType; content: CSSContent): CSSComputedEntry =
+  CSSComputedEntry(et: ceContent, p: wide(t), content: content)
+
+proc makeEntry(t: CSSPropertyType; quotes: CSSQuotes): CSSComputedEntry =
+  CSSComputedEntry(et: ceQuotes, p: wide(t), quotes: quotes)
 
 template makeEntry*[T: enum|set](t: CSSPropertyType; val: T): CSSComputedEntry =
   CSSComputedEntry(et: ceBit, p: wide(t), bit: cast[uint8](val))
@@ -2243,7 +2262,7 @@ proc parseValue(ctx: var CSSParser; t: CSSPropertyType;
     else:
       makeEntry(t, ?ctx.parseLength(attrs, hasAuto = true,
         allowNegative = true))
-  of cvtContent: makeEntry(t, CSSValue(v: v, content: ?ctx.parseContent()))
+  of cvtContent: makeEntry(t, ?ctx.parseContent())
   of cvtInteger:
     case t
     of cptFontWeight: makeEntry(t, ?ctx.parseFontWeight())
@@ -2259,11 +2278,11 @@ proc parseValue(ctx: var CSSParser; t: CSSPropertyType;
   of cvtCaptionSide: makeEntry(t, ?parseIdent[CSSCaptionSide](ctx))
   of cvtBorderCollapse: makeEntry(t, ?parseIdent[CSSBorderCollapse](ctx))
   of cvtBorderStyle: makeEntry(t, ?parseIdent[CSSBorderStyle](ctx))
-  of cvtQuotes: makeEntry(t, CSSValue(v: v, quotes: ?ctx.parseQuotes()))
+  of cvtQuotes: makeEntry(t, ?ctx.parseQuotes())
   of cvtCounterSet:
     let n = if t == cptCounterIncrement: 1i32 else: 0i32
-    makeEntry(t, CSSValue(v: v, counterSet: ?ctx.parseCounterSet(n)))
-  of cvtImage: makeEntry(t, CSSValue(v: v, image: ?ctx.parseImage()))
+    makeEntry(t, ?ctx.parseCounterSet(n))
+  of cvtImage: makeEntry(t, ?ctx.parseImage())
   of cvtFloat: makeEntry(t, ?parseIdent[CSSFloat](ctx))
   of cvtVisibility: makeEntry(t, ?parseIdent[CSSVisibility](ctx))
   of cvtBoxSizing: makeEntry(t, ?parseIdent[CSSBoxSizing](ctx))
@@ -2320,16 +2339,6 @@ proc getInitialNumber(t: CSSPropertyType): float32 =
     return 1
   return 0
 
-proc getInitialTable(): array[CSSPropertyType, CSSValue] =
-  result = array[CSSPropertyType, CSSValue].default
-  for t in CSSPropertyType:
-    result[t] = CSSValue(v: valueType(t))
-
-let defaultTable = getInitialTable()
-
-template getDefault(t: CSSPropertyType): CSSValue =
-  defaultTable[t]
-
 proc getDefaultHWord(t: CSSPropertyType): CSSValueHWord =
   case valueType(t)
   of cvtInteger: return CSSValueHWord(integer: getInitialInteger(t))
@@ -2349,7 +2358,10 @@ proc makeDefaultEntry(t: CSSPropertyType): CSSComputedEntry =
   of cprtBit: return makeEntry(t, CSSValueBit(dummy: 0))
   of cprtHWord: return makeEntry(t, getDefaultHWord(t))
   of cprtWord: return makeEntry(t, getDefaultWord(t))
-  of cprtObject: return makeEntry(t, getDefault(t))
+  of cprtCounter: return makeEntry(t, CSSCounterSetList(nil))
+  of cprtContent: return makeEntry(t, CSSContent(nil))
+  of cprtQuotes: return makeEntry(t, CSSQuotes(nil))
+  of cprtImage: return makeEntry(t, NetworkBitmap(nil))
 
 const ShorthandMap* = [
   cstNone: @[],
@@ -2738,24 +2750,20 @@ proc copyFrom*(a, b: CSSValues; t: CSSPropertyType) =
   of cprtBit: a.bits[t] = b.bits[t]
   of cprtHWord: a.hwords[t] = b.hwords[t]
   of cprtWord: a.words[t] = b.words[t]
-  of cprtObject: a.objs[t] = b.objs[t]
+  of cprtCounter: a.counters[t] = b.counters[t]
+  of cprtContent: a.content = b.content
+  of cprtQuotes: a.quotes = b.quotes
+  of cprtImage: a.image = b.image
 
 proc setInitial*(a: CSSValues; t: CSSPropertyType) =
   case t.reprType
   of cprtBit: a.bits[t].dummy = 0
   of cprtHWord: a.hwords[t] = getDefaultHWord(t)
   of cprtWord: a.words[t] = getDefaultWord(t)
-  of cprtObject: a.objs[t] = getDefault(t)
-
-proc setAllInitial*(a: CSSValues) =
-  for it in a.bits.mitems:
-    it.dummy = 0
-  for t, it in a.hwords.mpairs:
-    it = getDefaultHWord(t)
-  for t, it in a.words.mpairs:
-    it = getDefaultWord(t)
-  for t, it in a.objs.mpairs:
-    it = getDefault(t)
+  of cprtCounter: a.counters[t] = nil
+  of cprtContent: a.content = nil
+  of cprtQuotes: a.quotes = nil
+  of cprtImage: a.image = nil
 
 # Note: this doesn't work with objects (it doesn't have to.)
 proc equals*(a, b: CSSValues; t: CSSPropertyType): bool =
@@ -2763,7 +2771,10 @@ proc equals*(a, b: CSSValues; t: CSSPropertyType): bool =
   of cprtBit: a.bits[t].dummy == b.bits[t].dummy
   of cprtHWord: a.hwords[t].dummy == b.hwords[t].dummy
   of cprtWord: a.words[t].dummy == b.words[t].dummy
-  of cprtObject: false
+  of cprtCounter: a.counters[t] == b.counters[t]
+  of cprtContent: a.content == b.content
+  of cprtQuotes: a.quotes == b.quotes
+  of cprtImage: a.image == b.image
 
 proc initialOrInheritFrom*(a, b: CSSValues; t: CSSPropertyType) =
   if t.inherited and b != nil:
@@ -2778,20 +2789,26 @@ proc initialOrCopyFrom*(a, b: CSSValues; t: CSSPropertyType) =
     a.setInitial(t)
 
 proc inheritProperties*(parent: CSSValues): CSSValues =
-  result = CSSValues()
+  let computed = CSSValues()
   for t in CSSPropertyType:
     if t.inherited:
-      result.copyFrom(parent, t)
+      computed.copyFrom(parent, t)
     else:
-      result.setInitial(t)
+      computed.setInitial(t)
+  computed
 
 proc copyProperties*(props: CSSValues): CSSValues =
-  result = CSSValues()
-  result[] = props[]
+  let computed = CSSValues()
+  computed[] = props[]
+  computed
 
 proc rootProperties*(): CSSValues =
-  result = CSSValues()
-  result.setAllInitial()
+  let computed = CSSValues()
+  for t, it in computed.hwords.mpairs:
+    it = getDefaultHWord(t)
+  for t, it in computed.words.mpairs:
+    it = getDefaultWord(t)
+  computed
 
 # Separate CSSValues of a table into those of the wrapper and the actual
 # table.
@@ -2819,6 +2836,24 @@ proc splitTable*(computed: CSSValues): tuple[outer, innner: CSSValues] =
   outer{"display"} = computed{"display"}
   inner{"display"} = DisplayTableWrapper
   return (outer, inner)
+
+type BoxDrawingChar* = enum
+  bdcHorizontalBarTop = "\u2500"
+  bdcHorizontalBarBottom = "\u2500"
+  bdcVerticalBarLeft = "\u2502"
+  bdcVerticalBarRight = "\u2502"
+  bdcCornerTopLeft = "\u250C"
+  bdcCornerTopRight = "\u2510"
+  bdcCornerBottomLeft = "\u2514"
+  bdcCornerBottomRight = "\u2518"
+  bdcSideBarLeft = "\u251C"
+  bdcSideBarRight = "\u2524"
+  bdcSideBarTop = "\u252C"
+  bdcSideBarBottom = "\u2534"
+  bdcSideBarCross = "\u253C"
+
+const HorizontalBar = {bdcHorizontalBarTop, bdcHorizontalBarBottom}
+const VerticalBar = {bdcVerticalBarLeft, bdcVerticalBarRight}
 
 proc borderChar*(style: CSSBorderStyle; c: BoxDrawingChar): Str =
   return case style
@@ -2885,13 +2920,12 @@ proc borderChar*(style: CSSBorderStyle; c: BoxDrawingChar): Str =
 when defined(debug):
   proc serializeEmpty*(computed: CSSValues): string =
     let default = rootProperties()
-    result = ""
+    var buf = initGrowbuf()
     for p in CSSPropertyType:
       let a = computed.serialize(p)
       let b = default.serialize(p)
       if a != b and not b.equalsIgnoreCase("currentcolor"):
-        result &= $p & ':'
-        result &= a
-        result &= ';'
+        buf.addM(p, ':', a, ';')
+    $buf
 
 {.pop.} # raises: []

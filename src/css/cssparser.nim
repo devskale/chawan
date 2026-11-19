@@ -345,12 +345,14 @@ type
     cptWidth = "width"
     cptZIndex = "z-index"
 
-    # object properties: stored as a tagged ref object
-    cptBackgroundImage = "background-image"
-    cptContent = "content"
+    # counter set properties: stored as ref object
     cptCounterReset = "counter-reset"
     cptCounterIncrement = "counter-increment"
     cptCounterSet = "counter-set"
+
+    # misc, stored as ref object
+    cptBackgroundImage = "background-image"
+    cptContent = "content"
     cptQuotes = "quotes"
 
 # Selectors
@@ -597,18 +599,20 @@ when defined(debug):
     $buf
 
   proc `$`*(c: CSSSimpleBlock): string =
-    result = ""
+    var buf = initGrowbuf()
     for s in c.value:
-      result &= $s
+      buf &= s
+    $buf
 
   proc `$`*(c: CSSAtRule): string =
-    result = $c.name & ' '
+    var buf = initGrowbufM(c.name.toStr(), ' ')
     for it in c.prelude:
-      result &= $it
-    result &= "{\n"
+      buf &= it
+    buf &= "{\n"
     for it in c.oblock:
-      result &= $it
-    result &= "}"
+      buf &= it
+    buf &= "}"
+    $buf
 
   proc `$`*(c: CSSQualifiedRule): string =
     var buf = initGrowbuf()
@@ -630,7 +634,8 @@ const FirstHWordPropType* = LastBitPropType.succ
 const LastHWordPropType* = cptOpacity
 const FirstWordPropType* = LastHWordPropType.succ
 const LastWordPropType* = cptZIndex
-const FirstObjPropType* = LastWordPropType.succ
+const FirstCounterPropType* = LastWordPropType.succ
+const LastCounterPropType* = cptCounterSet
 
 proc shorthandType*(s: openArray[char]): CSSShorthandType =
   return parseEnumNoCase[CSSShorthandType](s).get(cstNone)
@@ -1243,20 +1248,21 @@ proc consumeDeclaration(ctx: var CSSParser): Opt[CSSDeclaration] {.used.} =
 
 proc consumeAtRule(ctx: var CSSParser): CSSAtRule =
   let name = ctx.consume().at
-  result = CSSAtRule(name: name)
-  if found := ctx.addUntil({cttSemicolon, cttLbrace}, result.prelude):
+  let rule = CSSAtRule(name: name)
+  if found := ctx.addUntil({cttSemicolon, cttLbrace}, rule.prelude):
     if found.t == cttLbrace:
-      result.hasBlock = true
+      rule.hasBlock = true
       while ctx.has():
         let t = ctx.peekTokenType()
         if t == cttRbrace:
           ctx.seek()
           break
-        ctx.addComponentValue(result.oblock)
+        ctx.addComponentValue(rule.oblock)
+  rule
 
 proc consumeDeclarations(ctx: var CSSParser; nested: bool;
     parentSels: openArray[CSSToken]): seq[CSSDeclaration] =
-  result = @[]
+  var decls: seq[CSSDeclaration] = @[]
   var valid = not nested
   while ctx.has():
     case ctx.peekTokenType()
@@ -1277,23 +1283,24 @@ proc consumeDeclarations(ctx: var CSSParser; nested: bool;
         ctx.seekToken()
       if ctx.has() and ctx.peekTokenType() == cttColon:
         if decl := ctx.consumeDeclaration2(tok.s):
-          result.add(move(decl))
+          decls.add(move(decl))
       elif nested:
         var prelude: seq[CSSToken] = @[move(tok)]
         if blank:
           prelude.add(CSSToken(t: cttWhitespace))
         if rule := ctx.consumeQualifiedRule2(prelude, nested = true,
             semi = true, parentSels):
-          result.add(CSSDeclaration(t: cdtNestedRule, r: rule))
+          decls.add(CSSDeclaration(t: cdtNestedRule, r: rule))
       else:
         # Note: I don't think the branch on nested matches the spec, but
         # this is what others seem to implement.
         ctx.skipDeclaration()
     else:
       if rule := ctx.consumeQualifiedRule(nested = true, parentSels):
-        result.add(CSSDeclaration(t: cdtNestedRule, r: rule))
+        decls.add(CSSDeclaration(t: cdtNestedRule, r: rule))
   if not valid:
-    result.setLen(0)
+    decls.setLen(0)
+  decls
 
 proc consumeRule(ctx: var CSSParser; topLevel: bool): Opt[CSSRule] =
   ?ctx.skipBlanksCheckHas()
@@ -1320,12 +1327,13 @@ proc parseDeclarations*(iq: sink Str): seq[CSSDeclaration] =
 
 proc parseComponentValues*(iq: sink CSSOMString): seq[CSSToken] =
   var ctx = initCSSParser(iq)
-  result = @[]
+  var toks: seq[CSSToken] = @[]
   while ctx.has():
-    result.add(ctx.consume())
+    toks.add(ctx.consume())
+  toks
 
 proc consumeImports*(ctx: var CSSParser): seq[CSSAtRule] =
-  result = @[]
+  var rules: seq[CSSAtRule] = @[]
   while ctx.has():
     case ctx.peekTokenType()
     of cttWhitespace:
@@ -1334,9 +1342,10 @@ proc consumeImports*(ctx: var CSSParser): seq[CSSAtRule] =
       let rule = ctx.consumeAtRule()
       if rule.name != cartImport or rule.oblock.len > 0:
         break
-      result.add(rule)
+      rules.add(rule)
     else:
       break
+  rules
 
 type AnBIdent = enum
   abiOdd = "odd"

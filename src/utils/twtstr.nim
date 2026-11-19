@@ -21,24 +21,6 @@ const AsciiWhitespace* = {' ', '\n', '\r', '\t', '\f'}
 const HTTPWhitespace* = {' ', '\n', '\r', '\t'}
 const NonDigit* = AllChars - AsciiDigit
 
-type BoxDrawingChar* = enum
-  bdcHorizontalBarTop = "\u2500"
-  bdcHorizontalBarBottom = "\u2500"
-  bdcVerticalBarLeft = "\u2502"
-  bdcVerticalBarRight = "\u2502"
-  bdcCornerTopLeft = "\u250C"
-  bdcCornerTopRight = "\u2510"
-  bdcCornerBottomLeft = "\u2514"
-  bdcCornerBottomRight = "\u2518"
-  bdcSideBarLeft = "\u251C"
-  bdcSideBarRight = "\u2524"
-  bdcSideBarTop = "\u252C"
-  bdcSideBarBottom = "\u2534"
-  bdcSideBarCross = "\u253C"
-
-const HorizontalBar* = {bdcHorizontalBarTop, bdcHorizontalBarBottom}
-const VerticalBar* = {bdcVerticalBarLeft, bdcVerticalBarRight}
-
 proc nextUTF8*(s: openArray[char]; i: var int): uint32 =
   var j = i
   var u = uint32(s[j])
@@ -388,9 +370,10 @@ proc count*(s: openArray[char]; cs: set[char]): int =
   n
 
 proc skipBlanks*(buf: openArray[char]; at: int): int =
-  result = at
-  while result < buf.len and buf[result] in AsciiWhitespace:
-    inc result
+  var at = at
+  while at < buf.len and buf[at] in AsciiWhitespace:
+    inc at
+  at
 
 when NimMajor < 2:
   proc substr*(s: openArray[char]): string =
@@ -561,10 +544,11 @@ proc cmpItem(x: IdentMapItem; y: openArray[char]): int =
   return 0
 
 proc getIdentMap*[T: enum](lo, hi: T): seq[IdentMapItem] =
-  result = @[]
+  var map: seq[IdentMapItem] = @[]
   for e in lo .. hi:
-    result.add(($e, int(e)))
-  result.sort(proc(x, y: IdentMapItem): int = cmpItem(x, y.s))
+    map.add(($e, int(e)))
+  map.sort(proc(x, y: IdentMapItem): int = cmpItem(x, y.s))
+  map
 
 proc getIdentMap*[T: enum](e: typedesc[T]): seq[IdentMapItem] =
   getIdentMap(T.low, T.high)
