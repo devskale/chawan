@@ -253,6 +253,7 @@ proc parse(ppc: var ParamParseContext): Opt[void] =
           let key = case param[j]
           of 'C': pkConfig
           of 'I': pkInputCharset
+          of 'M': pkMonochrome
           of 'O': pkOutputCharset
           of 'T': pkType
           of 'V': pkVisual
@@ -392,11 +393,11 @@ jsNamespaceDef(Client): # fake namespace
   proc setenv(ctx: JSContext; s: CStringNZ; val: JSValueConst): JSValue
       {.jsstfunc.} =
     if JS_IsNull(val):
-      unsetEnvCString(s.p)
+      unsetEnv(s.p)
     else:
       var vals: CStringNZ
       ?ctx.fromJS(val, vals)
-      if setEnvCString(s.p, vals.p).isErr:
+      if setEnv(s.p, vals.p).isErr:
         return JS_ThrowTypeError(ctx, "Failed to set environment variable")
     return JS_UNDEFINED
 
