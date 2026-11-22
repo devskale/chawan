@@ -1,12 +1,9 @@
-when NimMajor >= 2:
-  import std/assertions
-
 import std/json
 import std/unittest
 
 import chame/htmltokenizer
-import chame/tags
 import html/catom
+import utils/assert
 import utils/cowstr
 
 proc hexValue*(c: char): int =
@@ -48,8 +45,8 @@ proc doubleEscape(input: Str): Str =
         esc = 0
   s.toStr()
 
-proc getAttrs(o: JsonNode; esc: bool): seq[AttrData] =
-  result = @[]
+proc getAttrs(o: JsonNode; esc: bool): AttrDataList =
+  result = AttrDataList.default
   for k, v in o:
     let k = k.toAtom()
     var v = newStr(v.getStr())
@@ -58,7 +55,7 @@ proc getAttrs(o: JsonNode; esc: bool): seq[AttrData] =
     result.add(AttrData(name: k, value: v))
 
 proc getToken(a: seq[JsonNode]; esc: bool; name: var Str;
-    otherAttrs: var seq[AttrData]; flags: var set[TokenFlag]): TokenType =
+    otherAttrs: var AttrDataList; flags: var set[TokenFlag]): TokenType =
   case a[0].getStr()
   of "StartTag":
     otherAttrs = getAttrs(a[2], esc)
@@ -93,11 +90,11 @@ proc getToken(a: seq[JsonNode]; esc: bool; name: var Str;
       newStr(a[1].getStr())
     return ttComment
   else:
-    assert false
+    chaAssert false
     return ttComment
 
 proc checkEquals(otok: TokenType; tok: Tokenizer;
-    charbuf, desc, otherName: Str; otherAttrs: seq[AttrData];
+    charbuf, desc, otherName: Str; otherAttrs: AttrDataList;
     flags: set[TokenFlag]) =
   check otok == tok.t
   var name = initStr(tok.tagNameBuf.toOpenArray())
@@ -143,7 +140,7 @@ type TestContext = object
 
 proc checkCharbuf(ctx: var TestContext; tok: var Tokenizer) =
   var otherName: Str
-  var otherAttrs: seq[AttrData]
+  var otherAttrs: AttrDataList
   var flags: set[TokenFlag]
   if ctx.charbuf.len > 0 and tok.t notin {ttCharacter, ttWhitespace, ttNull}:
     let otok = getToken(ctx.output[ctx.i].getElems(), ctx.esc, otherName,
@@ -158,7 +155,7 @@ proc checkCharbuf(ctx: var TestContext; tok: var Tokenizer) =
 proc checkTokens(ctx: var TestContext; tok: var Tokenizer) =
   ctx.checkCharbuf(tok)
   var otherName: Str
-  var otherAttrs: seq[AttrData]
+  var otherAttrs: AttrDataList
   var flags: set[TokenFlag]
   if tok.t in {ttCharacter, ttWhitespace}:
     ctx.charbuf &= tok.charbuf
@@ -193,7 +190,7 @@ proc runTest(desc: Str; output: seq[JsonNode]; startTag: CAtom; esc: bool;
   if ctx.i < ctx.output.len:
     tok.t = ttStartTag # hack so checkCharbuf actually does something
     ctx.checkCharbuf(tok)
-  assert ctx.i == ctx.output.len
+  chaAssert ctx.i == ctx.output.len
 
 proc getState(s: string): TokenizerState =
   case s

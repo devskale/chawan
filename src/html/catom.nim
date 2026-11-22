@@ -9,26 +9,199 @@
 
 {.push raises: [].}
 
-when NimMajor >= 2:
-  import std/assertions
-
 import std/algorithm
 import std/macros
 
-import chame/tags
 import js/constcharp
 import js/fromjs
 import js/jstypes
 import js/jsutils
 import js/quickjs
 import js/tojs
+import utils/assert
 import utils/chahash
 import utils/cowstr
 import utils/opt
 import utils/tabutil
 import utils/twtstr
 
-# create a static enum compatible with chame/tags
+type
+  TagType* = enum
+    ttUnknown = ""
+    ttApplet = "applet"
+    ttBig = "big"
+    ttHtml = "html"
+    ttBase = "base"
+    ttBasefont = "basefont"
+    ttBgsound = "bgsound"
+    ttHead = "head"
+    ttLink = "link"
+    ttListing = "listing"
+    ttMeta = "meta"
+    ttStyle = "style"
+    ttTitle = "title"
+    ttBody = "body"
+    ttAddress = "address"
+    ttArticle = "article"
+    ttAside = "aside"
+    ttFooter = "footer"
+    ttHeader = "header"
+    ttH1 = "h1"
+    ttH2 = "h2"
+    ttH3 = "h3"
+    ttH4 = "h4"
+    ttH5 = "h5"
+    ttH6 = "h6"
+    ttHgroup = "hgroup"
+    ttMain = "main"
+    ttNav = "nav"
+    ttSearch = "search"
+    ttSection = "section"
+    ttBlockquote = "blockquote"
+    ttDd = "dd"
+    ttDiv = "div"
+    ttDl = "dl"
+    ttDt = "dt"
+    ttFigcaption = "figcaption"
+    ttFigure = "figure"
+    ttHr = "hr"
+    ttLi = "li"
+    ttOl = "ol"
+    ttP = "p"
+    ttPre = "pre"
+    ttUl = "ul"
+    ttA = "a"
+    ttAbbr = "abbr"
+    ttB = "b"
+    ttBdi = "bdi"
+    ttBdo = "bdo"
+    ttBr = "br"
+    ttNobr = "nobr"
+    ttCite = "cite"
+    ttCode = "code"
+    ttData = "data"
+    ttDfn = "dfn"
+    ttEm = "em"
+    ttEmbed = "embed"
+    ttI = "i"
+    ttKbd = "kbd"
+    ttMark = "mark"
+    ttMarquee = "marquee"
+    ttQ = "q"
+    ttRb = "rb"
+    ttRp = "rp"
+    ttRt = "rt"
+    ttRtc = "rtc"
+    ttRuby = "ruby"
+    ttS = "s"
+    ttSamp = "samp"
+    ttSmall = "small"
+    ttSpan = "span"
+    ttStrong = "strong"
+    ttSub = "sub"
+    ttSup = "sup"
+    ttTime = "time"
+    ttU = "u"
+    ttVar = "var"
+    ttWbr = "wbr"
+    ttArea = "area"
+    ttAudio = "audio"
+    ttImg = "img"
+    ttImage = "image"
+    ttMap = "map"
+    ttTrack = "track"
+    ttVideo = "video"
+    ttIframe = "iframe"
+    ttObject = "object"
+    ttParam = "param"
+    ttPicture = "picture"
+    ttPortal = "portal"
+    ttSource = "source"
+    ttCanvas = "canvas"
+    ttNoscript = "noscript"
+    ttNoembed = "noembed"
+    ttPlaintext = "plaintext"
+    ttXmp = "xmp"
+    ttScript = "script"
+    ttSlot = "slot"
+    ttDel = "del"
+    ttIns = "ins"
+    ttCaption = "caption"
+    ttCol = "col"
+    ttColgroup = "colgroup"
+    ttTable = "table"
+    ttTbody = "tbody"
+    ttTd = "td"
+    ttTfoot = "tfoot"
+    ttTh = "th"
+    ttThead = "thead"
+    ttTr = "tr"
+    ttButton = "button"
+    ttDatalist = "datalist"
+    ttFieldset = "fieldset"
+    ttForm = "form"
+    ttInput = "input"
+    ttKeygen = "keygen"
+    ttLabel = "label"
+    ttLegend = "legend"
+    ttMeter = "meter"
+    ttOptgroup = "optgroup"
+    ttOption = "option"
+    ttOutput = "output"
+    ttProgress = "progress"
+    ttSelect = "select"
+    ttSelectedcontent = "selectedcontent"
+    ttTextarea = "textarea"
+    ttDetails = "details"
+    ttDialog = "dialog"
+    ttMenu = "menu"
+    ttSummary = "summary"
+    ttBlink = "blink"
+    ttCenter = "center"
+    ttDir = "dir"
+    ttFont = "font"
+    ttFrame = "frame"
+    ttNoframes = "noframes"
+    ttFrameset = "frameset"
+    ttStrike = "strike"
+    ttTt = "tt"
+    ttTemplate = "template"
+    ttMath = "math"
+    ttSvg = "svg"
+    ttAnnotationXml = "annotation-xml"
+    ttForeignObject = "foreignObject"
+    ttDesc = "desc"
+    ttEncoding = "encoding"
+    ttMi = "mi"
+    ttMo = "mo"
+    ttMn = "mn"
+    ttMs = "ms"
+    ttMtext = "mtext"
+    ttMglyph = "mglyph"
+    ttMalignmark = "malignmark"
+
+  QuirksMode* = enum
+    qmNoQuirks, qmQuirks, qmLimitedQuirks
+
+  Namespace* = enum
+    nsNone = ""
+    nsHTML = "http://www.w3.org/1999/xhtml",
+    nsMathML = "http://www.w3.org/1998/Math/MathML",
+    nsSVG = "http://www.w3.org/2000/svg",
+    nsXLink = "http://www.w3.org/1999/xlink",
+    nsXml = "http://www.w3.org/XML/1998/namespace",
+    nsXmlns = "http://www.w3.org/2000/xmlns/"
+
+const FormAssociatedElements* = {
+  ttButton, ttFieldset, ttInput, ttObject, ttOutput, ttSelect,
+  ttTextarea, ttImg
+}
+
+const ListedElements* = {
+  ttFieldset, ttInput, ttObject, ttOutput, ttSelect, ttTextarea
+}
+
+# create a static enum compatible with TagType
 
 macro makeStaticAtom =
   # declare inside the macro to avoid confusion with StaticAtom0
@@ -54,16 +227,19 @@ macro makeStaticAtom =
       satBorder = "border"
       satCellspacing = "cellspacing"
       satChange = "change"
+      satCharset = "charset"
       satChecked = "checked"
       satClass = "class"
       satClear = "clear"
       satClick = "click"
       satClosed = "closed"
       satCodetype = "codetype"
+      satColor = "color"
       satColorDashProfile = "color-profile"
       satCols = "cols"
       satColspan = "colspan"
       satCompact = "compact"
+      satContent = "content"
       satContextmenu = "contextmenu"
       satCrossorigin = "crossorigin"
       satCustomevent = "customevent"
@@ -82,6 +258,7 @@ macro makeStaticAtom =
       satError = "error"
       satEvent = "event"
       satEvents = "events"
+      satFace = "face"
       satFocus = "focus"
       satFontDashFace = "font-face"
       satFontDashFaceDashFormat = "font-face-format"
@@ -97,6 +274,7 @@ macro makeStaticAtom =
       satHref = "href"
       satHreflang = "hreflang"
       satHtmlevents = "htmlevents"
+      satHttpEquiv = "http-equiv"
       satId = "id"
       satImageSvgXml = "image/svg+xml"
       satIntegrity = "integrity"
@@ -157,6 +335,7 @@ macro makeStaticAtom =
       satSelected = "selected"
       satShadow = "shadow"
       satShape = "shape"
+      satSize = "size"
       satSizes = "sizes"
       satSrc = "src"
       satSrcset = "srcset"
@@ -171,6 +350,7 @@ macro makeStaticAtom =
       satToggle = "toggle"
       satTouchmove = "touchmove"
       satTouchstart = "touchstart"
+      satType = "type"
       satUempty = ""
       satUievent = "uievent"
       satUievents = "uievents"
@@ -191,10 +371,10 @@ macro makeStaticAtom =
     if t == ttUnknown:
       continue
     let tn = $t
-    let name = case tn
-    of "annotation-xml": "satAnnotationXml"
-    of "http-equiv": "satHttpEquiv"
-    else: "sat" & tn[0].toUpperAscii() & tn.substr(1)
+    let name = if tn == "annotation-xml":
+      "satAnnotationXml"
+    else:
+      "sat" & tn[0].toUpperAscii() & tn.substr(1)
     decl0.add(newNimNode(nnkEnumFieldDef).add(ident(name), newStrLitNode(tn)))
   for i, f in StaticAtom0.getType():
     if i == 0:
@@ -263,8 +443,7 @@ proc freeAtom(atom: CAtomRaw) =
   if u > uint32(StaticAtom.high):
     let factory = getFactory()
     let desc = addr factory.atomMap[uint32(atom)]
-    when defined(debug):
-      assert desc.refc > 0
+    chaDebugAssert desc.refc > 0
     dec desc.refc
     if desc.refc == 0:
       freeAtomImpl(u)
@@ -370,7 +549,7 @@ proc initCAtomFactory*() =
   # StaticAtom includes TagType too.
   for sa in StaticAtom(1) .. StaticAtom.high:
     let atom = factory.toAtomRaw(sa.toStr())
-    assert uint32(atom) == uint32(sa)
+    chaAssert uint32(atom) == uint32(sa)
 
 proc toAtomRaw(s: openArray[char]): CAtomRaw =
   return getFactory().toAtomRaw(s)
@@ -394,12 +573,12 @@ proc toAtom*(s: Growbuf): CAtom =
   s.toOpenArray().toAtom()
 
 proc toStaticAtom*(tagType: TagType): StaticAtom =
-  assert tagType != ttUnknown
+  chaAssert tagType != ttUnknown
   StaticAtom(uint32(tagType))
 
 template view*(tagType: TagType): CAtom =
   let tmp = tagType
-  assert tmp != ttUnknown
+  chaAssert tmp != ttUnknown
   CAtom(tmp)
 
 template view*(ns: Namespace): CAtom =
@@ -417,7 +596,7 @@ proc toAtomLower*(s: Str): CAtom =
 
 template view*(satom: StaticAtom): CAtom =
   let tmp = satom
-  assert tmp != satUnknown
+  chaAssert tmp != satUnknown
   CAtom(CAtomRaw(uint32(tmp)))
 
 proc toStr*(atom: CAtom): lent Str =
@@ -660,14 +839,14 @@ proc len*(this: DOMTokenArrayView): uint32 =
 proc len*(this: DOMTokenArray): uint32 {.borrow.}
 
 proc `[]`*(this: DOMTokenArrayView; u: uint32): lent CAtom =
-  assert this != nil and u < this.len
+  chaAssert this != nil and u < this.len
   (ptr DOMTokenArrayBuffer)(this).toks[u]
 
 proc `[]`*(this: DOMTokenArray; u: uint32): lent CAtom =
   DOMTokenArrayView(this)[u]
 
 proc `[]=`*(this: DOMTokenArray; u: uint32; atom: sink CAtom) =
-  assert this != nil and u < this.len
+  chaAssert this != nil and u < this.len
   (ptr DOMTokenArrayBuffer)(this).toks[u] = move(atom)
 
 iterator items*(a: DOMTokenArrayView): lent CAtom {.inline.} =
@@ -695,7 +874,7 @@ iterator pairs*(a: DOMTokenArray): tuple[key: uint32; value: lent CAtom]
     yield (u, tok)
 
 proc createDOMTokenArray(len: uint32): ptr DOMTokenArrayBuffer =
-  assert len < uint32(int32.high)
+  chaAssert len < uint32(int32.high)
   let size = sizeof(DOMTokenArrayBuffer) + cast[int](len) * sizeof(CAtom)
   let this = cast[ptr DOMTokenArrayBuffer](alloc0(size))
   this.len = len
@@ -710,7 +889,7 @@ proc dup(this: DOMTokenArray): ptr DOMTokenArrayBuffer =
   other
 
 proc newDOMTokenArray*(toks: varargs[CAtom]): DOMTokenArray =
-  assert int64(toks.len) < int64(uint32.high)
+  chaAssert int64(toks.len) < int64(uint32.high)
   if toks.len == 0:
     return DOMTokenArray(nil)
   let this = DOMTokenArray(createDOMTokenArray(uint32(toks.len)))
@@ -774,7 +953,7 @@ proc len*(this: AttrDataList): uint32 =
   this.p.len
 
 proc `[]`*(this: AttrDataList; u: uint32): lent AttrData {.inline.} =
-  assert u < this.len
+  chaAssert u < this.len
   this.p.data[u]
 
 iterator items*(this: AttrDataList): lent AttrData =
@@ -788,11 +967,11 @@ iterator pairs*(this: AttrDataList): tuple[key: uint32; val: lent AttrData] =
     yield (u, this[u])
 
 proc `[]`*(this: var AttrDataList; u: uint32): var AttrData =
-  assert u < this.len
+  chaAssert u < this.len
   this.p.data[u]
 
 proc `[]=`*(this: var AttrDataList; u: uint32; data: sink AttrData) =
-  assert u < this.len
+  chaAssert u < this.len
   this.p.data[u] = move(data)
 
 proc high*(this: AttrDataList): int =
@@ -843,7 +1022,7 @@ proc setLen*(attrs: var AttrDataList; len: uint32) =
   var p = attrs.p
   var cap = if p != nil: p.cap else: 0
   if cap < len:
-    assert cap < 0x7FFFFFFF
+    chaAssert cap < 0x7FFFFFFF
     cap *= 2
     if cap < len:
       cap = len
@@ -856,7 +1035,7 @@ proc setLen*(attrs: var AttrDataList; len: uint32) =
 
 proc delete*(attrs: var AttrDataList; u: uint32) =
   let olen = attrs.len
-  assert u < olen
+  chaAssert u < olen
   let p = attrs.p
   {.cast(raises: []).}:
     `=destroy`(p.data[u])
@@ -866,7 +1045,7 @@ proc delete*(attrs: var AttrDataList; u: uint32) =
 
 proc insert*(attrs: var AttrDataList; data: sink AttrData; u: uint32) =
   let olen = attrs.len
-  assert u <= olen
+  chaAssert u <= olen
   attrs.setLen(olen + 1)
   if u < olen:
     moveMem(addr attrs[u + 1], addr attrs[u],

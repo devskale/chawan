@@ -1,7 +1,5 @@
 {.push raises: [].}
 
-when NimMajor >= 2:
-  import std/assertions
 import std/posix
 import std/termios
 
@@ -17,6 +15,7 @@ import io/dynstream
 import io/poll
 import js/jsref
 import server/loaderiface
+import utils/assert
 import utils/chaos
 import utils/cowstr
 import utils/opt
@@ -605,7 +604,7 @@ proc flush*(term: Terminal): Opt[bool] =
   while true:
     var page = term.frames[ftCurrent].head
     if page == nil:
-      assert term.frameType != ftNext
+      chaAssert term.frameType != ftNext
     while page != nil:
       var n = page.n
       let H = page.a.len - 1
@@ -693,12 +692,13 @@ proc write(term: Terminal; c: char): Opt[void] =
 proc write(term: Terminal; buf: Growbuf): Opt[void] =
   term.write(buf.toOpenArray())
 
-proc readChar(term: Terminal): Opt[char] =
+proc readCharSync(term: Terminal): Opt[char] =
   if term.ibufn == term.ibufLen:
     term.ibufn = 0
-    term.ibufLen = term.istream.read(term.ibuf)
-    if term.ibufLen == -1:
+    let n = term.istream.read(term.ibuf)
+    if n < 0:
       return err()
+    term.ibufLen = n
   let c = term.ibuf[term.ibufn]
   inc term.ibufn
   ok(c)
@@ -710,31 +710,29 @@ proc blockIO0(term: Terminal) =
 proc blockIO(term: Terminal): Opt[void] =
   term.istream.setBlocking(true)
   term.ostream.setBlocking(true)
-  doAssert ?term.flush()
+  chaAssert ?term.flush()
   ok()
 
 proc unblockIO(term: Terminal) =
   term.istream.setBlocking(false)
   term.ostream.setBlocking(false)
 
-proc ahandleRead*(term: Terminal): Opt[bool] =
+proc fillInputBuffer*(term: Terminal): Opt[void] =
+  # Fill the input buffer with characters.  After this, the caller is
+  # expected to exhaust it by repeatedly calling readEvent.
+  # If err is returned, the terminal has disconnected; the caller should
+  # save state and then quit.
   term.ibufn = 0
-  term.ibufLen = term.istream.read(term.ibuf)
-  if term.ibufLen < 0:
+  let n = term.istream.read(term.ibuf)
+  if n < 0:
+    term.ibufLen = 0
     let e = errno
     if e != EAGAIN and e != EWOULDBLOCK and e != EINTR:
       term.blockIO0()
       return err()
-    term.ibufLen = 0
-    return ok(false)
-  ok(true)
-
-proc areadChar(term: Terminal): Opt[char] =
-  if term.ibufn >= term.ibufLen:
-    return err()
-  let c = term.ibuf[term.ibufn]
-  inc term.ibufn
-  ok(c)
+  else:
+    term.ibufLen = n
+  ok()
 
 proc backtrack(eparser: var EventParser; c: char) =
   eparser.backtrackStack.setLen(0)
@@ -1175,14 +1173,18 @@ proc parseAPCG(term: Terminal; c: char): EscParseChunkResult =
     return eprRedraw
   eprNone
 
-proc areadCharBacktrack(term: Terminal): Opt[char] =
+proc readCharBacktrack(term: Terminal): Opt[char] =
   if term.eparser.state == esBacktrack:
     if term.eparser.backtrackStack.len > 0:
       return ok(term.eparser.backtrackStack.pop())
     term.eparser.state = esNone
-  return term.areadChar()
+  if term.ibufn >= term.ibufLen:
+    return err()
+  let c = term.ibuf[term.ibufn]
+  inc term.ibufn
+  ok(c)
 
-proc areadEvent*(term: Terminal): Opt[InputEvent] =
+proc readEvent*(term: Terminal): Opt[InputEvent] =
   var epr = eprNone
   while epr == eprNone:
     let state = term.eparser.state
@@ -1206,7 +1208,7 @@ proc areadEvent*(term: Terminal): Opt[InputEvent] =
             elif u shr 4 == 0b1110: 3i8
             else: 4i8
         return ok(InputEvent(t: ietKey, c: c))
-    let c = ?term.areadCharBacktrack()
+    let c = ?term.readCharBacktrack()
     case state
     of esBacktrack: term.parseNone(c)
     of esNone, esBracketed:
@@ -1351,13 +1353,15 @@ proc anyKey*(term: Terminal; msg = "[Hit any key]"; bottom = false): Opt[void] =
     ?term.write(msg)
     ?term.blockIO()
     #TODO probably we should allow SIGINT here too
+    # (actually, it would be best to fix the UI so that this proc can be
+    # removed)
     while term.eparser.queryState != qsNone:
-      if term.ahandleRead().isErr:
+      if term.fillInputBuffer().isErr:
         break
       while true:
-        if term.areadEvent().isErr:
+        if term.readEvent().isErr:
           break
-    discard term.readChar()
+    discard term.readCharSync()
     term.unblockIO()
   ok()
 
@@ -1451,7 +1455,7 @@ proc correctContrast(term: Terminal; bgcolor, fgcolor: CellColor): CellColor =
     of cmEightBit:
       return cellColor(newrgb.toEightBit())
     of cmMonochrome:
-      assert false
+      chaAssert false
   return cfgcolor
 
 proc writeColorSGR(term: Terminal; c: CellColor; bgmod: uint8): Opt[void] =
@@ -1660,7 +1664,7 @@ proc processOutputString*(term: Terminal; s: openArray[char];
     return term.write('?')
   if trackCursor:
     for u in s.points:
-      assert u > 0x9F or u != 0x7F and u > 0x1F
+      chaAssert u > 0x9F or u != 0x7F and u > 0x1F
       term.frame.cursorx += uint32(u.width())
   if term.cs == csUtf8:
     # The output encoding matches the internal representation.
@@ -2254,12 +2258,12 @@ proc outputImages(term: Terminal): Opt[void] =
     term.frame.kittyImagesToClear.setLen(0)
   for image in term.frame.canvasImages:
     if image.damaged:
-      assert image.dims.dispw > 0 and image.dims.disph > 0
+      chaAssert image.dims.dispw > 0 and image.dims.disph > 0
       ?term.resetScrollArea()
       let x = max(image.dims.x, 0)
       let y = max(image.dims.y, 0)
       case term.imageMode
-      of imNone: assert false
+      of imNone: chaAssert false
       of imSixel: ?term.outputSixelImage(x, y, image)
       of imKitty: ?term.outputKittyImage(x, y, image)
       image.damaged = false
@@ -2493,10 +2497,10 @@ proc quit*(term: Terminal): Opt[void] =
     term.newTermios.c_lflag = term.newTermios.c_lflag or ISIG
     discard tcSetAttr(term.istream.fd, TCSANOW, addr term.newTermios)
     while term.eparser.queryState != qsNone:
-      if term.ahandleRead().isErr:
+      if term.fillInputBuffer().isErr:
         break
       while true:
-        if term.areadEvent().isErr:
+        if term.readEvent().isErr:
           break
     ?term.disableRawMode()
     term.clearCanvas()

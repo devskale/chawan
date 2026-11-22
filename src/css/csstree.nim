@@ -27,11 +27,8 @@
 
 {.push raises: [].}
 
-when NimMajor >= 2:
-  import std/assertions
 import std/algorithm
 
-import chame/tags
 import config/conftypes
 import css/box
 import css/cascade
@@ -44,6 +41,7 @@ import html/form
 import html/xml
 import js/jsref
 import js/jstypes
+import utils/assert
 import utils/cowstr
 import utils/twtstr
 
@@ -239,7 +237,7 @@ proc addAnonTable(frame: var TreeFrame; parentDisplay, display: CSSDisplay):
   if display in RowGroupBox + {DisplayTableRow}:
     frame.anonComputed = frame.children[^1].computed
     return frame.children[^1].anonChildren[0].anonChildren
-  assert display == DisplayTableCell
+  chaAssert display == DisplayTableCell
   if frame.anonComputed{"display"} == DisplayTableRow:
     return frame.children[^1].anonChildren[0].anonChildren[^1].anonChildren
   frame.anonComputed = frame.inheritFor(DisplayTableRow)

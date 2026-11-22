@@ -1731,6 +1731,8 @@ Pager.prototype.replaceWith = function(old, replacement) {
     }
     if (this.buffer == old)
         this.setBuffer(replacement);
+    else if (replacement.tab.current == old) /* inactive tab */
+        replacement.tab.current = replacement;
 }
 
 /* private */
@@ -2362,7 +2364,7 @@ const ReTextStart = /\S/gu;
         this.onMatch(x, y, w, refresh);
     }
 
-    /* private */ async #cursorPrevWordImpl(re, n = 1) {
+    async #cursorPrevWordImpl(re, n = 1) {
         const cx = this.cursorx;
         const cy = this.cursory;
         const [x, y, w] = await this.findNextMatch(re, cx, cy, false, -n);
@@ -2372,7 +2374,7 @@ const ReTextStart = /\S/gu;
             this.cursorLineBegin();
     }
 
-    /* private */ async #cursorNextWordImpl(re, n = 1) {
+    async #cursorNextWordImpl(re, n = 1) {
         const cx = this.cursorx;
         const cy = this.cursory;
         const [x, y, w] = await this.findNextMatch(re, cx, cy, false, n);

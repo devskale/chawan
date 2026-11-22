@@ -1,12 +1,8 @@
 {.push raises: [].}
 
-when NimMajor >= 2:
-  import std/assertions
-
 import std/algorithm
 import std/math
 
-import chame/tags
 import config/conftypes
 import css/color
 import css/cssparser
@@ -18,6 +14,7 @@ import html/dom
 import html/form
 import html/script
 import js/jsref
+import utils/assert
 import utils/cowstr
 import utils/dtoawrap
 import utils/opt
@@ -529,7 +526,7 @@ proc applyDeclarations(map: RuleListMap; pseudo: PseudoElement;
 
 proc applyStyle(element: Element) {.exportc: "cha_$1".} =
   let root = element.asNode.rootNode as RootNode
-  assert root != nil
+  chaAssert root != nil
   let document = element.asNode.document
   let window = document.window
   var depends = DependencyInfo.default

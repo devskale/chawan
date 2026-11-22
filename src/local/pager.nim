@@ -1,7 +1,5 @@
 {.push raises: [].}
 
-when NimMajor >= 2:
-  import std/assertions
 import std/posix
 
 import config/chapath
@@ -45,6 +43,7 @@ import server/headers
 import server/loaderiface
 import server/request
 import server/url
+import utils/assert
 import utils/chaos
 import utils/cowstr
 import utils/lrewrap
@@ -487,49 +486,43 @@ proc toJS(ctx: JSContext; input: MouseInput): JSValue =
     return JS_EXCEPTION
   obj.toJSValue()
 
-proc handleKeyEnd(pager: Pager; ctx: JSContext; e: InputEvent): int =
+proc handleKeyEnd(pager: Pager; ctx: JSContext; e: InputEvent): JSCode =
   let arg0 = trace(ctx.toJS(e.t))
   if JS_IsException(arg0.vc):
     pager.console.writeException(ctx)
-    return 0
+    return fjOk
   let arg1 = trace(if e.t == ietMouse: ctx.toJS(e.m) else: JS_UNDEFINED)
+  if JS_IsException(arg0.vc):
+    pager.console.writeException(ctx)
+    return fjOk
   pager.term.catchSigint()
   let this = trace(ctx.toJS(pager))
   let res = trace(ctx.call(pager.handleInput, this.vc, arg0.vc, arg1.vc))
   pager.term.respectSigint()
   if JS_IsException(res):
     if pager.exitCode != -1: # quit() called
-      return -1
+      return fjErr
     # user code, so catch & log exceptions here
     pager.console.writeException(ctx)
-  1
+  fjOk
 
 proc handleUserInput(pager: Pager; ctx: JSContext): JSValue =
-  let res = pager.term.ahandleRead()
-  if res.isErr:
+  if pager.term.fillInputBuffer().isErr:
     return ctx.jsQuit(pager, 1)
-  if not res.get:
-    return JS_UNDEFINED
   let pasteHack = pager.mousePaste and not pager.term.hasBracketedPaste()
-  while e := pager.term.areadEvent():
+  while e := pager.term.readEvent():
     case e.t
     of ietKey: pager.inputBuffer &= e.c
-    of ietWindowChange:
-      if pager.windowChange(ctx).isErr:
-        return JS_EXCEPTION
+    of ietWindowChange: ?pager.windowChange(ctx)
     of ietRedraw: pager.redraw()
     of ietKeyEnd, ietPaste, ietMouse:
       if e.t == ietKeyEnd and pasteHack:
         continue
-      case pager.handleKeyEnd(ctx, e)
-      of -1: return JS_EXCEPTION
-      of 0: break
-      else: discard
-  if pasteHack:
+      ?pager.handleKeyEnd(ctx, e)
+  if pasteHack and pager.inputBuffer.len > 0:
     # hack: when we have no bracketed paste, we pretend that all keys sent
     # together on middle click are a single event.
-    if pager.handleKeyEnd(ctx, InputEvent(t: ietPaste)) < 0:
-      return JS_EXCEPTION
+    ?pager.handleKeyEnd(ctx, InputEvent(t: ietPaste))
   return JS_UNDEFINED
 
 proc runInit(pager: Pager; ctx: JSContext; proto: JSObject;
@@ -776,7 +769,8 @@ proc loadCachedImage2(env: CachedImageEnv; response: Response) =
       cachedImage.dispw.toStr().asByteString)
   of imKitty:
     url = parseURL0("img-codec+png:encode")
-  of imNone: assert false
+  of imNone:
+    chaAssert false
   let request = newRequest(
     url,
     httpMethod = hmPost,
@@ -1217,21 +1211,21 @@ proc applySiteconf(pager: Pager; ctx: JSContext; url: URL;
         of coHistory: flags.toggleIf(bifHistory, bit.bool)
         of coMarkLinks: result.markLinks = bit.bool
         of coAskDownloadDir: flags.toggleIf(bifAskDownloadDir, bit.bool)
-        else: assert false
+        else: chaAssert false
       of cocStr:
         case e.opt
         of coShareCookieJar: cookieJarId = e.str
         of coUserStyle: result.userStyle.add(e.str)
         of coFilterCmd: filterCmd = e.str
-        else: assert false
+        else: chaAssert false
       of cocCharsetSeq:
-        assert e.opt == coDocumentCharset
+        chaAssert e.opt == coDocumentCharset
         result.charsets = e.charsetSeq
       of cocURL:
-        assert e.opt == coProxy
+        chaAssert e.opt == coProxy
         loaderConfig.proxy = e.url
       of cocHeaders:
-        assert e.opt == coDefaultHeaders
+        chaAssert e.opt == coDefaultHeaders
         let init = e.headers
         if init.clear:
           loaderConfig.defaultHeaders = newHeaders(hgRequest, init.s)
@@ -1240,7 +1234,7 @@ proc applySiteconf(pager: Pager; ctx: JSContext; url: URL;
           for it in init.s:
             headers[it.name] = it.value
           loaderConfig.defaultHeaders = headers
-      else: assert false
+      else: chaAssert false
   if result.images:
     result.imageTypes = pager.mimeTypes.image
   result.userAgent =
@@ -1865,7 +1859,7 @@ proc handleRead(pager: Pager; ctx: JSContext; fd: cint): JSValue =
         if pager.runJSJobs(JS_GetRuntime(ctx)).isErr:
           return JS_EXCEPTION
   else:
-    assert false
+    chaAssert false
   return JS_UNDEFINED
 
 proc handleWrite(pager: Pager; fd: cint): bool =
@@ -1916,7 +1910,7 @@ let SIGWINCH {.importc, header: "<signal.h>", nodecl.}: cint
 
 proc setupSignals(pager: Pager): PosixStream =
   var pipefd {.noinit.}: array[2, cint]
-  doAssert pipe(pipefd) != -1
+  chaAssert pipe(pipefd) != -1
   let writer = newPosixStream(pipefd[1])
   writer.setCloseOnExec()
   writer.setBlocking(false)
@@ -2299,12 +2293,12 @@ jsClassDef(Pager):
 
   # private
   proc getTempFile(pager: Pager; ext = str("")): Str {.jsfunc.} =
-    var buf = initGrowbufM(pager.config{"tmpdir"}, "chaptmp",
-      pager.loader.clientPid, '-', pager.tmpfSeq)
+    var buf = initGrowbufM("chaptmp", pager.loader.clientPid, '-',
+      pager.tmpfSeq)
     if ext != "":
       buf.addM('.', ext)
     inc pager.tmpfSeq
-    buf.toStr()
+    pager.config{"tmpdir"} / buf.toStr()
 
   # public
   proc askChar(ctx: JSContext; pager: Pager; prompt: sink Str): JSValue

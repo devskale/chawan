@@ -149,7 +149,7 @@ lib/chaseccomp/chaseccomp.o: .FORCE
 .FORCE:
 endif
 
-twtstr = src/utils/twtstr.nim src/utils/opt.nim
+twtstr = src/utils/twtstr.nim src/utils/opt.nim src/utils/assert.nim
 cowstr = $(twtstr) src/utils/cowstr.nim src/utils/cowstr.c src/js/constcharp.nim
 dynstream = src/io/dynstream.nim
 chafile = src/io/chafile.nim $(dynstream) $(cowstr)
@@ -179,7 +179,7 @@ res/chawan.html: res/chawan.html.in res/version
 	sed "s/%CHA_VERSION%/$$(cat res/version)/g" $< > $@~
 	mv $@~ $@
 
-unicode_version = 17.0.0
+unicode_version = 18.0.0
 
 .PHONY: unicode_gen
 unicode_gen:
