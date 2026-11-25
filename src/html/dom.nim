@@ -5,6 +5,7 @@ import std/math
 import std/setutils
 
 import config/conftypes
+import config/history
 import config/mimetypes
 import css/color
 import css/cssparser
@@ -129,6 +130,7 @@ type
     internalPerformance*: Performance # may be nil
     timeOrigin*: float64
     urandom*: PosixStream
+    history*: History # may be nil
 
   CECallbackType = enum
     cctConnected = "connectedCallback"
@@ -363,6 +365,7 @@ type
     url*: URL # not nil
     currentScript: HTMLScriptElement
     implementation: JSObject
+    internalBaseURL: URL
     origin: Origin
     # document.write
     ignoreDestructiveWrites: int
@@ -460,9 +463,13 @@ type
     cesPrecustomized = "precustomized"
     cesCustom = "custom"
 
-  ElementFlag = enum
-    efHint, efHover, efShadowRoot, efChildElIndicesInvalid, efRestyle,
-    efQuirks
+  ElementFlag* = enum # 2 free
+    efChildElIndicesInvalid # elIndex for children must be updated
+    efRestyle # restyle pending
+    efQuirks # document is in quirks mode (only here for convenience)
+    efHint # generates ::-cha-link-hint
+    efHover # matched by :hover
+    efVisited # matched by :visited
 
   CSSStyleDeclarationObj* = object
     computed: bool
@@ -480,7 +487,7 @@ type
     namespaceURI*: CAtom # 4
     tagName: CAtom # 8
     relayout*: set[PseudoElement] # 9
-    flags: set[ElementFlag] # 10
+    flags*: set[ElementFlag] # 10
     selfDepends: set[DependencyType] # 11
     custom: CustomElementState # 12
     localName*: CAtom # 16
@@ -503,10 +510,14 @@ type
 
   HTMLElementNil = JSNullRef[HTMLElementObj]
 
+  HTMLHyperlinkElement* = JSRef[HTMLHyperlinkElementObj]
+
+  HTMLHyperlinkElementObj* = object of HTMLElementObj
+    relList*: DOMTokenArray
+
   HTMLAnchorElement* = JSRef[HTMLAnchorElementObj]
 
-  HTMLAnchorElementObj* {.pure, final.} = object of HTMLElementObj
-    relList: DOMTokenArray
+  HTMLAnchorElementObj* {.pure, final.} = object of HTMLHyperlinkElementObj
 
   SheetElement = JSRef[SheetElementObj]
 
@@ -653,7 +664,7 @@ proc replaceAll*(parent: ParentNode; ctx: JSContext; s: sink DOMString)
 proc firstChild(parent: ParentNode): lent Node
 proc lastChild*(parent: ParentNode): lent Node
 proc firstChildShadow(parent: ParentNode): lent Node
-proc nextSibling(node: Node): Node
+proc nextSibling(node: Node): lent Node
 proc previousElementSiblingImpl(this: Node): Element
 proc setFirstChild(node: ParentNode; child: Node)
 proc firstElementChild*(node: ParentNode): Element
@@ -696,7 +707,8 @@ proc delAttr(element: Element; ctx: JSContext; u: uint32)
 proc delAttr(element: Element; ctx: JSContext; name: CAtom)
 proc elIndex*(this: Element): uint32
 proc ensureStyle*(element: Element)
-proc findAttr(element: Element; qualifiedName: CAtom): uint32
+proc findAttr(element: Element; name: CAtom): uint32
+proc findAttr*(element: Element; name: StaticAtom): uint32
 proc findAttrNS(element: Element; namespace, localName: CAtom): uint32
 proc getCachedAttributes(element: Element): NamedNodeMap
 proc getBoundingClientRect(element: Element): DOMRect
@@ -837,6 +849,10 @@ template asSheetElement[T: SheetElementObj](x: JSRef[T]): SheetElement =
 
 template asHTMLElement*[T: HTMLElementObj](x: JSRef[T]): HTMLElement =
   HTMLElement(x)
+
+template asHTMLHyperlinkElement*[T: HTMLHyperlinkElementObj](x: JSRef[T]):
+    HTMLHyperlinkElement =
+  HTMLHyperlinkElement(x)
 
 template asElementAccessor[T: ElementAccessorObj](x: JSRef[T]):
     ElementAccessor =
@@ -1723,7 +1739,7 @@ proc nextSiblingShadow(node: Node): lent Node =
   if next == nil:
     # node is a Document.
     return node.internalNext
-  if next.parentNode != node.parentNode:
+  if node.parentNode != nil and next.parentNode != node.parentNode:
     # next is the root, return nil.
     let hack {.global.} = Node(nil)
     return hack
@@ -2424,11 +2440,17 @@ jsClassDef(Node):
   proc parentElement*(node: Node): Element {.jsfget.} =
     node.parentNode as Element
 
-  proc nextSibling(node: Node): Node {.jsfget.} =
-    if node.parentNode == nil:
-      # if parent is nil, then may be a shadow root
-      return Node(nil)
-    return node.nextSiblingShadow
+  proc nextSibling(node: Node): lent Node {.jsfget.} =
+    let next = node.internalNext
+    if next == nil:
+      # node is a Document.
+      return node.internalNext
+    if next.parentNode != node.parentNode:
+      # next is the root, or node is a shadow root (whose parent is nil).
+      # return nil.
+      let hack {.global.} = Node(nil)
+      return hack
+    return node.internalNext
 
   proc previousSibling*(node: Node): Node {.jsfget.} =
     if node.parentNode == nil or node == node.parentNode.firstChild:
@@ -3569,17 +3591,20 @@ proc getElementsById*(document: Document; id: CAtom): JSRootRef =
   JSRootRef(nil)
 
 proc baseURL*(document: Document): URL =
-  #TODO frozen base url...
-  var href = str("")
-  for base in document.asParentNode.elementDescendants(ttBase):
-    if base.asElement.attrb(satHref):
-      href = base.asElement.attr(satHref)
-  if href == "":
-    return document.url
-  let url = parseURL0(href, document.url)
-  if url == nil:
-    return document.url
-  return url
+  if document.internalBaseURL == nil:
+    for base in document.asParentNode.elementDescendants(ttBase):
+      let u = base.asElement.findAttr(satHref)
+      if u != uint32.high:
+        #TODO frozen base url
+        let href = base.asElement.attrs[u].value
+        if href != "":
+          let url = parseURL0(href, document.url)
+          if url != nil:
+            document.internalBaseURL = url
+          break
+    if document.internalBaseURL == nil:
+      document.internalBaseURL = document.url
+  return document.internalBaseURL
 
 proc parseURL0*(document: Document; s: Str): URL =
   #TODO encodings
@@ -5033,8 +5058,8 @@ proc normalizeAttrQName(element: Element; qualifiedName: CAtom):
     return qualifiedName.toLowerAscii()
   return qualifiedName
 
-proc findAttr(element: Element; qualifiedName: CAtom): uint32 =
-  let qualifiedName = element.normalizeAttrQName(qualifiedName)
+proc findAttr(element: Element; name: CAtom): uint32 =
+  let qualifiedName = element.normalizeAttrQName(name)
   let n = element.attrs.lowerBound(qualifiedName)
   if n < element.attrs.len and element.attrs[n].name == qualifiedName:
     return n
@@ -5292,8 +5317,19 @@ proc reflectLocalAttr(element: Element; ctx: JSContext; name: StaticAtom;
       if window != nil:
         window.loadLink(link)
   of ttA:
-    let anchor = element as HTMLAnchorElement
-    if name == satRel:
+    if name == satHref:
+      element.flags.excl(efVisited)
+      let document = element.asNode.document
+      if document.window != nil and document.window.history != nil and
+          document.window.history.len > 0:
+        let url = document.parseURL0(value.asStr)
+        if url != nil and url.schemeType != stBlob:
+          url.username = str("")
+          url.password = str("")
+          if url.toStr() in document.window.history:
+            element.flags.incl(efVisited)
+    elif name == satRel:
+      let anchor = element as HTMLAnchorElement
       anchor.asElement.reflectTokens(anchor.relList, satRel, value.asStr)
   of ttCanvas:
     if element.scriptingEnabled and name in {satWidth, satHeight}:
@@ -5524,6 +5560,8 @@ proc insertionSteps(element: Element; ctx: JSContext;
         element.delAttr(ctx, u)
   of ttScript:
     postConnectionNodes.add(element)
+  of ttBase:
+    element.asNode.document.internalBaseURL = URL(nil)
   elif element.namespaceURI == satNamespaceSVG:
     element.insertionStepsSVG()
   else:
@@ -6913,8 +6951,9 @@ template htmlClassDef(name: untyped) =
 
 # HTMLHyperlinkElementUtils (for <a> and <area>)
 proc reinitURL*(element: Element): Opt[URL] =
-  if element.attrb(satHref):
-    let url = element.asNode.document.parseURL(element.attr(satHref))
+  let u = element.findAttr(satHref)
+  if u != uint32.high:
+    let url = element.asNode.document.parseURL(element.attrs[u].value)
     if url.isOk and url.get.schemeType != stBlob:
       return url
   return err()
@@ -6956,9 +6995,12 @@ proc hyperlinkSet(ctx: JSContext; this, val: JSValueConst; magic: cint): JSValue
     element.setAttr(ctx, satHref, ds)
   return JS_UNDEFINED
 
+jsClassPublicDef(HTMLHyperlinkElement): # fake class
+  jsextends HTMLElementDef
+
 # <a>
 jsClassPublicDef(HTMLAnchorElement):
-  jsextends HTMLElementDef
+  jsextends HTMLHyperlinkElementDef
 
   proc toString(this: HTMLAnchorElement): Str {.jsfunc.} =
     if href := this.asElement.reinitURL():
@@ -8197,6 +8239,7 @@ proc registerElements(ctx: JSContext): Opt[void] =
   event.htmlElementClassID = HTMLElementDef.id
   ?ctx.addHTMLElementReflection()
   ?ctx.registerFakeClass(SheetElementDef)
+  ?ctx.registerFakeClass(HTMLHyperlinkElementDef)
   ?ctx.registerClass(HTMLMediaElementDef)
   ?ctx.registerClass(HTMLAnchorElementDef)
   ?ctx.registerClass(HTMLSpanElementDef)

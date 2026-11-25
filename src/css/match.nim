@@ -155,7 +155,9 @@ proc matches(element: Element; pc: PseudoClass; depends: var DependencyInfo;
   of pcLink:
     return element.tagType in {ttA, ttArea} and element.attrb(satHref)
   of pcVisited:
-    return false
+    # Matches self-URLs and URLs clicked from the current buffer.
+    # See cha-css(7) for details.
+    return efVisited in element.flags
   of pcDisabled:
     return element.isDisabled()
   of pcBorderNonzero:
