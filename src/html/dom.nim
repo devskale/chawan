@@ -225,6 +225,7 @@ type
     cnImages
     cnGetElementsByName
     cnGetElementsByTagName
+    cnGetElementsByTagNameNS
     cnGetElementsByClassName
     cnGetElementsById
     cnSelectedOptions
@@ -1072,6 +1073,15 @@ proc isElementOf(this: Collection; node: Node): bool =
     if node.namespaceURI == satNamespaceHTML:
       return node.localName == atom or node.tagName.equalsIgnoreCase(atom)
     return node.tagName == atom
+  return false
+
+proc isElementOfNS(this: Collection; node: Node): bool =
+  let node = node as Element
+  if node != nil:
+    let namespace = this.atoms[0]
+    let localName = this.atoms[1]
+    return (namespace.toStr() == "*" or namespace == node.namespaceURI) and
+      (localName.toStr() == "*" or localName == node.localName)
   return false
 
 proc isElementWithClass(this: Collection; node: Node): bool =
@@ -2687,7 +2697,7 @@ proc nextSiblingExcept(this: Node; nodes: openArray[Node]): Node =
   node
 
 proc beforeImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
-    Opt[void] =
+    JSValue =
   var nodes: seq[Node]
   ?ctx.toNodes(argv, this.document, nodes)
   let parent = this.parentNode
@@ -2695,19 +2705,19 @@ proc beforeImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
     let prev = this.previousSiblingExcept(nodes)
     let node = ctx.toNode(nodes, this.document)
     let before = if prev != nil: prev.nextSibling else: parent.firstChild
-    parent.insert(ctx, node, before)
-  ok()
+    return ctx.insertBeforeUndefined(parent, node, jsNull(before))
+  return JS_UNDEFINED
 
 proc afterImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
-    Opt[void] =
+    JSValue =
   var nodes: seq[Node]
   ?ctx.toNodes(argv, this.document, nodes)
   let parent = this.parentNode
   if parent != nil:
     let before = this.nextSiblingExcept(nodes)
     let node = ctx.toNode(nodes, this.document)
-    parent.insert(ctx, node, before)
-  ok()
+    return ctx.insertBeforeUndefined(parent, node, jsNull(before))
+  return JS_UNDEFINED
 
 proc replaceWithImpl(ctx: JSContext; this: Node; argv: varargs[JSValueConst]):
     JSValue =
@@ -2841,13 +2851,14 @@ proc childTextContent*(node: ParentNode): Str =
       buf &= child.data.asStr
   buf
 
-proc getParamCollection(root: ParentNode; name: CollectionName; param: CAtom):
-    Collection =
+proc getParamCollection(root: ParentNode; name: CollectionName; param: CAtom;
+    param2 = CAtomNull): Collection =
   let document = root.asNode.document
   for collection in document.liveCollections(root.asNode):
     if collection.getMagic() == uint32(name):
       let collection = collection as Collection
-      if collection.atoms[0] == param:
+      if collection.atoms[0] == param and
+          (param2 == CAtomNull or collection.atoms[1] == param2):
         return collection
   Collection(nil)
 
@@ -2861,6 +2872,22 @@ proc getElementsByTagNameImpl(root: ParentNode; tagName: CAtom):
     cnGetElementsByTagName)
   if this != nil:
     this.atoms = newDOMTokenArray(tagName)
+  this
+
+proc getElementsByTagNameNSImpl(root: ParentNode;
+    namespaceURI, localName: CAtom): HTMLCollection =
+  let collection = root.getParamCollection(cnGetElementsByTagName,
+    namespaceURI, localName)
+  if collection != nil:
+    return collection as HTMLCollection
+  let match = if namespaceURI.toStr() == "*" and localName.toStr() == "*":
+    isElement
+  else:
+    isElementOfNS
+  let this = newHTMLCollection(root.asNode, match, cmSubtree,
+    cnGetElementsByTagNameNS)
+  if this != nil:
+    this.atoms = newDOMTokenArray(namespaceURI, localName)
   this
 
 proc getElementsByClassNameImpl(root: ParentNode; classNames: DOMString):
@@ -3309,11 +3336,11 @@ jsClassDef(CharacterData):
     return this.asNode.nextElementSiblingImpl
 
   proc before(ctx: JSContext; this: CharacterData;
-      nodes: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
     ctx.beforeImpl(this.asNode, nodes)
 
   proc after(ctx: JSContext; this: CharacterData; nodes: varargs[JSValueConst]):
-      Opt[void] {.jsfunc.} =
+      JSValue {.jsfunc.} =
     ctx.afterImpl(this.asNode, nodes)
 
   proc replaceWith(ctx: JSContext; this: CharacterData;
@@ -4070,6 +4097,11 @@ jsClassPublicDef(Document):
       HTMLCollection {.jsnfunc.} =
     document.asParentNode.getElementsByTagNameImpl(tagName)
 
+  proc getElementsByTagNameNS(document: Document; namespaceURI: CAtomNullable;
+      localName: CAtom): HTMLCollection {.jsnfunc.} =
+    document.asParentNode.getElementsByTagNameNSImpl(CAtom(namespaceURI),
+      localName)
+
   proc getElementsByClassName(document: Document; classNames: DOMString):
       HTMLCollection {.jsnfunc.} =
     document.asParentNode.getElementsByClassNameImpl(classNames)
@@ -4378,11 +4410,11 @@ jsClassDef(DocumentType):
   jsget DocumentType, systemId
 
   proc before(ctx: JSContext; this: DocumentType;
-      nodes: varargs[JSValueConst]): Opt[void] {.jsfunc.} =
+      nodes: varargs[JSValueConst]): JSValue {.jsfunc.} =
     ctx.beforeImpl(this.asNode, nodes)
 
   proc after(ctx: JSContext; this: DocumentType; nodes: varargs[JSValueConst]):
-      Opt[void] {.jsfunc.} =
+      JSValue {.jsfunc.} =
     ctx.afterImpl(this.asNode, nodes)
 
   proc replaceWith(ctx: JSContext; this: DocumentType;
@@ -4605,7 +4637,7 @@ proc remove(this: DOMTokenList; ctx: JSContext; toks: varargs[CAtom]) =
       continue
     if buf.len > 0:
       buf &= ' '
-    buf &= tok.toStr()
+    buf &= tok
   this.update(ctx, buf.toStr())
 
 proc add(this: DOMTokenList; ctx: JSContext; toks: varargs[CAtom]) =
@@ -4613,12 +4645,12 @@ proc add(this: DOMTokenList; ctx: JSContext; toks: varargs[CAtom]) =
   for tok in this.toks:
     if buf.len > 0:
       buf &= ' '
-    buf &= tok.toStr()
+    buf &= tok
   for tok in toks:
     if tok notin this.toks:
       if buf.len > 0:
         buf &= ' '
-      buf &= tok.toStr()
+      buf &= tok
   this.update(ctx, buf.toStr())
 
 jsClassDef(DOMTokenList):
@@ -4643,7 +4675,7 @@ jsClassDef(DOMTokenList):
     for i, tok in this.toks:
       if i != 0:
         s &= ' '
-      s &= tok.toStr()
+      s &= tok
     s.toStr()
 
   proc add(ctx: JSContext; this: DOMTokenList; argv: varargs[JSValueConst]):
@@ -5218,11 +5250,15 @@ proc setHover*(element: Element; hover: bool) =
 
 proc parseColor(element: Element; s: sink DOMString): Opt[ARGBColor] =
   var ctx = initCSSParser(s.asStr)
-  if color := ctx.parseColor():
+  let window = element.asNode.document.window
+  let attrsp = if window != nil:
+    window.settings.scriptAttrsp
+  else:
+    unsafeAddr dummyAttrs
+  if color := ctx.parseColor(attrsp[]):
     case color.t
     of cctArgb, cctOklab: return ok(color.argb())
     of cctCurrent:
-      let window = element.asNode.document.window
       if window != nil and window.settings.scripting == smApp and
           element.asNode.isConnected():
         element.ensureStyle()
@@ -5892,6 +5928,11 @@ jsClassPublicDef(Element):
       HTMLCollection {.jsnfunc.} =
     element.asParentNode.getElementsByTagNameImpl(tagName)
 
+  proc getElementsByTagNameNS(element: Element; namespaceURI: CAtomNullable;
+      localName: CAtom): HTMLCollection {.jsnfunc.} =
+    element.asParentNode.getElementsByTagNameNSImpl(CAtom(namespaceURI),
+      localName)
+
   proc getElementsByClassName(element: Element; classNames: DOMString):
       HTMLCollection {.jsnfunc.} =
     element.asParentNode.getElementsByClassNameImpl(classNames)
@@ -5906,11 +5947,11 @@ jsClassPublicDef(Element):
     return element.asNode.nextElementSiblingImpl
 
   proc before(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
-      Opt[void] {.jsfunc.} =
+      JSValue {.jsfunc.} =
     ctx.beforeImpl(this.asNode, nodes)
 
   proc after(ctx: JSContext; this: Element; nodes: varargs[JSValueConst]):
-      Opt[void] {.jsfunc.} =
+      JSValue {.jsfunc.} =
     ctx.afterImpl(this.asNode, nodes)
 
   proc replaceWith(ctx: JSContext; this: Element;
