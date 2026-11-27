@@ -366,8 +366,9 @@ type
     url*: URL # not nil
     currentScript: HTMLScriptElement
     implementation: JSObject
-    internalBaseURL: URL
-    origin: Origin
+    internalBaseURL: URL # roughly the same as "frozen base URL" in spec
+    fallbackBaseURL: URL # usually same as url
+    origin*: Origin
     # document.write
     ignoreDestructiveWrites: int
     throwOnDynamicMarkupInsertion*: int
@@ -624,7 +625,7 @@ proc loadSheet(window: Window; this: SheetElement; url: URL; charset: Charset;
 proc newCDATASection(document: Document; data: sink DOMString): CDATASection
 proc createComment*(document: Document; data: sink DOMString): Comment
 proc createTextNode*(document: Document; data: sink DOMString): Text
-proc newDocument*(url: URL): Document
+proc newDocument*(url: URL; origin: Origin): Document
 proc newDOMImplementation(ctx: JSContext; document: Document): JSObjectErr
 proc newDocumentType*(document: Document; name, publicId, systemId: sink Str):
   DocumentType
@@ -687,7 +688,6 @@ proc focus*(document: Document): Element
 proc invalidateCollections*(document: Document)
 proc invalidateCollectionsRemove(document: Document; node: Node)
 proc parseURL0*(document: Document; s: Str): URL
-proc parseURL*(document: Document; s: Str): Opt[URL]
 
 proc adjustForRemoval(iter: NodeIterator; node: Node)
 
@@ -797,7 +797,7 @@ proc getClassID*(t: typedesc[ShadowRoot]): JSClassID
 proc getClassID*(t: typedesc[Text]): JSClassID
 
 # Forward declaration hacks
-proc matchesList(element: Element; cxsels: SelectorList): bool {.
+proc matchesList(element, scope: Element; cxsels: SelectorList): bool {.
   importc: "cha_$1".}
 proc parseHTMLFragment(ctx: JSContext; element: Element; s: openArray[char]):
   seq[Node] {.importc: "cha_$1".}
@@ -1328,7 +1328,8 @@ proc loadLink(window: Window; link: HTMLLinkElement) =
   let href = link.asElement.attr(satHref)
   if href == "":
     return
-  if url := parseURL(href, window.document.url):
+  let url = window.document.parseURL0(href)
+  if url != nil:
     inc window.remoteSheetNum
     window.loadSheet(link.asSheetElement, url, loadLinkFinish)
 
@@ -1344,9 +1345,19 @@ proc fireEvent*(window: Window; event: Event; target: EventTarget) =
   window.jsctx.fireEvent(event, target)
 
 proc fireEvent*(window: Window; name: StaticAtom; target: EventTarget;
-    bubbles, cancelable, trusted: bool) =
+    bubbles, cancelable: bool) =
   let event = newTrustedEvent(name, target, bubbles, cancelable)
   window.fireEvent(event, target)
+
+type LoadEnv = ref object of JSTaskEnv
+  element: HTMLImageElement
+
+proc fireLoadTask(ctx: JSContext; env: JSTaskEnv): Opt[void] =
+  let env = LoadEnv(env)
+  let event = newTrustedEvent(satLoad, env.element.asEventTarget,
+    bubbles = false, cancelable = false)
+  ctx.fireEvent(event, env.element.asEventTarget)
+  ok()
 
 proc loadImageFinish(opaque: RootRef; response: Response) =
   let cachedURL = CachedURLImage(opaque)
@@ -1379,8 +1390,9 @@ proc loadImageFinish(opaque: RootRef; response: Response) =
     share.asElement.invalidate()
     #TODO fire error on error
     if window.settings.scripting != smFalse:
-      window.fireEvent(satLoad, share.asEventTarget, bubbles = false,
-        cancelable = false, trusted = true)
+      discard window.jsctx.queueTask(jtsDOMManipulation, fireLoadTask, LoadEnv(
+        element: share
+      ))
   window.imageLoaded()
 
 proc loadImage0(opaque: RootRef; response: Response) =
@@ -1467,10 +1479,9 @@ proc loadImage*(window: Window; image: HTMLImageElement) =
   let src = image.asElement.attr(satSrc)
   if src == "":
     return
-  let url0 = parseURL(src, window.document.url)
-  if url0.isErr:
+  let url = window.document.parseURL0(src)
+  if url == nil:
     return
-  let url = url0.get
   if window.document.url.schemeType == stHttps and url.schemeType == stHttp:
     # mixed content :/
     #TODO maybe do this in loader?
@@ -1758,7 +1769,6 @@ proc nextSiblingShadow(node: Node): lent Node =
 # Return the next descendant if it isn't `start', and nil otherwise.
 # When `skip' is true, skip children of `node'.
 # Note: `start' must be either an ancestor of `node', `node` itself, or nil.
-#TODO start should be ParentNode
 proc nextDescendant(node, start: Node; skip = false): Node =
   if not skip and (let parent = node as ParentNode; parent != nil):
     let first = parent.firstChild
@@ -2026,38 +2036,48 @@ proc removeNodeInternal(node, next: Node; parent: ParentNode;
     document: Document): Node =
   # returns previousSibling
   document.invalidateCollectionsRemove(node)
-  var prev = node.internalPrev
-  if next != nil and next.parentNode != nil:
-    next.internalPrev = prev
-  else:
-    parent.firstChild.internalPrev = prev
+  var prev = move(node.internalPrev)
   if parent.firstChild == node:
-    prev = Node(nil)
+    # note: we can test parentNode against nil because we are not in
+    # insertion steps
     if next != nil and next.parentNode != nil:
+      # first child removed; link new first child to last child, and then
+      # shadow to new first child
+      next.internalPrev = move(prev)
       parent.setFirstChild(next)
     else:
+      # no children left
+      prev = Node(nil)
       parent.setFirstChild(Node(nil))
   else:
+    if next != nil and next.parentNode != nil:
+      # non-first, non-last child removed; link nextSibling to
+      # previousSibling
+      next.internalPrev = prev
+    else:
+      # last child removed, but there are others left; link first to
+      # previous
+      parent.firstChild.internalPrev = prev
+    # either way, prev must link to next
     prev.internalNext = next
-  node.internalPrev = Node(nil)
   node.internalNext = document.asNode
   node.parentNode = ParentNode(nil)
   let nodeAsElement = node as Element
   let parentAsElement = parent as Element
   if parentAsElement != nil:
     parentAsElement.invalidate()
-    if parentAsElement.tagType == ttDetails and
-        (let shadow = parentAsElement.shadowRoot; shadow != nil):
-      # idk where this belongs, I'll just put it here
-      if (let slot1 = shadow.asParentNode.firstChild as HTMLSlotElement;
-          slot1 != nil):
-        if (let i = slot1.nodes.find(node); i >= 0):
-          slot1.nodes.delete(i)
-        elif (let slot2 = slot1.asNode.nextSibling as HTMLSlotElement;
-            slot2 != nil):
-          let i = slot2.nodes.find(node)
-          if i >= 0:
-            slot2.nodes.delete(i)
+    if parentAsElement.tagType == ttDetails:
+      let shadow = parentAsElement.shadowRoot
+      if shadow != nil:
+        if (let slot1 = shadow.asParentNode.firstChild as HTMLSlotElement;
+            slot1 != nil):
+          if (let i = slot1.nodes.find(node); i >= 0):
+            slot1.nodes.delete(i)
+          elif (let slot2 = slot1.asNode.nextSibling as HTMLSlotElement;
+              slot2 != nil):
+            let i = slot2.nodes.find(node)
+            if i >= 0:
+              slot2.nodes.delete(i)
   else:
     # we're removing all elements; the document must still be invalidated
     document.invalid = true
@@ -2066,7 +2086,7 @@ proc removeNodeInternal(node, next: Node; parent: ParentNode;
       # removed node was not the last one
       parentAsElement.flags.incl(efChildElIndicesInvalid)
     nodeAsElement.setMagic(0)
-  return prev
+  prev
 
 proc removeImpl*(node: Node; ctx: JSContext; suppressObservers = false) =
   let parent = node.parentNode
@@ -2223,10 +2243,9 @@ proc clone(node: Node; ctx: JSContext; document: Document; deep: bool;
   elif (let node = node as ProcessingInstruction; node != nil):
     document.newProcessingInstruction(node.target, node.data).asNode
   elif (let document = node as Document; document != nil):
-    let x = newDocument(document.url)
+    let x = newDocument(document.url, document.origin)
     x.charset = document.charset
     x.contentType = document.contentType
-    x.origin = document.origin
     x.quirksMode = document.quirksMode
     x.asNode
   elif (let node = node as DocumentType; node != nil):
@@ -2908,8 +2927,8 @@ proc getElementsByClassNameImpl(root: ParentNode; classNames: DOMString):
 
 proc insertNodeInternal(parent: ParentNode; node, before: Node;
     parentAsElement: Element) =
-  let first = parent.firstChild
   if before == nil:
+    let first = parent.firstChild
     if first != nil:
       let last = first.internalPrev
       last.internalNext = node
@@ -2920,34 +2939,34 @@ proc insertNodeInternal(parent: ParentNode; node, before: Node;
       node.internalPrev = node
   else:
     node.internalNext = before
-    let prev = before.internalPrev
-    node.internalPrev = prev
-    if prev.nextSibling != nil:
+    let prev = move(before.internalPrev)
+    if prev.internalNext == before and prev.parentNode != nil:
+      # prev is neither the last sibling, nor a shadow root
       prev.internalNext = node
+    node.internalPrev = prev
     before.internalPrev = node
-    if before == first:
+    if before == parent.firstChild:
       parent.setFirstChild(node)
   node.parentNode = parent
   let nodeAsElement = node as Element
   if nodeAsElement != nil:
-    #TODO same as before != nil?
-    if node.nextSibling != nil and parentAsElement != nil:
+    if before != nil and parentAsElement != nil:
       parentAsElement.flags.incl(efChildElIndicesInvalid)
     elif (let prev = nodeAsElement.previousElementSibling; prev != nil):
       nodeAsElement.setMagic(prev.getMagic() + 1)
     else:
       nodeAsElement.setMagic(0)
-  if parentAsElement != nil and parentAsElement.tagType == ttDetails and
-      (let shadow = parentAsElement.shadowRoot; shadow != nil):
-    # idk where this belongs, I'll just put it here
-    if (let slot1 = shadow.asParentNode.firstChild as HTMLSlotElement;
-        slot1 != nil):
-      if node of Element and Element(node).tagType == ttSummary and
-          slot1.nodes.len == 0:
-        slot1.nodes.add(node)
-      elif (let slot2 = slot1.asNode.nextSibling as HTMLSlotElement;
-          slot2 != nil):
-        slot2.nodes.add(node)
+  if parentAsElement != nil and parentAsElement.tagType == ttDetails:
+    let shadow = parentAsElement.shadowRoot
+    if shadow != nil:
+      if (let slot1 = shadow.asParentNode.firstChild as HTMLSlotElement;
+          slot1 != nil):
+        if node of Element and Element(node).tagType == ttSummary and
+            slot1.nodes.len == 0:
+          slot1.nodes.add(node)
+        elif (let slot2 = slot1.asNode.nextSibling as HTMLSlotElement;
+            slot2 != nil):
+          slot2.nodes.add(node)
 
 proc insert1(parent: ParentNode; ctx: JSContext; node, before: Node;
     postConnectionNodes: var seq[Element]) =
@@ -3106,8 +3125,9 @@ proc querySelectorImpl(ctx: JSContext; node: ParentNode; q: DOMString):
   let selectors = ctx.parseSelectors(q)
   if selectors.len == 0:
     return JS_EXCEPTION
+  let scope = node as Element
   for element in node.elementDescendants:
-    if element.matchesList(selectors):
+    if element.matchesList(scope, selectors):
       return ctx.toJS(element)
   return JS_NULL
 
@@ -3118,8 +3138,9 @@ proc querySelectorAllImpl(ctx: JSContext; node: ParentNode; q: DOMString):
     return JS_EXCEPTION
   let this = newEmptyNodeList()
   if this != nil:
+    let scope = node as Element
     for element in node.elementDescendants:
-      if element.matchesList(selectors):
+      if element.matchesList(scope, selectors):
         this.snapshot.add(element.asNode)
   return ctx.toJSNew(this)
 
@@ -3449,17 +3470,22 @@ template asDocument[T: DocumentObj](x: JSRef[T]): Document =
   Document(x)
 
 proc newXMLDocument(): XMLDocument =
+  let url = parseURL0("about:blank")
+  if url == nil:
+    return XMLDocument(nil)
   jsNew XMLDocumentObj(
-    url: parseURL0("about:blank"),
+    url: url,
+    fallbackBaseURL: url,
     contentType: satApplicationXml,
     charset: csUtf8
   )
 
-proc newDocument*(url: URL): Document =
+proc newDocument*(url: URL; origin: Origin): Document =
   jsNew DocumentObj(
     url: url,
+    fallbackBaseURL: url,
     contentType: satApplicationXml,
-    origin: url.origin,
+    origin: origin,
     charset: csUtf8
   )
 
@@ -3622,27 +3648,20 @@ proc baseURL*(document: Document): URL =
     for base in document.asParentNode.elementDescendants(ttBase):
       let u = base.asElement.findAttr(satHref)
       if u != uint32.high:
-        #TODO frozen base url
         let href = base.asElement.attrs[u].value
         if href != "":
-          let url = parseURL0(href, document.url)
-          if url != nil:
+          let url = parseURL0(href, document.fallbackBaseURL) #TODO encoding
+          if url != nil and url.schemeType notin {stData, stJavascript}:
+            #TODO CSP
             document.internalBaseURL = url
           break
     if document.internalBaseURL == nil:
-      document.internalBaseURL = document.url
+      document.internalBaseURL = document.fallbackBaseURL
   return document.internalBaseURL
 
 proc parseURL0*(document: Document; s: Str): URL =
   #TODO encodings
   return parseURL0(s, document.baseURL)
-
-proc parseURL*(document: Document; s: Str): Opt[URL] =
-  #TODO encodings
-  let url = document.parseURL0(s)
-  if url == nil:
-    return err()
-  ok(url)
 
 proc invalidateCollections*(document: Document) =
   for collection in document.liveCollections:
@@ -3849,12 +3868,10 @@ jsClassPublicDef(Document):
 
   proc newDocument(ctx: JSContext): Document {.jsctor.} =
     let global = ctx.getWindow()
-    jsNew DocumentObj(
-      url: parseURL0("about:blank"),
-      contentType: satApplicationXml,
-      origin: global.document.origin,
-      charset: csUtf8
-    )
+    let url = parseURL0("about:blank")
+    if url == nil:
+      return Document(nil)
+    newDocument(url, global.document.origin)
 
   proc getImplementation(ctx: JSContext; document: Document): JSValue
       {.jsfget: "implementation".} =
@@ -4365,6 +4382,8 @@ jsClassRaw(DOMImplementationDef, "DOMImplementation"):
   proc createHTMLDocument(ctx: JSContext; implementation: DOMImplementation;
       title = JS_UNDEFINED.vc): JSValue {.jsfunc.} =
     let doc = newDocument(ctx)
+    if doc == nil:
+      return JS_ThrowOutOfMemory(ctx)
     doc.contentType = satTextHtml
     let doctype = doc.newDocumentType(str("html"), str(""), str(""))
     let html = doc.newHTMLElement(ctx, ttHtml)
@@ -5598,6 +5617,7 @@ proc insertionSteps(element: Element; ctx: JSContext;
     postConnectionNodes.add(element)
   of ttBase:
     element.asNode.document.internalBaseURL = URL(nil)
+    #TODO invalidate :visited
   elif element.namespaceURI == satNamespaceSVG:
     element.insertionStepsSVG()
   else:
@@ -6262,7 +6282,7 @@ jsClassPublicDef(Element):
     if selectors.len == 0:
       return JS_EXCEPTION
     for element in this.branchElems:
-      if element.matchesList(selectors):
+      if element.matchesList(this, selectors):
         return ctx.toJS(element)
     return JS_NULL
 
@@ -6271,7 +6291,7 @@ jsClassPublicDef(Element):
     let selectors = ctx.parseSelectors(q)
     if selectors.len == 0:
       return JS_EXCEPTION
-    return ctx.toJS(this.matchesList(selectors))
+    return ctx.toJS(this.matchesList(this, selectors))
 
   proc style(element: Element): CSSStyleDeclaration {.jsnfget.} =
     if element.cachedStyle == nil:
@@ -6449,11 +6469,10 @@ proc add(map: var DependencyMap; key, value: Element) =
   inc map.load
 
 proc invalidate*(element: Element; dep: DependencyType) =
-  if dep in element.selfDepends:
-    element.invalidate()
   let root = element.asNode.rootNode as RootNode
-  if root != nil:
-    #TODO could chaAssert too but I'm too lazy to check all call sites
+  if root != nil: # rootless elements need not be invalidated
+    if dep in element.selfDepends:
+      element.invalidate()
     for it in root.styleDependencies[dep].dependedBy.getAll(element):
       it.invalidate()
 
@@ -6850,7 +6869,8 @@ proc jsReflectGet0(ctx: JSContext; htmlElement: HTMLElement; magic: cint):
   of rtStr, rtStrNull: return ctx.toJS(element.attr(name))
   of rtUrl:
     let s = element.attr(name)
-    if url := element.asNode.document.parseURL(s):
+    let url = element.asNode.document.parseURL0(s)
+    if url != nil:
       return ctx.toJS(url.toStr())
     return ctx.toJS(s)
   of rtReferrerPolicy:
@@ -6994,9 +7014,9 @@ template htmlClassDef(name: untyped) =
 proc reinitURL*(element: Element): Opt[URL] =
   let u = element.findAttr(satHref)
   if u != uint32.high:
-    let url = element.asNode.document.parseURL(element.attrs[u].value)
-    if url.isOk and url.get.schemeType != stBlob:
-      return url
+    let url = element.asNode.document.parseURL0(element.attrs[u].value)
+    if url != nil and url.schemeType != stBlob:
+      return ok(url)
   return err()
 
 proc hyperlinkGet(ctx: JSContext; this: JSValueConst; magic: cint): JSValue
@@ -7072,8 +7092,9 @@ jsClassDef(HTMLBaseElement):
   jsextends HTMLElementDef
 
   proc href(base: HTMLBaseElement): Str {.jsfget.} =
-    #TODO with fallback base url
-    if url := parseURL(base.asElement.attr(satHref)):
+    let document = base.asNode.document
+    let url = parseURL0(base.asElement.attr(satHref), document.fallbackBaseURL)
+    if url != nil:
       return url.toStr()
     return str("")
 
@@ -7669,7 +7690,7 @@ proc execute*(element: HTMLScriptElement) =
     return
   if element.scriptResult.t == srtNull:
     window.fireEvent(satError, element.asEventTarget, bubbles = false,
-      cancelable = false, trusted = true)
+      cancelable = false)
     return
   let needsInc = element.external or element.scriptType == stModule
   if needsInc:
@@ -7701,7 +7722,7 @@ proc execute*(element: HTMLScriptElement) =
     dec document.ignoreDestructiveWrites
   if element.external:
     window.fireEvent(satLoad, element.asEventTarget, bubbles = false,
-      cancelable = false, trusted = true)
+      cancelable = false)
 
 # https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
 proc prepare*(element: HTMLScriptElement; ctx: JSContext) =
@@ -7769,7 +7790,7 @@ proc prepare*(element: HTMLScriptElement; ctx: JSContext) =
     element.external = src != "" and element.scriptType != stImportMap
     if element.scriptType == stImportMap or url == nil:
       window.fireEvent(satError, element.asEventTarget, bubbles = false,
-        cancelable = false, trusted = true)
+        cancelable = false)
       return
     if element.asElement.isRenderBlocking():
       element.asElement.blockRendering()
