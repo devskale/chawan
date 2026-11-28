@@ -68,6 +68,15 @@ type
     ntDocumentFragment = (11u16, "DOCUMENT_FRAGMENT_NODE")
     ntNotation = (12u16, "NOTATION_NODE")
 
+type DocumentPosition = enum
+  dpDisconnected = (0'u16, "DOCUMENT_POSITION_DISCONNECTED")
+  dpPreceding = (1'u16, "DOCUMENT_POSITION_PRECEDING")
+  dpFollowing = (2'u16, "DOCUMENT_POSITION_FOLLOWING")
+  dpContains = (3'u16, "DOCUMENT_POSITION_CONTAINS")
+  dpContainedBy = (4'u16, "DOCUMENT_POSITION_CONTAINED_BY")
+  dpImplementationSpecific =
+    (5'u16, "DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC")
+
 type
   DependencyType* = enum
     dtHover, dtChecked, dtFocus, dtTarget
@@ -342,9 +351,9 @@ type
 
   Attr = JSRef[AttrObj]
 
-  AttrObj* {.final.} = object of NodeObj
+  AttrObj {.final.} = object of NodeObj
     dataIdx: uint32
-    ownerElement: Element # may be nil
+    internalOwnerElement: Element # may be nil
 
   DOMImplementation = distinct Document # strong ref
 
@@ -648,12 +657,13 @@ proc newCSSStyleDeclaration(element: Element; value: Str; computed = false;
   readonly = false): CSSStyleDeclaration
 
 proc isConnected*(node: Node): bool
-proc lastChild(node: Node): Node
+proc lastChildSlow(node: Node): Node
 proc nextDescendant(node, start: Node; skip = false): Node
 proc nextDescendantShadow(node, start: Node): Node
 proc parentElement*(node: Node): Element
 proc parentNodeHost(node: Node): Node
 proc previousSibling*(node: Node): Node
+proc precedes(this, other: Node): bool
 proc serializeFragment(res: var Growbuf; node: Node; writeShadow: bool)
 proc serializeFragmentInner*(res: var Growbuf; child: Node; parentType: TagType;
   writeShadow: bool)
@@ -694,6 +704,7 @@ proc adjustForRemoval(iter: NodeIterator; node: Node)
 proc newAttr(document: Document; data: AttrData): Attr
 proc data(attr: Attr): lent AttrData
 proc setValue(ctx: JSContext; attr: Attr; ds: DOMString)
+proc ownerElement(attr: Attr): Element
 
 proc attachShadowInternal(this: Element; init: ShadowRootInit;
   customElements: CustomElementRegistry): ShadowRoot
@@ -1349,7 +1360,7 @@ proc fireEvent*(window: Window; name: StaticAtom; target: EventTarget;
   let event = newTrustedEvent(name, target, bubbles, cancelable)
   window.fireEvent(event, target)
 
-type LoadEnv = ref object of JSTaskEnv
+type LoadEnv {.final.} = ref object of JSTaskEnv
   element: HTMLImageElement
 
 proc fireLoadTask(ctx: JSContext; env: JSTaskEnv): Opt[void] =
@@ -1850,7 +1861,7 @@ proc rootNode*(node: Node): Node =
     return node
   parent.lastChild.internalNext
 
-proc rootNodeShadow(node: Node): Node =
+proc rootNodeComposed(node: Node): Node =
   var node = node.rootNode
   while (let shadow = node as ShadowRoot; shadow != nil):
     node = shadow.host.asNode.rootNode
@@ -2032,10 +2043,11 @@ proc checkPreInsertValidity(parent: ParentNode; node, before: Node;
     return err("document type can only be inserted into document")
   ok(parent)
 
-proc removeNodeInternal(node, next: Node; parent: ParentNode;
+proc removeNodeInternal(node: Node; parent: ParentNode;
     document: Document): Node =
   # returns previousSibling
   document.invalidateCollectionsRemove(node)
+  let next = node.internalNext
   var prev = move(node.internalPrev)
   if parent.firstChild == node:
     # note: we can test parentNode against nil because we are not in
@@ -2088,19 +2100,16 @@ proc removeNodeInternal(node, next: Node; parent: ParentNode;
     nodeAsElement.setMagic(0)
   prev
 
-proc removeImpl*(node: Node; ctx: JSContext; suppressObservers = false) =
-  let parent = node.parentNode
-  if parent == nil:
-    return
+proc removeImpl(parent: ParentNode; ctx: JSContext; node: Node;
+    suppressObservers: bool) =
   let oldRootNode = node.rootNode
   let document = oldRootNode.document
   # document is only nil for Document nodes, but those cannot call
   # remove().
   chaAssert document != nil
   #TODO live ranges
-  let next = node.internalNext
   let oldNextSibling = node.nextSibling
-  let oldPreviousSibling = node.removeNodeInternal(next, parent, document)
+  let oldPreviousSibling = node.removeNodeInternal(parent, document)
   #TODO assigned
   if oldRootNode of ShadowRoot:
     let shadow = ShadowRoot(oldRootNode)
@@ -2110,7 +2119,7 @@ proc removeImpl*(node: Node; ctx: JSContext; suppressObservers = false) =
   let oldRootDocumentLike = oldRootNode as RootNode
   for desc in node.descendantsShadowIncl:
     #TODO assign slottables with parent's root & node
-    let last = desc.lastChild
+    let last = desc.lastChildSlow
     if last != nil and last.internalNext == oldRootNode: # update root
       last.internalNext = node
     if (let element = desc as Element; element != nil):
@@ -2138,6 +2147,12 @@ proc removeImpl*(node: Node; ctx: JSContext; suppressObservers = false) =
     parent.queueTreeMutationRecord(ctx, [], [node], oldPreviousSibling,
       oldNextSibling)
   #TODO children changed steps
+
+proc remove*(node: Node; ctx: JSContext; suppressObservers = false) =
+  let parent = node.parentNode
+  if parent == nil:
+    return
+  parent.removeImpl(ctx, node, suppressObservers)
 
 # e may be nil
 proc insertThrow*(ctx: JSContext; e: cstring): JSValue =
@@ -2191,7 +2206,7 @@ proc replaceChildWith*(parent: ParentNode; ctx: JSContext; child, node: Node):
   let fragment = node as DocumentFragment
   if fragment != nil:
     nodes = fragment.asParentNode.getChildList()
-  child.removeImpl(ctx, suppressObservers = true)
+  child.remove(ctx, suppressObservers = true)
   parent.insert(ctx, node, referenceChild, suppressObservers = true)
   if fragment != nil:
     parent.queueTreeMutationRecord(ctx, nodes, [child], childPreviousSibling,
@@ -2463,7 +2478,7 @@ jsClassDef(Node):
   proc getRootNode(node: Node; options = GetRootNodeOptions()): Node
       {.jsfunc.} =
     if options.composed:
-      return node.rootNodeShadow
+      return node.rootNodeComposed
     node.rootNode
 
   proc parentElement*(node: Node): Element {.jsfget.} =
@@ -2526,7 +2541,7 @@ jsClassDef(Node):
     return ctx.toJS(node.textContent)
 
   proc isConnected*(node: Node): bool {.jsfget.} =
-    return node.rootNodeShadow of Document
+    node.rootNodeComposed of Document
 
   proc contains(a: Node; b: NodeNil): bool {.jsfunc.} =
     let b = b.get
@@ -2539,7 +2554,7 @@ jsClassDef(Node):
       return node.firstChild
     Node(nil)
 
-  proc lastChild(node: Node): Node {.jsfget.} =
+  proc lastChildSlow(node: Node): Node {.jsfget: "lastChild".} =
     if (let node = node as ParentNode; node != nil):
       return node.lastChild
     Node(nil)
@@ -2550,7 +2565,7 @@ jsClassDef(Node):
   proc removeChild(ctx: JSContext; parent, node: Node): JSValue {.jsfunc.} =
     if node.parentNode.asNode != parent:
       return ctx.insertThrow(nil)
-    node.removeImpl(ctx)
+    node.remove(ctx)
     return ctx.toJS(node)
 
   proc insertBefore(ctx: JSContext; parent, node: Node; before: NodeNil):
@@ -2579,9 +2594,6 @@ jsClassDef(Node):
       return err()
     ctx.cloneNodeImpl(node, node.document, deep, ParentNode(nil),
       CustomElementRegistry(nil))
-
-  proc isSameNode(node, other: Node): bool {.jsfunc.} =
-    return node == other
 
   proc childNodes(node: Node): NodeList {.jsfget.} =
     var list = node.getLiveCollection(cnChildNodes) as NodeList
@@ -2627,6 +2639,40 @@ jsClassDef(Node):
         return false
       return node.data == other.data
     true
+
+  proc isSameNode(this, other: Node): bool {.jsfunc.} =
+    return this == other
+
+  proc compareDocumentPosition(this, other: Node): uint16 {.jsfunc.} =
+    if this == other:
+      return 0
+    let attr1 = other as Attr
+    let attr2 = this as Attr
+    let node1 = if attr1 != nil: attr1.ownerElement.asNode else: other
+    let node2 = if attr2 != nil: attr2.ownerElement.asNode else: this
+    if attr2 != nil:
+      if attr1 != nil and node1 != nil and node2 == node1:
+        let res = if attr1.dataIdx < attr2.dataIdx:
+          {dpImplementationSpecific, dpPreceding}
+        else:
+          {dpImplementationSpecific, dpFollowing}
+        return cast[uint16](res)
+    if node1 == nil or node2 == nil or node1.rootNode != node2.rootNode:
+      #TODO this matches the spec, but I'm not a fan
+      let res = if cast[uint](node1) < cast[uint](node2):
+        {dpDisconnected, dpImplementationSpecific, dpPreceding}
+      else:
+        {dpDisconnected, dpImplementationSpecific, dpFollowing}
+      return cast[uint16](res)
+    if node1 == node2 and attr2 != nil or
+        attr1 == nil and node1.contains(node2):
+      return cast[uint16]({dpContains, dpPreceding})
+    if node1 == node2 and attr1 != nil or
+        attr2 == nil and node2.contains(node1):
+      return cast[uint16]({dpContainedBy, dpFollowing})
+    if node1.precedes(node2):
+      return cast[uint16]({dpPreceding})
+    cast[uint16]({dpFollowing})
 
   proc setNodeValue(ctx: JSContext; node: Node; data: DOMStringEmpty): Opt[void]
       {.jsfset: "nodeValue".} =
@@ -2835,7 +2881,7 @@ proc getChildList*(node: ParentNode): seq[Node] =
 proc replaceAll(parent: ParentNode; ctx: JSContext; node: Node) =
   let removedNodes = parent.getChildList()
   for child in removedNodes:
-    child.removeImpl(ctx, true)
+    child.remove(ctx, true)
   if node != nil:
     if (let fragment = node as DocumentFragment; fragment != nil):
       let nodes = fragment.asParentNode.getChildList()
@@ -2988,7 +3034,7 @@ proc insert1(parent: ParentNode; ctx: JSContext; node, before: Node;
     node.internalNext = rootNode
   let rootDocumentLike = rootNode as RootNode
   for desc in node.descendantsShadowIncl:
-    let last = desc.lastChild
+    let last = desc.lastChildSlow
     if last != nil and last.internalNext == node:
       # update root (but only if it isn't a shadow root inside node)
       last.internalNext = rootNode
@@ -3040,7 +3086,7 @@ proc insert*(parent: ParentNode; ctx: JSContext; node, before: Node;
     let nodes = fragment.asParentNode.getChildList()
     if nodes.len > 0:
       for child in nodes:
-        child.removeImpl(ctx, suppressObservers = true)
+        child.remove(ctx, suppressObservers = true)
       fragment.asParentNode.queueTreeMutationRecord(ctx, nodes, [], Node(nil),
         Node(nil))
       parent.insert0(ctx, nodes, before, suppressObservers)
@@ -3050,7 +3096,7 @@ proc insert*(parent: ParentNode; ctx: JSContext; node, before: Node;
 proc moveBefore(parent: ParentNode; ctx: JSContext; node, child: Node):
     Err[cstring] =
   # child may be nil
-  if parent.asNode.rootNodeShadow != node.rootNodeShadow:
+  if parent.asNode.rootNodeComposed != node.rootNodeComposed:
     return err("parent's root is not the same as node's root")
   if node.isInclusiveAncestorHost(parent.asNode):
     return err("node is an ancestor of parent")
@@ -3068,8 +3114,7 @@ proc moveBefore(parent: ParentNode; ctx: JSContext; node, child: Node):
   let document = parent.asNode.document
   let oldParent = node.parentNode
   #TODO live range pre-remove steps
-  let next = node.internalNext
-  let oldPreviousSibling = node.removeNodeInternal(next, oldParent, document)
+  let oldPreviousSibling = node.removeNodeInternal(oldParent, document)
   let oldNextSibling = node.nextSibling
   #TODO assign slottables, trigger slot change, assign slottables for a tree
   #TODO transient registered observers
@@ -3085,7 +3130,7 @@ proc moveBefore(parent: ParentNode; ctx: JSContext; node, child: Node):
   let rootNode = parent.asNode.rootNode
   let rootNodeLike = rootNode as RootNode
   for desc in node.descendantsShadowIncl:
-    let last = desc.lastChild
+    let last = desc.lastChildSlow
     if last != nil and last.internalNext == node:
       # update root (but only if it isn't a shadow root inside node)
       last.internalNext = rootNode
@@ -3369,7 +3414,7 @@ jsClassDef(CharacterData):
     ctx.replaceWithImpl(this.asNode, nodes)
 
   proc remove(ctx: JSContext; this: CharacterData) {.jsfunc.} =
-    this.asNode.removeImpl(ctx)
+    this.asNode.remove(ctx)
 
 # Text
 jsClassPublicDef(Text):
@@ -3543,7 +3588,7 @@ proc getLiveCollections(document: Document; node: Node): seq[CollectionLike] =
 
 proc adopt(document: Document; node: Node; ctx: JSContext) =
   let oldDocument = node.document
-  node.removeImpl(ctx)
+  node.remove(ctx)
   if oldDocument != document:
     # node is detached from the tree, so its internalNext is guaranteed to
     # be oldDocument; we want to override that.
@@ -3991,18 +4036,22 @@ jsClassPublicDef(Document):
 
   proc createEvent(ctx: JSContext; document: Document; atom: CAtom):
       JSValue {.jsfunc.} =
-    case atom.toStaticAtomLower()
+    let event = case atom.toStaticAtomLower()
+    of satMessageevent:
+      ctx.newMessageEvent(satUempty.view()).asEvent
     of satCustomevent:
-      return ctx.toJSNew(ctx.newCustomEvent(satUempty.view()))
+      ctx.newCustomEvent(satUempty.view()).asEvent
     of satEvent, satEvents, satHtmlevents, satSvgevents:
-      return ctx.toJSNew(newEvent(satUempty, EventTarget(nil), bubbles = false,
-        cancelable = false))
+      newEvent(satUempty, EventTarget(nil), bubbles = false,
+        cancelable = false)
     of satUievent, satUievents:
-      return ctx.toJSNew(newUIEvent(satUempty.view()))
+      newUIEvent(satUempty.view()).asEvent
     of satMouseevent, satMouseevents:
-      return ctx.toJSNew(newMouseEvent(satUempty.view()))
+      newMouseEvent(satUempty.view()).asEvent
     else:
       return JS_ThrowDOMException(ctx, "NotSupportedError", "event not supported")
+    event.flags.excl(efInitialized)
+    ctx.toJSNew(event)
 
   proc location(ctx: JSContext; document: Document): JSValue {.jsuffget.} =
     if document.window == nil:
@@ -4441,7 +4490,7 @@ jsClassDef(DocumentType):
     ctx.replaceWithImpl(this.asNode, nodes)
 
   proc remove(ctx: JSContext; this: DocumentType) {.jsfunc.} =
-    this.asNode.removeImpl(ctx)
+    this.asNode.remove(ctx)
 
 # NodeIterator
 jsClassDef(NodeIteratorLike): # fake class
@@ -4550,14 +4599,17 @@ jsClassRawForward(TreeWalkerDef, "TreeWalker"):
   proc traverse(ctx: JSContext; this: NodeIteratorLike; last: bool): Opt[Node]
       {.jsmfunc("firstChild", false), jsmfunc("lastChild", true).} =
     let currentNode = this.currentNode
-    var node = if last: currentNode.lastChild else: currentNode.firstChildSlow
+    var node = if last:
+      currentNode.lastChildSlow
+    else:
+      currentNode.firstChildSlow
     while node != nil:
       let res = ?ctx.filter(this, node)
       if res == uint32(nfrAccept):
         this.currentNode = node
         return ok(node)
       if res == uint32(nfrSkip):
-        let child = if last: node.lastChild else: node.firstChildSlow
+        let child = if last: node.lastChildSlow else: node.firstChildSlow
         if child != nil:
           node = child
           continue
@@ -4586,7 +4638,7 @@ jsClassRawForward(TreeWalkerDef, "TreeWalker"):
           if res == uint32(nfrAccept):
             this.currentNode = node
             return ok(node)
-          sibling = if next: node.firstChildSlow else: node.lastChild
+          sibling = if next: node.firstChildSlow else: node.lastChildSlow
           if res == uint32(nfrReject) or sibling == nil:
             sibling = if next: node.nextSibling else: node.previousSibling
         node = node.parentNode.asNode
@@ -4614,7 +4666,7 @@ jsClassRawForward(TreeWalkerDef, "TreeWalker"):
         node = sibling
         var res = ?ctx.filter(this, node)
         while res != uint32(nfrReject):
-          let last = node.lastChild
+          let last = node.lastChildSlow
           if last == nil:
             break
           res = ?ctx.filter(this, last)
@@ -4921,7 +4973,7 @@ proc newAttr(element: Element; dataIdx: uint32): Attr =
   jsNew AttrObj(
     internalNext: element.asNode.document.asNode,
     dataIdx: dataIdx,
-    ownerElement: element,
+    internalOwnerElement: element,
   )
 
 proc newAttr(document: Document; data: AttrData): Attr =
@@ -4934,11 +4986,11 @@ proc newAttr(document: Document; data: AttrData): Attr =
   newAttr(dummy.asElement, 0)
 
 proc data(attr: Attr): lent AttrData =
-  if attr.ownerElement == nil:
+  if attr.internalOwnerElement == nil:
     # ran out of memory during attribute removal
     let hack {.global.} = AttrData()
     return hack
-  attr.ownerElement.attrs[attr.dataIdx]
+  attr.internalOwnerElement.attrs[attr.dataIdx]
 
 proc localName(attr: Attr): CAtom =
   let name = attr.data.name
@@ -4978,13 +5030,13 @@ jsClassDef(Attr):
 
   proc setValue(ctx: JSContext; attr: Attr; ds: DOMString) {.
       jsfset: "value".} =
-    if attr.ownerElement != nil:
-      attr.ownerElement.setAttr(ctx, attr.data.name, ds)
+    if attr.internalOwnerElement != nil:
+      attr.internalOwnerElement.setAttr(ctx, attr.data.name, ds)
 
-  proc jsOwnerElement(attr: Attr): Element {.jsfget: "ownerElement".} =
-    if attr.ownerElement of AttrDummyElement:
+  proc ownerElement(attr: Attr): Element {.jsfget.} =
+    if attr.internalOwnerElement of AttrDummyElement:
       return Element(nil)
-    return attr.ownerElement
+    return attr.internalOwnerElement
 
 # NamedNodeMap
 proc findAttr(map: NamedNodeMap; dataIdx: uint32): int =
@@ -5209,6 +5261,18 @@ proc precedes(this, other: Element): bool =
       this = thisParent
     other = otherParent
   false
+
+proc precedes(this, other: Node): bool =
+  if this == other.parentNode.asNode:
+    return true
+  if other == this.parentNode.asNode:
+    return false
+  if this.parentNode == other.parentNode:
+    for it in this.subsequentSiblings:
+      if it == other:
+        return true
+    return false
+  this.parentElement.precedes(other.parentElement)
 
 proc findAncestorIncl*(element: Element; tagType: TagType): Element =
   for element in element.branchElems:
@@ -5668,7 +5732,7 @@ proc delAttr(element: Element; ctx: JSContext; u: uint32) =
       let attr = map.attrlist[j]
       var data = attr.data
       data.value = oldValue
-      attr.ownerElement = (jsNew AttrDummyElementObj(
+      attr.internalOwnerElement = (jsNew AttrDummyElementObj(
         internalNext: attr.asNode.document.asNode,
         attrs: newAttrDataList(data)
       )).asElement # works even if jsNew produces nil
@@ -5979,7 +6043,7 @@ jsClassPublicDef(Element):
     ctx.replaceWithImpl(this.asNode, nodes)
 
   proc remove(ctx: JSContext; this: Element) {.jsfunc.} =
-    this.asNode.removeImpl(ctx)
+    this.asNode.remove(ctx)
 
   proc scrollTo(element: Element) {.jsfunc.} =
     discard #TODO maybe in app mode?
@@ -6185,7 +6249,7 @@ jsClassPublicDef(Element):
 
   proc setAttributeNode(ctx: JSContext; element: Element; attr: Attr): JSValue
       {.jsfunc, jsfunc: "setAttributeNodeNS".} =
-    if not (attr.ownerElement of AttrDummyElement):
+    if not (attr.internalOwnerElement of AttrDummyElement):
       return JS_ThrowDOMException(ctx, "InUseAttributeError",
         "attribute already in use")
     let attributes = element.attributes
@@ -6270,7 +6334,7 @@ jsClassPublicDef(Element):
         return err()
       let removedNodes = old.asParentNode.getChildList()
       for child in removedNodes:
-        child.removeImpl(ctx)
+        child.remove(ctx)
       old.declarative = false
       return ok(old)
     let shadow = this.attachShadowInternal(init, customElements)
@@ -7891,10 +7955,10 @@ proc deleteRow(ctx: JSContext; rows: HTMLCollection; index: int32): Opt[void] =
     return err()
   if index == -1:
     let it = rows.item(uint32(nrows - 1))
-    it.asNode.removeImpl(ctx)
+    it.asNode.remove(ctx)
   elif nrows > 0:
     let it = rows.item(uint32(index))
-    it.asNode.removeImpl(ctx)
+    it.asNode.remove(ctx)
   ok()
 
 jsClassDef(HTMLTableElement):
@@ -8405,7 +8469,6 @@ proc registerElements(ctx: JSContext): Opt[void] =
 proc addDOMModule*(ctx: JSContext): JSCode =
   ?ctx.registerClass(NodeDef)
   event.nodeClassID = NodeDef.id
-  ?ctx.defineConsts(NodeDef.id, NodeType)
   ?ctx.registerFakeClass(ParentNodeDef)
   ?ctx.registerFakeClass(RootNodeDef)
   ?ctx.registerFakeClass(ElementAccessorDef)
@@ -8438,6 +8501,10 @@ proc addDOMModule*(ctx: JSContext): JSCode =
   let ctxOpaque = ctx.getOpaque()
   if ctxOpaque == nil:
     return ok()
+  ?ctx.defineConsts(NodeDef.id, NodeType)
+  for e in DocumentPosition:
+    let n = ctx.toJS(1u32 shl uint32(e))
+    ?ctx.definePropertyE(ctxOpaque.ctors[int(NodeDef.id)], e.toStr(), n)
   ?ctx.definePropertyCW(ctxOpaque.global, "HTMLDocument",
     ctxOpaque.ctors[int(DocumentDef.id)].toJSValue())
   let nodeFilter = ?ctx.newObject()

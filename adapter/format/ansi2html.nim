@@ -28,7 +28,8 @@ type
 
   AnsiCodeParseState = enum
     acpsDone, acpsStart, acpsParams, acpsInterm, acpsFinal, acpsBackspace,
-    acpsInBackspaceTransition, acpsInBackspace, acpsOSC, acpsOSCEsc
+    acpsInBackspaceTransition, acpsInBackspace, acpsOSC, acpsOSCEsc,
+    acpsDSCS
 
   State = object
     os: PosixStream
@@ -45,22 +46,25 @@ type
     aOpen: bool
     hasPrintingBuf: bool
 
-proc getParam(state: State; i: var int; colon = false): Str =
-  var buf = initGrowbuf()
-  while i < state.ansiParams.len:
-    let c = state.ansiParams[i]
-    if c == ';' or colon and c == ':':
-      break
-    buf &= c
-    inc i
-  if i < state.ansiParams.len:
-    inc i
-  buf.toStr()
-
-proc getParamU8(state: State; i: var int; colon = false): Opt[uint8] =
+proc getSGRParam(state: State; i: var int; colon: var bool): Opt[uint8] =
   if i >= state.ansiParams.len:
     return err()
-  parseUInt8(state.getParam(i).toOpenArray(), allowSign = false)
+  let j = i
+  while i < state.ansiParams.len:
+    let c = state.ansiParams[i]
+    if c in {';', ':'}:
+      colon = c == ':'
+      break
+    inc i
+  let u = ?parseUInt8(state.ansiParams.toOpenArray(j, i - 1),
+    allowSign = false)
+  if i < state.ansiParams.len:
+    inc i
+  ok(u)
+
+proc getSGRParam(state: State; i: var int): Opt[uint8] =
+  var colon: bool
+  state.getSGRParam(i, colon)
 
 proc setColor(format: var Format; c: CellColor; isfg: bool) =
   if isfg:
@@ -70,18 +74,18 @@ proc setColor(format: var Format; c: CellColor; isfg: bool) =
 
 proc parseSGRDefColor(state: State; format: var Format;
     i: var int; isfg: bool): Opt[void] =
-  let u = ?state.getParamU8(i, colon = true)
+  let u = ?state.getSGRParam(i)
   if u == 2:
-    let param0 = ?state.getParamU8(i, colon = true)
+    let param0 = ?state.getSGRParam(i)
     if i < state.ansiParams.len:
       let r = param0
-      let g = ?state.getParamU8(i, colon = true)
-      let b = ?state.getParamU8(i, colon = true)
+      let g = ?state.getSGRParam(i)
+      let b = ?state.getSGRParam(i)
       format.setColor(cellColor(rgb(r, g, b)), isfg)
     else:
       format.setColor(cellColor(gray(param0)), isfg)
   elif u == 5:
-    let param0 = ?state.getParamU8(i, colon = true)
+    let param0 = ?state.getSGRParam(i)
     format.setColor(ANSIColor(param0).cellColor(), isfg)
   else:
     return err()
@@ -121,7 +125,10 @@ const FormatCodes: array[FormatFlag, tuple[s, e: uint8]] = [
 
 proc parseSGRAspect(state: State; format: var Format;
     i: var int): Opt[void] =
-  let u = ?state.getParamU8(i)
+  var colon = false
+  let u = ?state.getSGRParam(i, colon)
+  if colon and u != 38 and u != 48:
+    return err()
   for flag, (s, e) in FormatCodes:
     if u == s:
       format.flags.incl(flag)
@@ -249,6 +256,8 @@ proc parseAnsiCode(state: var State; format: var Format; c: char):
         state.ansiState = acpsOSC
       else:
         state.ansiState = acpsDone
+    elif c in '('..'+': # DEC set character set
+      state.ansiState = acpsDSCS
     else:
       state.ansiState = acpsDone
       return pacrProcess
@@ -264,6 +273,9 @@ proc parseAnsiCode(state: var State; format: var Format; c: char):
     else:
       state.ansiState = acpsFinal
       return state.parseAnsiCode(format, c)
+  of acpsDSCS:
+    #TODO we should probably support special graphics at least
+    state.ansiState = acpsDone
   of acpsFinal:
     state.ansiState = acpsDone
     if c in '@'..'~':
